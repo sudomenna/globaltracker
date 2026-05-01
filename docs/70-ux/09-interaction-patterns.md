@@ -1,12 +1,18 @@
 # 09 — Interaction patterns
 
-> **Status:** skeleton. Detalhamento completo na Fase 4.
+> **Status:** Sprint 6 ready. Tokens em [`01-design-system-tokens.md`](./01-design-system-tokens.md).
+
+## Princípios
+
+- Toda transição usa tokens `motion.duration.*` e `motion.easing.standard` ([§2.6](./01-design-system-tokens.md)).
+- `prefers-reduced-motion: reduce` zera transições não-essenciais.
+- Feedback visual em < 100ms (`motion.duration.instant`); feedback de status em < 200ms (`motion.duration.slow`).
 
 ## Loading
 
-- Skeleton screens (não spinners) para listas e dashboards.
-- Spinner apenas para ações pontuais (form submit, delete).
-- Timeout máximo: 10s — após, mostrar mensagem "Operação lenta — tente novamente".
+- Skeleton screens (não spinners) para listas e dashboards. Shimmer em `color.surface.muted`.
+- Spinner apenas para ações pontuais (form submit, delete) — duração `motion.duration.normal` (160ms) por ciclo.
+- Timeout máximo: 10s — após, mostrar mensagem "Operação lenta — tente novamente" + correlation id.
 
 ## Empty states
 

@@ -16,13 +16,15 @@ Centralizar lógica + aparência evita drift entre contextos.
 
 ## 1. Estados canônicos
 
-| Estado | Cor (token) | Ícone | Aria-label | Significado |
+| Estado | Cor (token) | Ícone (lucide) | Aria-label | Significado |
 |---|---|---|---|---|
-| `healthy` | `--color-success` (verde) | `CheckCircle` | "Saudável" | 0 incidentes ativos |
-| `degraded` | `--color-warning` (amarelo) | `AlertTriangle` | "Atenção" | 1+ incidentes não-críticos (failure rate < 5%, token expirando, ping antigo) |
-| `unhealthy` | `--color-danger` (vermelho) | `XCircle` | "Crítico" | 1+ incidentes críticos (DLQ > 0, failure rate ≥ 5%, sem ping > 24h, token revogado) |
-| `unknown` | `--color-muted` (cinza) | `HelpCircle` | "Sem dados" | Sem informação suficiente (workspace novo, integration não configurada) |
-| `loading` | skeleton | — | "Carregando" | Fetch in-flight (≥ 200ms) |
+| `healthy` | `color.feedback.success` (#22c55e) | `CheckCircle` | "Saudável" | 0 incidentes ativos |
+| `degraded` | `color.feedback.warning` (#f59e0b) | `AlertTriangle` | "Atenção" | 1+ incidentes não-críticos (failure rate < 5%, token expirando, ping antigo) |
+| `unhealthy` | `color.feedback.danger` (#ef4444) | `XCircle` | "Crítico" | 1+ incidentes críticos (DLQ > 0, failure rate ≥ 5%, sem ping > 24h, token revogado) |
+| `unknown` | `color.feedback.muted` (#6b7280) | `HelpCircle` | "Sem dados" | Sem informação suficiente (workspace novo, integration não configurada) |
+| `loading` | skeleton (`color.surface.muted` shimmer) | — | "Carregando" | Fetch in-flight (≥ 200ms) |
+
+Tokens definidos em [`01-design-system-tokens.md §2.1`](./01-design-system-tokens.md).
 
 A11y: estados nunca dependem **só** de cor. Sempre cor + ícone + aria-label (WCAG AA — [10-accessibility.md](./10-accessibility.md)).
 
