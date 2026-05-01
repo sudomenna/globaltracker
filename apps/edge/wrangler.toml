@@ -1,0 +1,36 @@
+name = "globaltracker-edge"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "118836e4d3020f5666b2b8e5ddfdb222"
+
+[[kv_namespaces]]
+binding = "GT_KV"
+id = "c92aa85488a44de6bdb5c68597881958"
+preview_id = "59d0cf1570ca499eb4597fc5218504c2"
+
+[[queues.producers]]
+queue = "gt-events"
+binding = "QUEUE_EVENTS"
+
+[[queues.producers]]
+queue = "gt-dispatch"
+binding = "QUEUE_DISPATCH"
+
+[[queues.consumers]]
+queue = "gt-events"
+max_batch_size = 100
+max_batch_timeout = 5
+
+[vars]
+ENVIRONMENT = "development"
+
+# Secrets (não colocar valores aqui — usar wrangler secret put):
+# LEAD_TOKEN_HMAC_SECRET
+# PII_MASTER_KEY_V1
+# DATABASE_URL (via Hyperdrive quando configurado)
+
+# Hyperdrive — configurar após Supabase connection pooler estar pronto:
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "<hyperdrive-config-id>"

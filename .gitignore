@@ -34,6 +34,9 @@ out/
 .wrangler/
 wrangler.toml.local
 
+# Supabase CLI runtime
+supabase/.temp/
+
 # Drizzle / DB (futuro)
 *.sqlite
 *.db

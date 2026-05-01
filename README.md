@@ -123,6 +123,48 @@ Detalhe e justificativas em [`docs/10-architecture/02-stack.md`](docs/10-archite
 
 ---
 
+## Setup
+
+### Pré-requisitos
+
+| Ferramenta | Versão mínima | Observação |
+|---|---|---|
+| Node.js | 20 LTS | Recomendado via `nvm` ou `fnm` |
+| pnpm | 9+ | `npm install -g pnpm` |
+| Wrangler CLI | 3+ | `pnpm add -g wrangler` |
+| Supabase CLI | 1.150+ | Para DB local (`supabase start`) |
+| Docker | qualquer recente | Necessário para Supabase CLI local |
+| Conta Cloudflare | — | Workers + KV + Queues + Hyperdrive |
+
+### Primeiros passos
+
+```bash
+# 1. Clone e instale dependências
+git clone git@github.com:sudomenna/globaltracker.git
+cd globaltracker
+pnpm install
+
+# 2. Configure variáveis de ambiente
+cp apps/edge/.dev.vars.example apps/edge/.dev.vars
+# edite apps/edge/.dev.vars com suas credenciais locais
+
+# 3. Suba banco de dados local
+supabase start          # Postgres + Realtime local
+pnpm db:push            # aplica schema (migrations Drizzle)
+
+# 4. Suba o Worker em modo dev
+pnpm --filter @globaltracker/edge dev   # wrangler dev local
+
+# 5. Verifique saúde
+pnpm typecheck          # deve retornar sem erros
+pnpm lint               # deve retornar sem erros
+pnpm test               # testes unit + integration
+```
+
+Variáveis de ambiente necessárias estão documentadas em `apps/edge/.dev.vars.example`. Secrets de produção são gerenciados via `wrangler secret put`.
+
+---
+
 ## Comandos rápidos (válidos a partir do Sprint 0)
 
 ```bash

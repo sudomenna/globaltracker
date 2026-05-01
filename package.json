@@ -1,0 +1,19 @@
+{
+  "name": "globaltracker",
+  "private": true,
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "typecheck": "pnpm -r run --if-present typecheck",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "build": "pnpm -r run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5"
+  }
+}

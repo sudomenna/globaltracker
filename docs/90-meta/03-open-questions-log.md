@@ -78,7 +78,7 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 - **Contexto:** HMAC stateless é mais simples (sem lookup), mas não permite revogação granular (precisa rotacionar `LEAD_TOKEN_HMAC_SECRET` para revogar tudo). Stateful permite revogação por `lead_id` mas exige lookup em todo `/v1/events`.
 - **Pergunta:** stateless puro é aceitável para Fase 2? Ou precisa de stateful desde o início para suportar SAR (erasure deve revogar tokens existentes)?
 - **Impacto se decidir errado:** se stateless e descobrirmos que precisa revogar, refactor tem custo.
-- **Status:** aberta. **Recomendação técnica:** stateful desde o início (custo de uma query KV é baixo, e SAR exige revogação).
+- **Status:** **FECHADA — 2026-05-01.** Decisão: **stateful** (`lead_tokens` table). Motivo: LGPD/SAR exige revogação granular por lead; custo de lookup via KV é aceitável. Ver ADR a registrar.
 - **Classificação:** pode esperar — ainda não implementamos. Decidir antes do Sprint 2.
 
 ---

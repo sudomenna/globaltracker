@@ -55,7 +55,7 @@ YYYY-MM-DD — <decisão curta>. <motivação>. Mover para ADR se persistir.
 
 | Sprint | Status | Fonte canônica |
 |---|---|---|
-| Sprint 0 | not_started (aguardando P0 — ver §5) | `docs/80-roadmap/00-sprint-0-foundations.md` |
+| Sprint 0 | completed (Ondas 1–4 ✅ — 2026-05-01) | `docs/80-roadmap/00-sprint-0-foundations.md` |
 | Sprint 1 | planned | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
 | Sprint 2 | planned | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
 | Sprint 3 | planned | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
@@ -70,11 +70,11 @@ Status legends: `not_started`, `in_progress`, `completed`, `paused`, `blocked`.
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        PRE-SPRINT 0
+Estado:        PRE-SPRINT 0 → TODOS P0 RESOLVIDOS
 Documentação:  COMPLETA (specs em docs/) + UX Sprint 6/8 + design system tokens
 Código:        NÃO INICIADO (apps/, packages/, tests/ ainda não existem)
 Repo Git:      https://github.com/sudomenna/globaltracker (privado, branch main)
-Próximo passo: Sprint 0 — Foundations (após resolver P0 abaixo)
+Próximo passo: Sprint 1 — Fundação de dados e contratos
 Review agente: Agendado para 2026-05-08 12:00 UTC (revisão pré-flight UX specs)
 ```
 
@@ -93,13 +93,13 @@ Review agente: Agendado para 2026-05-08 12:00 UTC (revisão pré-flight UX specs
 
 #### P0 — Bloqueantes para Sprint 0
 
-| Pendência | Owner | Detalhe |
+| Pendência | Owner | Status |
 |---|---|---|
-| Provisionar Cloudflare account + Worker + Queues + KV namespaces + Hyperdrive | OPERATOR | Necessário para T-0-004 (apps/edge wrangler dev). |
-| Provisionar Supabase project (ou Supabase CLI local) | OPERATOR | Necessário para T-0-005 (migration zero). Recomendação: começar com CLI local. |
-| Gerar `LEAD_TOKEN_HMAC_SECRET` (32+ bytes random) | OPERATOR | `openssl rand -base64 48`. Wrangler secret. |
-| Gerar `PII_MASTER_KEY_V1` (32+ bytes random) | OPERATOR | `openssl rand -base64 48`. Wrangler secret. |
-| Decidir OQ-007 (lead_token stateful vs stateless) | OWNER + tech lead | Recomendação: **stateful** — permite revogação SAR granular. Confirmar antes de Sprint 1 T-1-004. Ver [OQ-007](docs/90-meta/03-open-questions-log.md). |
+| Provisionar Cloudflare account + Worker + Queues + KV namespaces + Hyperdrive | OPERATOR | **RESOLVIDO 2026-05-01** — wrangler autenticado, KV e Queues criados. Hyperdrive após Supabase. |
+| Provisionar Supabase project (cloud) | OPERATOR | **RESOLVIDO 2026-05-01** — projeto `globaltracker` criado, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE. |
+| Gerar `LEAD_TOKEN_HMAC_SECRET` | OPERATOR | **RESOLVIDO 2026-05-01** — gerado, salvo em `.env.local`. |
+| Gerar `PII_MASTER_KEY_V1` | OPERATOR | **RESOLVIDO 2026-05-01** — gerado, salvo em `.env.local`. |
+| Decidir OQ-007 (lead_token stateful vs stateless) | OWNER + tech lead | **RESOLVIDO 2026-05-01** — decisão: **stateful**. OQ-007 fechada. |
 
 #### P1 — Bloqueante para Sprint 2
 
@@ -150,9 +150,9 @@ ADR-001 a ADR-023 em [`docs/90-meta/04-decision-log.md`](docs/90-meta/04-decisio
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch atual | `main` |
 | Último commit | `cf1761b` (docs(ux): apply design-system skill, adopt extracted tokens) |
-| Supabase project | (a definir — ver §5 P0) |
-| Cloudflare account | (a definir — ver §5 P0) |
-| Secrets em Wrangler | (a gerar — ver §5 P0) |
+| Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
+| Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
+| Secrets em Wrangler | Gerados — em `.env.local`. Push via `wrangler secret put` após T-0-004. |
 | Node | 20 LTS |
 | Package manager | pnpm 9.x |
 | Routine agendada | `trig_01EANpqAPYZh3f4GY3ADgpyX` — review pré-flight UX specs em 2026-05-08 12:00 UTC |
