@@ -1,0 +1,63 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node / pnpm (futuro)
+node_modules/
+.pnpm-store/
+.npm
+.yarn/cache
+.yarn/install-state.gz
+dist/
+build/
+.next/
+out/
+.turbo/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+.dev.vars
+*.key
+*.pem
+
+# Wrangler / Cloudflare (futuro)
+.wrangler/
+wrangler.toml.local
+
+# Drizzle / DB (futuro)
+*.sqlite
+*.db
+drizzle/migrations/.snapshot.json
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# Coverage / test artifacts (futuro)
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Claude Code local cache (não-canônico)
+.claude/memory/
+.claude/sessions/
+.claude/cache/
+
+# Plans dir (local-only)
+.claude/plans/
+
+# OS
+Thumbs.db

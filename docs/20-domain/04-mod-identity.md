@@ -1,0 +1,183 @@
+# MOD-IDENTITY — Leads, aliases, merges, consents, lead tokens, PII
+
+## 1. Identidade
+
+- **ID:** MOD-IDENTITY
+- **Tipo:** Core (módulo mais sensível — PII, consent, merge)
+- **Dono conceitual:** PRIVACY (políticas) + DOMAIN (lógica de resolução)
+
+## 2. Escopo
+
+### Dentro
+- Leads com PII hash + criptografada (AES-256-GCM com `pii_key_version`).
+- `lead_aliases` substituindo unique constraints (ADR-005).
+- `lead_merges` para auditoria de fusões canônicas.
+- `lead_consents` por finalidade (5 finalidades, ADR-010).
+- `lead_tokens` para reidentificação em retornos (cookie `__ftk`, ADR-006).
+- Algoritmo de resolução `resolveLeadByAliases()` com merge automático.
+- Anonimização para SAR/erasure (RF-029).
+- Helper `pii.ts` central com `hash()`, `encrypt()`, `decrypt()`, derivação HKDF por workspace.
+
+### Fora
+- UI de gerenciamento de privacy (Fase 4).
+- Audit log per se (`MOD-AUDIT`); este módulo apenas chama `recordAuditEntry()`.
+
+## 3. Entidades
+
+### Lead
+- `id`, `workspace_id`
+- `external_id_hash`, `email_hash`, `phone_hash`, `name_hash`
+- `email_enc`, `phone_enc`, `name_enc`
+- `pii_key_version` (smallint, default 1)
+- `status` (`active` / `merged` / `erased`)
+- `merged_into_lead_id` (FK, opcional — para registros pós-merge)
+- `first_seen_at`, `last_seen_at`
+- `created_at`, `updated_at`
+
+### LeadAlias
+- `id`, `workspace_id`
+- `identifier_type` (`email_hash` / `phone_hash` / `external_id_hash` / `lead_token_id`)
+- `identifier_hash`
+- `lead_id` (FK)
+- `source` (`form_submit` / `webhook:hotmart` / `manual` / `merge`)
+- `status` (`active` / `superseded` / `revoked`)
+- `ts`
+
+### LeadMerge
+- `id`, `workspace_id`
+- `canonical_lead_id`
+- `merged_lead_id`
+- `reason` (`email_phone_convergence` / `manual` / `sar`)
+- `performed_by` (`actor_id` ou `system`)
+- `before_summary`, `after_summary` (jsonb com snapshot dos dois leads)
+- `merged_at`
+
+### LeadConsent
+- `id`, `workspace_id`
+- `lead_id` (FK)
+- `event_id` (text — pode ser NULL para registros administrativos)
+- `consent_analytics` (`granted` / `denied` / `unknown`)
+- `consent_marketing`
+- `consent_ad_user_data`
+- `consent_ad_personalization`
+- `consent_customer_match`
+- `source`
+- `policy_version`
+- `ts`
+
+### LeadToken
+- `id`, `workspace_id`
+- `lead_id` (FK)
+- `token_hash` (SHA-256 do segredo emitido)
+- `page_token_hash` (binding — token roubado não funciona em outra página)
+- `issued_at`, `expires_at`, `revoked_at`, `last_used_at`
+
+## 4. Relações
+
+- `Lead 1—N LeadAlias`
+- `Lead 1—N LeadConsent`
+- `Lead 1—N LeadToken`
+- `Lead 1—1 Lead` (auto-relação via `merged_into_lead_id`)
+- `Lead 1—N Event` (via `events.lead_id`)
+- `Lead 1—N LeadStage`
+- `Lead 1—N LeadAttribution`
+- `Lead 1—N LeadSurveyResponse` (`MOD-ENGAGEMENT`)
+- `Lead 1—N LeadIcpScore`
+- `Lead 1—N WebinarAttendance`
+
+## 5. Estados (Lead)
+
+```
+[active] → [merged]   (não pode voltar)
+       → [erased]   (terminal — PII zerada por SAR)
+```
+
+## 6. Transições válidas
+
+| De | Para | Quem | Notas |
+|---|---|---|---|
+| (criação) | `active` | sistema (resolveLeadByAliases) | — |
+| `active` | `merged` | sistema (durante merge) | `merged_into_lead_id` populado; aliases movidos para canonical. |
+| `active` | `erased` | PRIVACY, ADMIN (via `DELETE /v1/admin/leads/:id`) | PII zerada; agregados preservados; aliases removidos. |
+
+## 7. Invariantes
+
+- **INV-IDENTITY-001 — Aliases ativos são únicos por `(workspace_id, identifier_type, identifier_hash)`.** Constraint `unique (...) where status='active'`. Testável.
+- **INV-IDENTITY-002 — Lead `erased` não tem PII em claro.** Após SAR, `email_enc`, `phone_enc`, `name_enc` IS NULL e hashes IS NULL. Testável.
+- **INV-IDENTITY-003 — Lead `merged` não recebe novos aliases ou eventos.** Resolver direciona qualquer match para `merged_into_lead_id`. Eventos com `lead_id` de lead merged são rejeitados ou redirecionados pelo ingestion processor. Testável.
+- **INV-IDENTITY-004 — Cada lead tem ao menos 1 alias `active` enquanto `lead.status='active'`.** Validador. Testável.
+- **INV-IDENTITY-005 — `pii_key_version` corresponde a uma versão de chave existente.** Validador (config tem lista de versões disponíveis). Testável.
+- **INV-IDENTITY-006 — `LeadToken` válido só com claim `page_token_hash` correspondente a `page_token` ativa ou rotating.** Validador no Edge. Testável.
+- **INV-IDENTITY-007 — Hash de email/phone usa normalização canônica antes do SHA-256.** Email: lowercase + trim. Phone: E.164. Testável: `hash('  Foo@Bar.COM ') === hash('foo@bar.com')`.
+
+## 8. BRs relacionadas
+
+- `BR-IDENTITY-*` — todas em `50-business-rules/BR-IDENTITY.md`.
+- `BR-PRIVACY-*` — em `BR-PRIVACY.md`.
+- `BR-CONSENT-*` — em `BR-CONSENT.md`.
+
+## 9. Contratos consumidos
+
+- `MOD-WORKSPACE.deriveWorkspaceCryptoKey()`
+- `MOD-AUDIT.recordAuditEntry()` (em merge, erasure, decrypt access)
+
+## 10. Contratos expostos
+
+- `resolveLeadByAliases({email, phone, external_id}, workspace_id, ctx): Result<{lead_id, was_created, merge_executed, merged_lead_ids}, ResolutionError>`
+- `createLeadConsent(lead_id, consent, source, policy_version, ctx): Result<LeadConsent>`
+- `getLatestConsent(lead_id, finality): Result<ConsentValue, NotFound>` — para dispatcher checar consent antes de envio.
+- `issueLeadToken(lead_id, page_token_hash, ttl_days, ctx): Result<{token_clear, expires_at}>`
+- `validateLeadToken(token_clear, current_page_token_hash, ctx): Result<{lead_id}, InvalidToken | Expired | Revoked | PageMismatch>`
+- `revokeLeadToken(token_id, actor, ctx): Result<void>`
+- `eraseLead(lead_id, actor, ctx): Result<{events_anonymized, attribution_anonymized}, NotFound>`
+- `decryptLeadPII(lead_id, fields[], actor, ctx): Result<{email?, phone?, name?}, Forbidden>` — exige role privacy/owner; gera audit log.
+
+## 11. Eventos de timeline emitidos
+
+- `TE-LEAD-CREATED`
+- `TE-LEAD-UPDATED`
+- `TE-LEAD-MERGED`
+- `TE-LEAD-ERASED`
+- `TE-LEAD-CONSENT-RECORDED`
+- `TE-LEAD-TOKEN-ISSUED`
+- `TE-LEAD-TOKEN-REVOKED`
+- `TE-LEAD-PII-DECRYPTED-ACCESS` (audit técnico)
+
+## 12. Ownership de código
+
+**Pode editar:**
+- `packages/db/src/schema/lead.ts`
+- `packages/db/src/schema/lead_alias.ts`
+- `packages/db/src/schema/lead_merge.ts`
+- `packages/db/src/schema/lead_consent.ts`
+- `packages/db/src/schema/lead_token.ts`
+- `apps/edge/src/lib/lead-resolver.ts`
+- `apps/edge/src/lib/lead-token.ts`
+- `apps/edge/src/lib/pii.ts`
+- `apps/edge/src/lib/consent.ts`
+- `apps/edge/src/lib/cookies.ts` (set/read `__ftk`)
+- `apps/edge/src/routes/admin/leads-erase.ts`
+- `tests/unit/identity/**`
+- `tests/integration/identity/**`
+
+**Lê:**
+- `apps/edge/src/lib/workspace.ts`
+- `apps/edge/src/lib/audit.ts`
+
+## 13. Dependências permitidas / proibidas
+
+**Permitidas:** `MOD-WORKSPACE`, `MOD-AUDIT`.
+**Proibidas:** `MOD-EVENT`, `MOD-DISPATCH`, `MOD-AUDIENCE` (eles consomem MOD-IDENTITY, não o contrário).
+
+## 14. Test harness
+
+- `tests/unit/identity/hash-normalization.test.ts` — INV-IDENTITY-007.
+- `tests/unit/identity/lead-resolver-no-match.test.ts` — caso 0 leads → criar.
+- `tests/unit/identity/lead-resolver-single-match.test.ts` — caso 1 lead → atualizar.
+- `tests/unit/identity/lead-resolver-merge.test.ts` — caso N>1 leads → merge canônico.
+- `tests/unit/identity/lead-token-hmac.test.ts` — geração e validação de HMAC.
+- `tests/unit/identity/pii-encryption.test.ts` — encrypt/decrypt com `pii_key_version`.
+- `tests/unit/identity/pii-key-rotation.test.ts` — leitura com versão antiga; escrita com versão nova.
+- `tests/integration/identity/erasure.test.ts` — INV-IDENTITY-002.
+- `tests/integration/identity/merge-fk-update.test.ts` — events/lead_attribution movem para canonical.
+- `tests/integration/identity/lead-token-page-binding.test.ts` — INV-IDENTITY-006.
