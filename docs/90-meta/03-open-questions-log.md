@@ -83,6 +83,39 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 
 ---
 
+## OQ-008 — Brand color primary do GlobalTracker
+
+- **Origem:** [`docs/70-ux/01-design-system-tokens.md §10`](../70-ux/01-design-system-tokens.md).
+- **Contexto:** spec de design system adotou tokens extraídos de referência visual Attio (em [`/DESIGN.md`](../../DESIGN.md)). `color.text.tertiary=#4e8cfc` está sendo usado como accent provisório, mas brand primary do GlobalTracker (logo, identidade visual, CTAs primários) ainda não foi definido.
+- **Pergunta:** qual cor primária? Deve coexistir com tokens dark mode (`#000`/`#1a1d21`/`#15181c`).
+- **Impacto se decidir errado:** retrabalho de tema antes do launch da UI; potencial inconsistência com brand book (se vier).
+- **Status:** aberta.
+- **Classificação:** pode esperar (Sprint 6 inicia com tokens atuais; brand finaliza durante Fase 4).
+
+---
+
+## OQ-009 — Fonte de display/headings
+
+- **Origem:** [`docs/70-ux/01-design-system-tokens.md §10`](../70-ux/01-design-system-tokens.md).
+- **Contexto:** spec atual usa Inter para tudo (texto e headings). Alternativa: Inter para body + display font (ex.: Inter Display, Cabinet Grotesk) para headings/heroes.
+- **Pergunta:** Inter único ou par de fontes? Custo de carregamento adicional vale o impacto visual?
+- **Impacto se decidir errado:** retrabalho de typography scale.
+- **Status:** aberta.
+- **Classificação:** pode esperar (Sprint 6 inicia com Inter solo; revisão estética em Fase 4 final).
+
+---
+
+## OQ-010 — Suporte a modo light no Control Plane
+
+- **Origem:** [`docs/70-ux/01-design-system-tokens.md §2.1`](../70-ux/01-design-system-tokens.md).
+- **Contexto:** Control Plane é dark-mode-only no Sprint 6. Operadores frequentemente trabalham em horários variados; alguns ambientes (apresentações, prints para auditoria) ficam melhor em light. Skill de design system não extraiu light tokens.
+- **Pergunta:** light mode é requisito de Fase 4 ou pode aguardar Fase 6+? Se sim, definir token semântico paralelo.
+- **Impacto se decidir errado:** se necessário antes do esperado, refactor de tokens.css duplicando tudo.
+- **Status:** aberta.
+- **Classificação:** pode esperar (Fase 6+ — não bloqueia Sprint 6).
+
+---
+
 ## Política de promoção OQ → ADR
 
 OQ vira ADR quando:

@@ -71,10 +71,23 @@ Status legends: `not_started`, `in_progress`, `completed`, `paused`, `blocked`.
 
 ```
 Estado:        PRE-SPRINT 0
-Documentação:  COMPLETA (specs em docs/, organizadas em pirâmide 00-90)
+Documentação:  COMPLETA (specs em docs/) + UX Sprint 6/8 + design system tokens
 Código:        NÃO INICIADO (apps/, packages/, tests/ ainda não existem)
+Repo Git:      https://github.com/sudomenna/globaltracker (privado, branch main)
 Próximo passo: Sprint 0 — Foundations (após resolver P0 abaixo)
+Review agente: Agendado para 2026-05-08 12:00 UTC (revisão pré-flight UX specs)
 ```
+
+### Adições recentes (consolidadas nas docs canônicas — não reabrir)
+
+- **Mapeamento de eventos cross-platform** Meta CAPI ↔ GA4 em [`docs/40-integrations/00-event-name-mapping.md`](docs/40-integrations/00-event-name-mapping.md). Regra: dispatcher é "burro" (mapper.ts traduz), domínio carrega payload rico.
+- **8 specs UX novas** em [`docs/70-ux/`](docs/70-ux/) (03 onboarding wizard, 04 page registration, 05 integration health, 06 lead timeline, 07 health badges, 08 contextual help, 11 copy deck, 12 live console).
+- **Design system canônico** em [`docs/70-ux/01-design-system-tokens.md`](docs/70-ux/01-design-system-tokens.md): tokens completos (color/typography/spacing/radius/shadow/motion), Inter, dark mode, WCAG 2.2 AA. Input em [`/DESIGN.md`](DESIGN.md) (auto-extraído por skill `.claude/skills/design-system/`).
+- **WCAG 2.2 AA** adotado em [`docs/70-ux/10-accessibility.md`](docs/70-ux/10-accessibility.md) (upgrade de 2.1).
+- **API contracts** atualizado com 11 novos endpoints Control Plane em [`docs/30-contracts/05-api-server-actions.md`](docs/30-contracts/05-api-server-actions.md).
+- **Sprint 6 roadmap** detalhado com T-IDs P0/P1/P2 derivadas em [`docs/80-roadmap/06-sprint-6-control-plane.md`](docs/80-roadmap/06-sprint-6-control-plane.md).
+- **Sprint 8 roadmap** atualizado com Live Event Console como pré-requisito do dashboard custom realtime em [`docs/80-roadmap/08-sprint-8-ai-dashboard.md`](docs/80-roadmap/08-sprint-8-ai-dashboard.md).
+- **Glossário** expandido com 19 entries novas (Pixel ID, AEM, CAPI, Test Event Code, Match Quality, GA4 MP/DebugView/Measurement ID/API Secret, Conversion Action, Auto-tagging, Test Mode, Health Badge, Onboarding wizard, Design tokens, WCAG 2.2 AA, shadcn/ui, Skill).
 
 ### Pendências PRÉ-Sprint 0 (resolver antes de iniciar implementação)
 
@@ -103,6 +116,9 @@ Próximo passo: Sprint 0 — Foundations (após resolver P0 abaixo)
 | OQ-003 — Estratégia de `client_id` GA4 quando `_ga` ausente | Sprint 4 |
 | OQ-005 — Tiers de rate limit por workspace | Sprint 4 |
 | OQ-006 — Heurísticas para flag manual de merge automático | Sprint 2-4 |
+| OQ-008 — Brand color primary do GlobalTracker | Sprint 6 (final) |
+| OQ-009 — Fonte de display/headings | Sprint 6 (final) |
+| OQ-010 — Suporte a modo light | Fase 6+ |
 
 Detalhes em [`docs/90-meta/03-open-questions-log.md`](docs/90-meta/03-open-questions-log.md).
 
@@ -131,12 +147,15 @@ ADR-001 a ADR-023 em [`docs/90-meta/04-decision-log.md`](docs/90-meta/04-decisio
 
 | Item | Valor |
 |---|---|
+| Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch atual | `main` |
+| Último commit | `cf1761b` (docs(ux): apply design-system skill, adopt extracted tokens) |
 | Supabase project | (a definir — ver §5 P0) |
 | Cloudflare account | (a definir — ver §5 P0) |
 | Secrets em Wrangler | (a gerar — ver §5 P0) |
 | Node | 20 LTS |
 | Package manager | pnpm 9.x |
+| Routine agendada | `trig_01EANpqAPYZh3f4GY3ADgpyX` — review pré-flight UX specs em 2026-05-08 12:00 UTC |
 
 ### Checklist de provisionamento (resolver §5 P0)
 
