@@ -23,10 +23,13 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. PR / branch sob review.
-2. `git diff` para ver mudanças.
-3. `docs/90-meta/05-subagent-playbook.md` § 8 — tabela "código alterado → doc obrigatória".
-4. Doc canônica do módulo afetado.
+> O orquestrador já lhe entregou o PR/branch alvo + onda concluída. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base (doc-sync no mesmo commit, não inventar narrativa).
+2. PR / branch sob review.
+3. `git diff` para ver mudanças.
+4. `docs/90-meta/05-subagent-playbook.md` § 8 — tabela "código alterado → doc obrigatória".
+5. Doc canônica do módulo afetado.
 
 ## Tabela de sincronização (resumo)
 

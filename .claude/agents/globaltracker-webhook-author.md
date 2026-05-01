@@ -21,13 +21,14 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/40-integrations/<NN>-<provider>-webhook.md`.
-4. `docs/30-contracts/04-webhook-contracts.md` (princípios universais).
-5. `docs/50-business-rules/BR-WEBHOOK.md`.
-6. `docs/20-domain/05-mod-event.md` — entry point para `acceptRawEvent`.
-7. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt o provider-alvo + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/40-integrations/<NN>-<provider>-webhook.md` — spec do adapter.
+3. `docs/30-contracts/04-webhook-contracts.md` — princípios universais.
+4. `docs/50-business-rules/BR-WEBHOOK.md`.
+5. `docs/20-domain/05-mod-event.md` — entry point para `acceptRawEvent`.
+6. Linha da T-ID.
 
 ## Saída esperada
 

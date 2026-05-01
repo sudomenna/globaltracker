@@ -22,13 +22,14 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/10-architecture/10-testing-strategy.md`.
-4. `TESTING.md` (raiz) — comandos.
-5. `docs/80-roadmap/98-test-matrix-by-sprint.md` — matriz T-ID × test.
-6. BR ou FLOW que está sendo testado.
-7. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt o módulo/flow alvo + BRs + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/10-architecture/10-testing-strategy.md` — estratégia de testes.
+3. `TESTING.md` (raiz) — comandos.
+4. `docs/80-roadmap/98-test-matrix-by-sprint.md` — matriz T-ID × test.
+5. BR ou FLOW que está sendo testado.
+6. Linha da T-ID.
 
 ## Saída esperada
 

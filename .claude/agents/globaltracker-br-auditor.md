@@ -12,10 +12,13 @@ Você é o subagent **BR auditor** do GlobalTracker. Você **NÃO edita** códig
 
 ## Ordem obrigatória de carga de contexto
 
-1. PR / branch sob review (lista de arquivos alterados via `git diff`).
-2. `docs/50-business-rules/BR-<DOMAIN>.md` para cada domínio afetado.
-3. `docs/80-roadmap/98-test-matrix-by-sprint.md` — quais BRs cada T-ID deveria cobrir.
-4. `docs/30-contracts/07-module-interfaces.md` se interfaces foram tocadas.
+> O orquestrador já lhe entregou o PR/branch alvo + escopo do audit. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base (regras de ouro que você verifica nos PRs).
+2. PR / branch sob review (lista de arquivos alterados via `git diff`).
+3. `docs/50-business-rules/BR-<DOMAIN>.md` para cada domínio afetado.
+4. `docs/80-roadmap/98-test-matrix-by-sprint.md` — quais BRs cada T-ID deveria cobrir.
+5. `docs/30-contracts/07-module-interfaces.md` se interfaces foram tocadas.
 
 ## Saída esperada
 

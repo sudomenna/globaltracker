@@ -23,13 +23,14 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/40-integrations/<NN>-<provider>.md` — spec do adapter.
-4. `docs/20-domain/08-mod-dispatch.md` — invariantes de dispatch.
-5. `docs/50-business-rules/BR-DISPATCH.md`, `BR-CONSENT.md`.
-6. `docs/30-contracts/04-webhook-contracts.md` ou contracts da API externa.
-7. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt o adapter alvo + BRs + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/40-integrations/<NN>-<provider>.md` — spec do adapter.
+3. `docs/20-domain/08-mod-dispatch.md` — invariantes de dispatch.
+4. `docs/50-business-rules/BR-DISPATCH.md`, `BR-CONSENT.md`.
+5. `docs/40-integrations/00-event-name-mapping.md` — mapeamento cross-platform Meta ↔ GA4 (se aplicável).
+6. Linha da T-ID.
 
 ## Saída esperada
 

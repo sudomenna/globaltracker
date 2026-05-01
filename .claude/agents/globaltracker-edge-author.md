@@ -21,13 +21,14 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/30-contracts/05-api-server-actions.md` — convenções de endpoint.
-4. `docs/20-domain/<NN>-mod-<name>.md` do módulo principal afetado.
-5. `docs/50-business-rules/BR-<DOMAIN>.md` aplicáveis.
-6. `docs/10-architecture/06-auth-rbac-audit.md` para middleware.
-7. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt as rotas + BRs + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/30-contracts/05-api-server-actions.md` — convenções de endpoint.
+3. `docs/20-domain/<NN>-mod-<name>.md` do módulo principal afetado.
+4. `docs/50-business-rules/BR-<DOMAIN>.md` aplicáveis.
+5. `docs/10-architecture/06-auth-rbac-audit.md` para middleware.
+6. Linha da T-ID.
 
 ## Saída esperada
 

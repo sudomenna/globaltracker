@@ -21,13 +21,14 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/20-domain/<NN>-mod-<name>.md` — especialmente § 7 (invariantes) e § 10 (contratos expostos).
-4. `docs/50-business-rules/BR-<DOMAIN>.md` — BRs aplicáveis.
-5. `docs/30-contracts/07-module-interfaces.md` — assinaturas TS esperadas.
-6. `docs/30-contracts/01-enums.md`.
-7. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt o módulo + BRs aplicáveis + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/20-domain/<NN>-mod-<name>.md` — especialmente § 7 (invariantes) e § 10 (contratos expostos).
+3. `docs/50-business-rules/BR-<DOMAIN>.md` — BRs aplicáveis.
+4. `docs/30-contracts/07-module-interfaces.md` — assinaturas TS esperadas.
+5. `docs/30-contracts/01-enums.md`.
+6. Linha da T-ID.
 
 ## Saída esperada
 

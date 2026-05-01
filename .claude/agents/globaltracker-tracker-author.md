@@ -23,12 +23,13 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md` + `CLAUDE.md`
-3. `docs/20-domain/13-mod-tracker.md` — invariantes do bundle.
-4. `docs/30-contracts/05-api-server-actions.md` — endpoints `/v1/config`, `/v1/events`, `/v1/lead`.
-5. `docs/30-contracts/01-enums.md` (PixelPolicy, EventName).
-6. Linha da T-ID.
+> O orquestrador já lhe entregou no prompt a feature do tracker + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra.
+2. `docs/20-domain/13-mod-tracker.md` — invariantes do bundle.
+3. `docs/30-contracts/05-api-server-actions.md` — endpoints `/v1/config`, `/v1/events`, `/v1/lead`.
+4. `docs/30-contracts/01-enums.md` — PixelPolicy, EventName.
+5. Linha da T-ID.
 
 ## Saída esperada
 

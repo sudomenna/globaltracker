@@ -81,7 +81,8 @@ integrações → BRs → flows → UX → roadmap. Pendências para iniciar imp
 |---|---|
 | **Curioso / leigo** | a seção acima ("Para o leigo") + [`docs/00-product/01-brief.md`](docs/00-product/01-brief.md) |
 | **Humano novo no time** | [`docs/00-product/01-brief.md`](docs/00-product/01-brief.md) → [`docs/00-product/06-glossary.md`](docs/00-product/06-glossary.md) → [`docs/10-architecture/01-overview.md`](docs/10-architecture/01-overview.md) |
-| **Agente (Claude Code, etc.)** | [`AGENTS.md`](AGENTS.md) → [`CLAUDE.md`](CLAUDE.md) |
+| **Orquestrador (main agent Claude Code)** | [`CLAUDE.md`](CLAUDE.md) — mapa completo + decision tree + paralelização |
+| **Subagent (worker)** | [`AGENTS.md`](AGENTS.md) — contrato base + `.claude/agents/<nome>.md` (escopo) |
 | **Vai implementar uma T-ID** | [`docs/80-roadmap/`](docs/80-roadmap/) → módulo em [`docs/20-domain/`](docs/20-domain/) → BRs/contratos referenciados |
 | **Vai configurar tracking de uma LP** | (Sprint 6+) onboarding wizard em [`docs/70-ux/03-screen-onboarding-wizard.md`](docs/70-ux/03-screen-onboarding-wizard.md) |
 | **Quer entender uma decisão técnica** | [`docs/90-meta/04-decision-log.md`](docs/90-meta/04-decision-log.md) (ADRs) |
@@ -166,8 +167,8 @@ Detalhe e estratégia de testes em [`TESTING.md`](TESTING.md).
 │   └── 90-meta/                 # convenções, ID registry, ADRs, OQs, processo
 ├── .claude/
 │   └── agents/                  # subagents customizados
-├── AGENTS.md                    # contrato operacional agente-agnóstico
-├── CLAUDE.md                    # adendo específico para Claude Code
+├── AGENTS.md                    # contrato base lido por TODO subagent (worker)
+├── CLAUDE.md                    # playbook do orquestrador (main agent Claude Code)
 ├── MEMORY.md                    # estado volátil de sessão (não canônico)
 ├── TESTING.md                   # guia operacional de testes
 └── README.md                    # este arquivo
@@ -190,13 +191,14 @@ Detalhe em [`docs/50-business-rules/BR-PRIVACY.md`](docs/50-business-rules/BR-PR
 
 ## Como contribuir
 
-1. **Antes de qualquer edição**, leia [`AGENTS.md`](AGENTS.md) — define contrato operacional, ownership de cada módulo e ordem fixa de carga de contexto.
-2. **Toda mudança de comportamento** atualiza doc canônica no mesmo commit (regra "doc-sync"). Se impossível, registre em `MEMORY.md §2` com prazo.
-3. **Toda BR aplicada em código** tem comentário citando a BR (`// BR-IDENTITY-005: ...`).
-4. **Toda T-ID** tem ownership declarado e cabe em UM PR.
-5. **Stack-bloqueio** (ferramenta não funciona como esperado): pare, documente em `MEMORY.md §1`, devolva controle ao humano. Não faça workaround silencioso.
+1. **Se você é orquestrador** (main agent Claude Code), leia [`CLAUDE.md`](CLAUDE.md) — mapa completo da doc, decision tree de qual subagent invocar, protocolo de paralelização.
+2. **Se você é subagent** (worker dispatchado pelo orquestrador), leia [`AGENTS.md`](AGENTS.md) (contrato base) + seu próprio arquivo em [`.claude/agents/<nome>.md`](.claude/agents/) (escopo específico).
+3. **Toda mudança de comportamento** atualiza doc canônica no mesmo commit (regra "doc-sync"). Se impossível, registre em `MEMORY.md §2` com prazo.
+4. **Toda BR aplicada em código** tem comentário citando a BR (`// BR-IDENTITY-005: ...`).
+5. **Toda T-ID** tem ownership declarado e cabe em UM PR.
+6. **Stack-bloqueio** (ferramenta não funciona como esperado): pare, documente em `MEMORY.md §1`, devolva controle ao humano. Não faça workaround silencioso.
 
-Para implementação assistida por IA, ver [`CLAUDE.md`](CLAUDE.md) e [`docs/90-meta/05-subagent-playbook.md`](docs/90-meta/05-subagent-playbook.md).
+Para implementação assistida por IA, o orquestrador segue [`CLAUDE.md`](CLAUDE.md), os subagents seguem [`AGENTS.md`](AGENTS.md), e a paralelização é detalhada em [`docs/90-meta/05-subagent-playbook.md`](docs/90-meta/05-subagent-playbook.md).
 
 ---
 

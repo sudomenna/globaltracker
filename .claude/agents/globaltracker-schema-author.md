@@ -23,13 +23,13 @@ NÃO edita:
 
 ## Ordem obrigatória de carga de contexto
 
-1. `docs/README.md`
-2. `AGENTS.md`
-3. `CLAUDE.md`
-4. `docs/20-domain/<NN>-mod-<name>.md` (módulo da T-ID) — § 3 (entidades), § 7 (invariantes), § 12 (ownership de código).
-5. `docs/30-contracts/02-db-schema-conventions.md` (canonical para naming, constraints, RLS, particionamento).
-6. `docs/30-contracts/01-enums.md` (lista canônica de enums).
-7. Linha exata da T-ID em `docs/80-roadmap/<sprint>.md`.
+> O orquestrador já lhe entregou no prompt o módulo + BRs + T-ID. Carregue só o que está abaixo:
+
+1. `AGENTS.md` — contrato base que você honra (regras de ouro, DoD, naming).
+2. `docs/20-domain/<NN>-mod-<name>.md` (módulo da T-ID) — § 3 (entidades), § 7 (invariantes), § 12 (ownership).
+3. `docs/30-contracts/02-db-schema-conventions.md` — naming, constraints, RLS, particionamento.
+4. `docs/30-contracts/01-enums.md` — enums canônicos.
+5. Linha exata da T-ID em `docs/80-roadmap/<sprint>.md`.
 
 ## Saída esperada por T-ID
 
