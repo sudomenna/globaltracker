@@ -7,55 +7,25 @@
 
 ## §0 Feedback operacional
 
-Anote aqui feedback recente do humano que afeta como você (agente) deve trabalhar nesta conversa atual.
-
 (vazio)
 
 ## §1 Bloqueios e pendências de stack [STACK-BLOQUEIO]
-
-Anote aqui itens de stack que não estão funcionando conforme esperado. Use formato:
-
-```
-[STACK-BLOQUEIO] <item>
-- Esperado: ...
-- Observado: ...
-- Hipótese: ...
-- Tentativas: ...
-- Próximo passo: pedir ao humano
-```
 
 (vazio)
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-Anote aqui quando código foi alterado mas doc canônica ainda não. Prazo: até final do sprint.
-
-```
-[SYNC-PENDING] <doc afetada>
-- Mudança em código: <commit/branch>
-- Doc a atualizar: <path>
-- Razão de não atualizar agora: <razão>
-- ETA: <sprint X dia Y>
-```
-
 (vazio)
 
-## §3 Modelo de negócio (decisões do usuário ainda não em ADR)
+## §3 Modelo de negócio (decisões ainda não em ADR)
 
-Decisões de produto/operação tomadas em conversas com o humano que ainda não viraram ADR formal mas afetam implementação.
-
-Formato sugerido:
-```
-YYYY-MM-DD — <decisão curta>. <motivação>. Mover para ADR se persistir.
-```
-
-(vazio)
+2026-05-01 — Supabase em cloud (não local). Projeto `globaltracker`, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE Ltda. Mover para ADR se persistir.
 
 ## §4 Estado dos sprints — fontes canônicas
 
 | Sprint | Status | Fonte canônica |
 |---|---|---|
-| Sprint 0 | completed (Ondas 1–4 ✅ — 2026-05-01) | `docs/80-roadmap/00-sprint-0-foundations.md` |
+| Sprint 0 | **completed** (2026-05-01, commit `0d0d42b`) | `docs/80-roadmap/00-sprint-0-foundations.md` |
 | Sprint 1 | planned | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
 | Sprint 2 | planned | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
 | Sprint 3 | planned | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
@@ -65,122 +35,65 @@ YYYY-MM-DD — <decisão curta>. <motivação>. Mover para ADR se persistir.
 | Sprint 7 | planned | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | planned | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 
-Status legends: `not_started`, `in_progress`, `completed`, `paused`, `blocked`.
-
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        PRE-SPRINT 0 → TODOS P0 RESOLVIDOS
-Documentação:  COMPLETA (specs em docs/) + UX Sprint 6/8 + design system tokens
-Código:        NÃO INICIADO (apps/, packages/, tests/ ainda não existem)
+Estado:        SPRINT 1 — pronto para iniciar
+Sprint 0:      COMPLETO — monorepo, packages/shared, packages/db, apps/edge, CI, Supabase
+Código:        apps/edge (Hono /health), packages/shared (enums+types), packages/db (Drizzle vazio)
 Repo Git:      https://github.com/sudomenna/globaltracker (privado, branch main)
-Próximo passo: Sprint 1 — Fundação de dados e contratos
-Review agente: Agendado para 2026-05-08 12:00 UTC (revisão pré-flight UX specs)
+Último commit: 0d0d42b — feat: Sprint 0 — monorepo foundations
+Próximo passo: Sprint 1 — Onda 1 (ler docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md)
 ```
 
-### Adições recentes (consolidadas nas docs canônicas — não reabrir)
-
-- **Mapeamento de eventos cross-platform** Meta CAPI ↔ GA4 em [`docs/40-integrations/00-event-name-mapping.md`](docs/40-integrations/00-event-name-mapping.md). Regra: dispatcher é "burro" (mapper.ts traduz), domínio carrega payload rico.
-- **8 specs UX novas** em [`docs/70-ux/`](docs/70-ux/) (03 onboarding wizard, 04 page registration, 05 integration health, 06 lead timeline, 07 health badges, 08 contextual help, 11 copy deck, 12 live console).
-- **Design system canônico** em [`docs/70-ux/01-design-system-tokens.md`](docs/70-ux/01-design-system-tokens.md): tokens completos (color/typography/spacing/radius/shadow/motion), Inter, dark mode, WCAG 2.2 AA. Input em [`/DESIGN.md`](DESIGN.md) (auto-extraído por skill `.claude/skills/design-system/`).
-- **WCAG 2.2 AA** adotado em [`docs/70-ux/10-accessibility.md`](docs/70-ux/10-accessibility.md) (upgrade de 2.1).
-- **API contracts** atualizado com 11 novos endpoints Control Plane em [`docs/30-contracts/05-api-server-actions.md`](docs/30-contracts/05-api-server-actions.md).
-- **Sprint 6 roadmap** detalhado com T-IDs P0/P1/P2 derivadas em [`docs/80-roadmap/06-sprint-6-control-plane.md`](docs/80-roadmap/06-sprint-6-control-plane.md).
-- **Sprint 8 roadmap** atualizado com Live Event Console como pré-requisito do dashboard custom realtime em [`docs/80-roadmap/08-sprint-8-ai-dashboard.md`](docs/80-roadmap/08-sprint-8-ai-dashboard.md).
-- **Glossário** expandido com 19 entries novas (Pixel ID, AEM, CAPI, Test Event Code, Match Quality, GA4 MP/DebugView/Measurement ID/API Secret, Conversion Action, Auto-tagging, Test Mode, Health Badge, Onboarding wizard, Design tokens, WCAG 2.2 AA, shadcn/ui, Skill).
-
-### Pendências PRÉ-Sprint 0 (resolver antes de iniciar implementação)
-
-#### P0 — Bloqueantes para Sprint 0
-
-| Pendência | Owner | Status |
-|---|---|---|
-| Provisionar Cloudflare account + Worker + Queues + KV namespaces + Hyperdrive | OPERATOR | **RESOLVIDO 2026-05-01** — wrangler autenticado, KV e Queues criados. Hyperdrive após Supabase. |
-| Provisionar Supabase project (cloud) | OPERATOR | **RESOLVIDO 2026-05-01** — projeto `globaltracker` criado, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE. |
-| Gerar `LEAD_TOKEN_HMAC_SECRET` | OPERATOR | **RESOLVIDO 2026-05-01** — gerado, salvo em `.env.local`. |
-| Gerar `PII_MASTER_KEY_V1` | OPERATOR | **RESOLVIDO 2026-05-01** — gerado, salvo em `.env.local`. |
-| Decidir OQ-007 (lead_token stateful vs stateless) | OWNER + tech lead | **RESOLVIDO 2026-05-01** — decisão: **stateful**. OQ-007 fechada. |
-
-#### P1 — Bloqueante para Sprint 2
+### Pendências antes de Sprint 2
 
 | Pendência | Detalhe |
 |---|---|
-| Decidir OQ-004 (Turnstile vs honeypot puro vs Captcha) | Bloqueia Sprint 2 (`/v1/lead` precisa bot mitigation antes de produção). Recomendação: começar com honeypot+timing; adicionar Turnstile se spam aparecer. Ver [OQ-004](docs/90-meta/03-open-questions-log.md). |
+| OQ-004 (bot mitigation) | Bloqueia `/v1/lead` em produção. Recomendação: honeypot+timing. Ver [OQ-004](docs/90-meta/03-open-questions-log.md). |
 
-#### P2 — Não-bloqueantes (decidir em Sprints 3-5)
+### Secrets — onde estão
 
-| Pendência | Sprint afetado |
-|---|---|
-| OQ-001 — FX provider exato | Sprint 4 |
-| OQ-002 — Política de retenção por categoria | Sprint 6 |
-| OQ-003 — Estratégia de `client_id` GA4 quando `_ga` ausente | Sprint 4 |
-| OQ-005 — Tiers de rate limit por workspace | Sprint 4 |
-| OQ-006 — Heurísticas para flag manual de merge automático | Sprint 2-4 |
-| OQ-008 — Brand color primary do GlobalTracker | Sprint 6 (final) |
-| OQ-009 — Fonte de display/headings | Sprint 6 (final) |
-| OQ-010 — Suporte a modo light | Fase 6+ |
+- `.env.local` na raiz (fora do git): `LEAD_TOKEN_HMAC_SECRET`, `PII_MASTER_KEY_V1`, `DATABASE_URL`, chaves Supabase, IDs Cloudflare
+- `apps/edge/.dev.vars`: vazio — preencher com valores de `.env.local` antes de `wrangler dev`
+- Produção: `wrangler secret put LEAD_TOKEN_HMAC_SECRET` + `wrangler secret put PII_MASTER_KEY_V1` (ainda não feito)
 
-Detalhes em [`docs/90-meta/03-open-questions-log.md`](docs/90-meta/03-open-questions-log.md).
+### Hyperdrive — pendente
 
-### Como retomar em novo contexto (humano ou agente)
+Configurar após Sprint 1 (precisa do Supabase connection pooler URL). Por enquanto `apps/edge` não conecta ao DB.
 
-1. Ler esta seção §5 + `git status` + `git log -10`.
-2. Carregar contexto base: [`docs/README.md`](docs/README.md) → [`AGENTS.md`](AGENTS.md) → [`CLAUDE.md`](CLAUDE.md).
-3. Verificar P0 acima — marcar quando resolvido.
-4. Iniciar Sprint 0 conforme [`docs/80-roadmap/00-sprint-0-foundations.md`](docs/80-roadmap/00-sprint-0-foundations.md) (Onda 1 começa com T-0-001).
-5. Antes de Sprint 1: confirmar OQ-007.
-6. Antes de Sprint 2: confirmar OQ-004.
+### Como retomar em nova sessão
+
+1. Ler este §5 + `git log -5` + `git status`
+2. Abrir `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md`
+3. Identificar Onda 1 do Sprint 1 e despachar subagents
 
 ### Decisões já tomadas (não reabrir)
 
-ADR-001 a ADR-023 em [`docs/90-meta/04-decision-log.md`](docs/90-meta/04-decision-log.md). Resumo:
-- Stack: CF Workers + Hono + Postgres/Supabase + Drizzle + CF Queues; Trigger.dev só Fase 5
-- Modelo "fast accept" (raw_events + processor async)
-- Lead identity via `lead_aliases` + `lead_merges`
-- Reidentificação via cookie `__ftk` HMAC (Fase 2)
-- `visitor_id` adiado para Fase 3
-- PII em 3 categorias com `pii_key_version` + HKDF
-- Idempotency key canonicalizada por destination subresource
-- Customer Match Google strategy condicional
+- OQ-007 FECHADA: `lead_token` **stateful** (tabela `lead_tokens`) — LGPD/SAR exige revogação granular
+- ADR-001 a ADR-023 em `docs/90-meta/04-decision-log.md`
 
 ## §6 Ambiente operacional
 
 | Item | Valor |
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
-| Branch atual | `main` |
-| Último commit | `cf1761b` (docs(ux): apply design-system skill, adopt extracted tokens) |
+| Branch | `main` |
+| Último commit | `0d0d42b` — Sprint 0 foundations |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
-| Secrets em Wrangler | Gerados — em `.env.local`. Push via `wrangler secret put` após T-0-004. |
+| CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
+| CF KV (preview) | `59d0cf1570ca499eb4597fc5218504c2` |
+| CF Queues | `gt-events`, `gt-dispatch` |
+| Wrangler | 4.87.0 (global, pnpm) |
+| Supabase CLI | 2.90.0 (logado na conta CNE) |
 | Node | 20 LTS |
-| Package manager | pnpm 9.x |
+| pnpm | 10.x |
 | Routine agendada | `trig_01EANpqAPYZh3f4GY3ADgpyX` — review pré-flight UX specs em 2026-05-08 12:00 UTC |
-
-### Checklist de provisionamento (resolver §5 P0)
-
-```bash
-# 1. Cloudflare
-npm install -g wrangler
-wrangler login
-
-# 2. Secrets (gerar localmente, push via wrangler quando T-0-004 criar wrangler.toml)
-openssl rand -base64 48  # → LEAD_TOKEN_HMAC_SECRET
-openssl rand -base64 48  # → PII_MASTER_KEY_V1
-
-# 3. Supabase
-brew install supabase/tap/supabase
-supabase init
-# (start local quando precisar — durante T-0-005)
-
-# 4. pnpm + Node
-brew install pnpm
-node --version  # confirmar >= 20
-```
 
 ## Política de uso
 
 - `MEMORY.md` é volátil — pode ser limpa entre sessões.
-- Decisões importantes migram para `docs/90-meta/04-decision-log.md` (ADR) ou `docs/90-meta/03-open-questions-log.md` (OQ).
+- Decisões importantes migram para `docs/90-meta/04-decision-log.md` (ADR).
+- OQs migram para `docs/90-meta/03-open-questions-log.md`.
 - Não duplique aqui o que já está em ADR/OQ — referencie.
-- Mantenha curto — se §5 ficar com mais de 30 linhas, separe sub-arquivo.
