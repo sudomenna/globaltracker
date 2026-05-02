@@ -5,6 +5,7 @@ import { useIntegrationsHealth } from '@/hooks/use-health';
 import { cn } from '@/lib/utils';
 import {
   BarChart3,
+  GitBranch,
   Globe,
   HelpCircle,
   Home,
@@ -55,6 +56,11 @@ const navItems: NavItemDef[] = [
     icon: BarChart3,
     resolveHealth: () => 'unknown',
     resolveTooltip: () => 'Dados de saúde de audiences indisponíveis',
+  },
+  {
+    href: '/orchestrator',
+    label: 'Workflows',
+    icon: GitBranch,
   },
   {
     href: '/integrations',
