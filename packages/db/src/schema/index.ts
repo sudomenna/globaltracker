@@ -1,3 +1,11 @@
-// Schemas serão adicionados em Sprint 1+
-// Cada módulo terá seu próprio arquivo: workspace.ts, identity.ts, events.ts, etc.
-export {};
+export * from './workspace.js';
+export * from './workspace_member.js';
+export * from './workspace_api_key.js';
+export * from './launch.js';
+export * from './ad_spend_daily.js';
+export * from './audit_log.js';
+export * from './lead.js';
+export * from './lead_alias.js';
+export * from './lead_merge.js';
+export * from './lead_consent.js';
+export * from './lead_token.js';

@@ -38,19 +38,35 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 1 — pronto para iniciar
+Estado:        SPRINT 1 — Ondas 1 e 2 concluídas; pronto para Onda 3
 Sprint 0:      COMPLETO — monorepo, packages/shared, packages/db, apps/edge, CI, Supabase
-Código:        apps/edge (Hono /health), packages/shared (enums+types), packages/db (Drizzle vazio)
+Sprint 1:      EM ANDAMENTO
+  Onda 1 ✓    T-1-001 — Schema MOD-WORKSPACE + RLS (workspaces, workspace_members, workspace_api_keys)
+  Onda 2 ✓    T-1-002 (MOD-LAUNCH), T-1-004 (MOD-IDENTITY x5), T-1-010 (MOD-COST), T-1-012 (MOD-AUDIT)
+  Migrations: aplicadas no Supabase (supabase db push) — 5 migrations (0001..0012)
+  Onda 3:     T-1-003, T-1-006, T-1-007, T-1-009, T-1-011, T-1-013 (próxima)
 Repo Git:      https://github.com/sudomenna/globaltracker (privado, branch main)
-Último commit: 0d0d42b — feat: Sprint 0 — monorepo foundations
-Próximo passo: Sprint 1 — Onda 1 (ler docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md)
+Próximo passo: Sprint 1 — Onda 3
 ```
+
+### Ondas Sprint 1 — status
+
+| Onda | T-IDs | Status |
+|---|---|---|
+| 1 | T-1-001 | ✓ DONE |
+| 2 | T-1-002, T-1-004, T-1-010, T-1-012 | ✓ DONE |
+| 3 | T-1-003, T-1-006, T-1-007, T-1-009, T-1-011, T-1-013 | próxima |
+| 4 | T-1-005, T-1-008, T-1-014 | pendente |
+| 5 | T-1-015 | pendente |
+| 6 | T-1-016–T-1-020 | pendente |
+| 7 | T-1-021, T-1-022 | pendente |
 
 ### Pendências antes de Sprint 2
 
 | Pendência | Detalhe |
 |---|---|
 | OQ-004 (bot mitigation) | Bloqueia `/v1/lead` em produção. Recomendação: honeypot+timing. Ver [OQ-004](docs/90-meta/03-open-questions-log.md). |
+| FK `ad_spend_daily.launch_id` | Sem FK por ora (paralelo). Adicionar em T-1-005 ou migration separada. |
 
 ### Secrets — onde estão
 
