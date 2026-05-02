@@ -43,17 +43,11 @@ Verificação:   typecheck ✓  lint ✓  431 testes passando
 
 Sprint 0: COMPLETO
 Sprint 1: COMPLETO
-Sprint 2: EM ANDAMENTO
-  Onda 1 (COMPLETA):
-    T-2-001/002/003: apps/tracker/ criado — init, cookies, decorate (2.28 KB gz)
-    T-2-007: lead-resolver.ts + attribution.ts + consent.ts
-    T-2-009: middleware Turnstile em /v1/lead (ADR-024)
-  Onda 2 (COMPLETA, commit 8e93314, 2026-05-02):
-    T-2-004+005+011: tracker.js identify + page + pixel-coexist (3.04 KB gz)
-    T-2-006: ingestion processor raw-events-processor.ts (OQ-011: dispatch_jobs aguarda Sprint 3)
-    T-2-008+010: lead_token real (issueLeadToken+validateLeadToken) + Set-Cookie __ftk + middleware
-  Onda 3 (COMPLETA, commit 9e01566, 2026-05-02):
-    T-2-012: 34 testes integração — FLOW-02, FLOW-07, FLOW-08
+Sprint 2: COMPLETO
+  Onda 1: T-2-001/002/003 (tracker.js 2.28KB), T-2-007 (lead-resolver+attribution+consent), T-2-009 (Turnstile)
+  Onda 2: T-2-004/005/011 (tracker 3.04KB), T-2-006 (processor), T-2-008/010 (lead_token real+middleware)
+  Onda 3: T-2-012 (34 testes FLOW-02/07/08)
+  OQ-011 ABERTA: dispatch_jobs no processor aguarda config de integrações (Sprint 3)
 ```
 
 ### Pendências operacionais antes de produção
@@ -69,8 +63,8 @@ Sprint 2: EM ANDAMENTO
 
 | Item | Prazo |
 |---|---|
-| `docs/20-domain/13-mod-tracker.md §7`: mecanismo `window.__funil_event_id` + sessionStorage TTL 5min não documentado | Final Sprint 2 |
-| `docs/30-contracts/07-module-interfaces.md`: consent.ts usa `workspace_id` explícito vs `ctx` no contrato | Final Sprint 2 |
+| `docs/20-domain/13-mod-tracker.md §7`: mecanismo `window.__funil_event_id` + sessionStorage TTL 5min não documentado | Início Sprint 3 |
+| `docs/30-contracts/07-module-interfaces.md`: consent.ts usa `workspace_id` explícito vs `ctx` no contrato | Início Sprint 3 |
 
 ### Decisões já tomadas (não reabrir)
 
@@ -87,9 +81,9 @@ Sprint 2: EM ANDAMENTO
 ### Como retomar em nova sessão
 
 1. Ler este §5 + `git log -5` + `git status`
-2. Abrir `docs/80-roadmap/02-sprint-2-runtime-tracking.md`
-3. Identificar T-IDs da Onda 1 do Sprint 2 (parallel-safe)
-4. Despachar subagents conforme decision tree em `CLAUDE.md §2`
+2. Abrir `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md`
+3. Verificar OQ-011 — dispatch_jobs config de integrações (ponto de entrada do Sprint 3)
+4. Decompor Sprint 3 em ondas e despachar subagents conforme decision tree em `CLAUDE.md §2`
 
 ## §6 Ambiente operacional
 
@@ -97,7 +91,7 @@ Sprint 2: EM ANDAMENTO
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `79ec7d4` — Sprint 1 completo + Hyperdrive configurado |
+| Último commit | `b5e2248` — Sprint 2 completo (431 testes) |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
