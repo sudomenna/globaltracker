@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- `POST /v1/dispatch-jobs/:id/replay`: contrato em `docs/30-contracts/05-api-server-actions.md` especifica 202 + `{ new_job_id, status: 'queued' }` + body `{ justification }`, mas implementação em `apps/edge/src/routes/dispatch-replay.ts` retorna 200 + `{ queued, job_id, destination }` + body `{ reason }`. Pendente de correção (T-ID isolada ou início do Sprint 8).
+- `POST /v1/dispatch-jobs/:id/replay`: divergência contrato ↔ implementação registrada em **OQ-013** (`docs/90-meta/03-open-questions-log.md`). Aguarda decisão: criar novo job (Opção A) vs. atualizar contrato para refletir reset (Opção B).
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -56,7 +56,7 @@ DB Supabase:   migrations 0000–0025 aplicadas ✓
 | Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
 | Secrets Sprint 5 (audience) | não deployados | `META_CUSTOM_AUDIENCE_TOKEN META_DEFAULT_AD_ACCOUNT_ID` |
 | Secrets Sprint 7 (orchestrator) | não deployados | `TRIGGER_SECRET_KEY DATABASE_URL CF_PAGES_API_TOKEN CF_ACCOUNT_ID` |
-| dispatch-replay shape | SYNC-PENDING | Alinhar implementação com contrato (ver §2) |
+| dispatch-replay shape | OQ-013 ABERTA | Decidir entre criar novo job vs. atualizar contrato (ver §2 e OQ-013) |
 
 ### Decisões já tomadas (não reabrir)
 

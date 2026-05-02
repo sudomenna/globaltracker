@@ -148,6 +148,26 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 
 ---
 
+## OQ-013 — dispatch-replay: criar novo job vs. resetar job existente
+
+- **Origem:** divergência detectada em 2026-05-02 entre contrato e implementação.
+- **Contrato** (`docs/30-contracts/05-api-server-actions.md`):
+  - Body: `{ justification: string }`
+  - Response: **202** + `{ new_job_id, status: 'queued' }`
+  - Side effect: cria **novo** `dispatch_job` com `replayed_from_dispatch_job_id` (histórico completo preservado)
+- **Implementação** (`apps/edge/src/routes/dispatch-replay.ts`):
+  - Body: `{ reason: string }`
+  - Response: **200** + `{ queued: true, job_id, destination }`
+  - Side effect: **reseta** o job existente (`status='pending'`, `attempt_count=0`) — histórico de tentativas perdido
+- **Pergunta:** qual comportamento adotar?
+  - **Opção A — seguir o contrato:** criar novo `dispatch_job` filho do original. Preserva histórico completo de todas as tentativas. Requer coluna `replayed_from_dispatch_job_id` no schema (migration nova). Mais auditável.
+  - **Opção B — atualizar o contrato:** manter o reset do job existente. Mais simples, sem migration. Adequado se auditoria de tentativas individuais não for necessária para o produto.
+- **Impacto:** se Opção A, precisar de migration + ajuste do schema `dispatch_jobs` + refatoração do route + testes. Se Opção B, atualizar `05-api-server-actions.md` e remover o SYNC-PENDING.
+- **Não bloqueia** nenhum sprint ativo (Sprint 8).
+- **Status:** **ABERTA**
+
+---
+
 ## Política de promoção OQ → ADR
 
 OQ vira ADR quando:
