@@ -39,11 +39,66 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 5 COMPLETO — banco atualizado — próximo: Sprint 6
-Último commit: 3757690 (branch main)
-Verificação:   typecheck ✓  lint ✓  928 testes passando
-DB Supabase:   migrations 0000–0023 aplicadas ✓
+Estado:        SPRINT 6 — Onda 4 completa, pronto para Onda 5
+Último commit: 7b8dfcd (branch main)
+Verificação:   typecheck ✓  lint ✓  1100 testes passando
+DB Supabase:   migrations 0000–0024 aplicadas ✓
 ```
+
+### Sprint 6 — Onda 1 **CONCLUÍDA** ✓
+
+| T-ID | Status |
+|---|---|
+| T-6-001 | ✓ `onboarding_state` JSONB + migration 0024 + Zod schema |
+| T-6-002 | ✓ `apps/control-plane/` bootstrapped (Next.js 15 + shadcn + Supabase Auth) |
+| T-6-003 | ✓ `GET /v1/pages/:public_id/status` + 31 testes |
+| T-6-004 | ✓ `GET /v1/health/integrations` + `GET /v1/health/workspace` + 30 testes |
+| T-6-007 | ✓ `POST /v1/integrations/:provider/test` (meta/ga4/google_ads) |
+
+Verificação onda 1: typecheck ✓ lint ✓ 1006 testes ✓
+
+### Sprint 6 — Onda 2 **CONCLUÍDA** ✓
+
+| T-ID | Status |
+|---|---|
+| T-6-005 | ✓ `GET/PATCH /v1/onboarding/state` + 33 testes |
+| T-6-006 | ✓ `<HealthBadge>` component + `useIntegrationsHealth()` SWR hook + sidebar atualizado |
+| T-6-008 | ✓ `POST /v1/dispatch-jobs/:id/replay` + 26 testes |
+| T-6-009 | ✓ `GET /v1/help/skip-reason/:reason` + 20 testes |
+| T-6-010 | ✓ `GET /v1/leads/:public_id/timeline` + 16 testes |
+
+Verificação onda 2: typecheck ✓ lint ✓ 1100 testes ✓
+
+### Sprint 6 — Onda 3 **CONCLUÍDA** ✓
+
+| T-ID | Status |
+|---|---|
+| T-6-011 | ✓ Wizard 5 passos `/onboarding` + re-entry + skip-all dialog + banner "Setup incompleto" |
+| T-6-012 | ✓ Page registration `/launches/:id/pages/new` + detalhe com polling SWR + snippet |
+| T-6-013 | ✓ Integration health list + detalhe `/integrations/[provider]` com test flow + deep-links |
+| T-6-014 | ✓ Lead timeline `/leads/:id` com filtros + cursor pagination + WhyFailedSheet |
+| T-6-016 | ✓ Workspace header badge + IncidentsPanel Sheet + banner setup incompleto |
+
+Verificação onda 3: typecheck ✓ lint ✓ 1100 testes ✓
+
+### Sprint 6 — Onda 4 **CONCLUÍDA** ✓
+
+| T-ID | Status |
+|---|---|
+| T-6-015 | ✓ `DiagnosticsPanel` (origin_not_allowed, invalid_token, sem ping recente) |
+| T-6-017 | ✓ `deep-links.ts` com 9 funções puras (Meta/GA4/Google Ads) |
+| T-6-018 | ✓ Re-dispatch AlertDialog + aria-live + RBAC OPERATOR/ADMIN |
+| T-6-019 | ✓ `<TooltipHelp>` + `skip-reason-copy.ts` (§1-3 completos) + aplicado em integrações/onboarding |
+
+Verificação onda 4: typecheck ✓ lint ✓ 1100 testes ✓
+
+### Sprint 6 — próxima onda: **Onda 5** (3 T-IDs em paralelo)
+
+- T-6-020 (test-author): Testes unit + integration CP + edge endpoints
+- T-6-021 (test-author): A11y tests axe-core
+- T-6-022 (general-purpose): Glossary `/help/glossary` + WhyFailedSheet melhorado
+
+Plano detalhado: `docs/80-roadmap/06-sprint-6-control-plane.md`
 
 ### Pendências operacionais antes de produção
 

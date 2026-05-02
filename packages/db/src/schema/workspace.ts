@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 
 // BR-PRIVACY-001: Workspace is the crypto anchor — id is used as HKDF salt
 // for deriving per-workspace PII keys at runtime. No key field stored here.
@@ -23,6 +23,10 @@ export const workspaces = pgTable('workspaces', {
   fxNormalizationCurrency: text('fx_normalization_currency')
     .notNull()
     .default('BRL'),
+
+  // INV-WORKSPACE-003: onboarding_state structure validated by Zod at service layer (not DB constraint)
+  // Sprint 6: stores wizard progress; nullable inner fields — workspace starts with empty object
+  onboardingState: jsonb('onboarding_state').notNull().default({}),
 
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()

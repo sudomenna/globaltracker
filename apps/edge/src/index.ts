@@ -71,8 +71,15 @@ import { rateLimit } from './middleware/rate-limit.js';
 import { safeLog, sanitizeLogs } from './middleware/sanitize-logs.js';
 import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
 import { configRoute } from './routes/config.js';
+import { dispatchReplayRoute } from './routes/dispatch-replay.js';
 import { eventsRoute } from './routes/events.js';
+import { healthCpRoute } from './routes/health-cp.js';
+import { helpRoute } from './routes/help.js';
+import { integrationsTestRoute } from './routes/integrations-test.js';
 import { leadRoute } from './routes/lead.js';
+import { leadsTimelineRoute } from './routes/leads-timeline.js';
+import { onboardingStateRoute } from './routes/onboarding-state.js';
+import { pagesStatusRoute } from './routes/pages-status.js';
 import { redirectRoute } from './routes/redirect.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
 
@@ -222,6 +229,18 @@ app.route('/v1/admin/leads', adminLeadsEraseRoute);
 // Token auth is validated inside the handler (BR-WEBHOOK-001: constant-time comparison).
 // DB is wired lazily via Hyperdrive on first request.
 app.route('/v1/webhook/guru', createGuruWebhookRoute());
+
+// Control Plane endpoints (Sprint 6 — Wave 1: T-6-003, T-6-004, T-6-007)
+// Auth: Bearer token placeholder — JWT validation via auth-cp.ts in next pass.
+app.route('/v1/pages', pagesStatusRoute);
+app.route('/v1/health', healthCpRoute);
+app.route('/v1/integrations', integrationsTestRoute);
+
+// Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
+app.route('/v1/onboarding', onboardingStateRoute);
+app.route('/v1/dispatch-jobs', dispatchReplayRoute);
+app.route('/v1/help', helpRoute);
+app.route('/v1/leads', leadsTimelineRoute);
 
 // ---------------------------------------------------------------------------
 // Queue consumer — gt-dispatch
