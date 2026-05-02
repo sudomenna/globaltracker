@@ -45,8 +45,9 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 - **Contexto:** três opções: (a) honeypot + tempo mínimo de submit (sem dependência externa); (b) Cloudflare Turnstile (gratuito, integra com CF Workers, exige snippet no client); (c) reCAPTCHA (Google, dependência externa).
 - **Pergunta:** Turnstile como default obrigatório, ou opt-in por página? Como degrada em rede instável?
 - **Impacto se decidir errado:** spam de bot scrapers em `/v1/lead` desde dia 1 de produção.
-- **Status:** aberta.
-- **Classificação:** **bloqueante** para Fase 2 (Sprint 2) — `/v1/lead` precisa de mitigação ativa antes de ir para produção.
+- **Status:** **FECHADA → ADR-024** (2026-05-01).
+- **Classificação:** bloqueante para produção — implementar no Sprint 2 antes do go-live de `/v1/lead`.
+- **Decisão:** Cloudflare Turnstile como camada principal; honeypot como camada complementar futura (backlog).
 
 ---
 

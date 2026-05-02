@@ -7,6 +7,7 @@ import {
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { launches } from './launch.js';
 import { workspaces } from './workspace.js';
 
 // INV-COST-001: Unique key is a COALESCE expression index — not a simple constraint.
@@ -27,10 +28,9 @@ export const adSpendDaily = pgTable('ad_spend_daily', {
     .notNull()
     .references(() => workspaces.id, { onDelete: 'restrict' }),
 
-  // FK to launches — declared as plain uuid without .references() because
-  // T-1-002 (launches table) runs in parallel; FK will be added via later migration.
-  // TODO: add .references(() => launches.id, { onDelete: 'restrict' }) after launches table confirmed merged
-  launchId: uuid('launch_id'),
+  launchId: uuid('launch_id').references(() => launches.id, {
+    onDelete: 'restrict',
+  }),
 
   // Platform enum — Platform: 'meta' | 'google'
   // chk_ad_spend_daily_platform enforces valid values

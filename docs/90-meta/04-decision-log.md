@@ -597,6 +597,39 @@ Aceito.
 
 ---
 
+## ADR-024 — Bot mitigation em `/v1/lead`: Cloudflare Turnstile
+
+### Status
+Aceito (2026-05-01).
+
+### Contexto
+`/v1/lead` aceita submissões públicas de email/phone. Sem mitigação, bots podem poluir a base de leads desde o dia 1 de produção, gerando ruído nos dispatches para Meta CAPI e Google Ads. OQ-004.
+
+### Alternativas consideradas
+- **(a) Honeypot + timing:** campo oculto + tempo mínimo de preenchimento. Zero dependência externa, mas não bloqueia bots sofisticados que inspecionam o DOM.
+- **(b) Cloudflare Turnstile:** widget CF, gratuito, integra nativamente com Workers via `TURNSTILE_SECRET_KEY` binding. Valida token no server-side em < 5ms. Degrada para "pass" em rede instável (challenge-less mode configurável).
+- **(c) reCAPTCHA v3:** dependência Google, latência extra, complicador LGPD (cookie de terceiro).
+
+### Decisão
+**Cloudflare Turnstile** como camada principal de bot mitigation em `/v1/lead`.
+
+- O `tracker.js` renderiza o widget Turnstile invisível (`0x4AAAAAAA...`) no momento do submit do formulário de lead.
+- O Edge valida `cf-turnstile-response` via `POST https://challenges.cloudflare.com/turnstile/v0/siteverify` antes de inserir em `raw_events`.
+- Token inválido → 403 `{ error: 'bot_detected' }`.
+- Token ausente em `ENVIRONMENT=development` → bypass (dev não precisa do widget).
+- **Honeypot** fica como backlog: campo `<input name="website" style="display:none">` no formulário — implementar em Sprint posterior como camada complementar barata.
+
+### Consequências
+- (+) Proteção efetiva desde o dia 1 de produção sem adicionar fricção ao usuário (Turnstile invisível).
+- (+) Nativo no ecossistema CF — mesma conta, zero custo, latência de validação mínima.
+- (-) Exige snippet extra no `tracker.js` (widget script da CF) e binding `TURNSTILE_SECRET_KEY` no Worker.
+- (-) Honeypot adiado — bots muito simples (sem JS) passam até o honeypot ser implementado. Aceitável: bots sem JS também não disparam eventos Meta/Google úteis.
+
+### Impacta
+`apps/tracker/` (widget), `apps/edge/src/routes/lead.ts` (validação server-side), `wrangler.toml` (binding `TURNSTILE_SECRET_KEY`). Implementação: Sprint 2.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
