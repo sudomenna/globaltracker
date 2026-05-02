@@ -23,6 +23,9 @@ build/
 out/
 .turbo/
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Env / secrets
 .env
 .env.local
