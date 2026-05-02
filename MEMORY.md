@@ -38,28 +38,38 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 1 COMPLETO — pronto para iniciar Sprint 2
-Último commit: 79ec7d4 (branch main)
-Verificação:   typecheck ✓  lint ✓  248 testes passando
+Estado:        SPRINT 2 — Onda 1 completa (commit c4adb3f, 2026-05-02)
+Verificação:   typecheck ✓  lint ✓  329 testes passando
 
 Sprint 0: COMPLETO
-Sprint 1: COMPLETO — todas as 7 ondas entregues
-  Onda 1–5: schema, helpers, middleware
-  Onda 6:   endpoints HTTP (config, events, lead, redirect, admin SAR)
-  Onda 7:   smoke E2E (T-1-021) + load test k6 RNF-001 (T-1-022)
-
-Próximo: Sprint 2 — runtime de tracking
-  Ler docs/80-roadmap/02-sprint-2-runtime-tracking.md para decompor ondas
+Sprint 1: COMPLETO
+Sprint 2: EM ANDAMENTO
+  Onda 1 (COMPLETA):
+    T-2-001/002/003: apps/tracker/ criado — init, cookies, decorate (2.28 KB gz)
+    T-2-007: lead-resolver.ts + attribution.ts + consent.ts
+    T-2-009: middleware Turnstile em /v1/lead (ADR-024)
+  Onda 2 (PRÓXIMA):
+    T-2-004+005+011: tracker.js identify + page + pixel-coexist
+    T-2-006: ingestion processor (raw-events-processor.ts)
+    T-2-008+010: lead_token real emission + Set-Cookie __ftk + middleware validação
+  Onda 3: E2E FLOW-02, FLOW-07, FLOW-08
 ```
 
 ### Pendências operacionais antes de produção
 
 | Item | Status | Ação necessária |
 |---|---|---|
-| Migration 0020 (FK ad_spend_daily→launches) | ~~criada, não aplicada~~ **aplicada** (2026-05-02) | — |
+| Migration 0020 (FK ad_spend_daily→launches) | **aplicada** (2026-05-02) | — |
 | Smoke E2E (T-1-021) | escrita, não executada | descomentar `localConnectionString` no `wrangler.toml` + `wrangler dev` |
 | Secrets produção | gerados localmente, não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET` e `wrangler secret put PII_MASTER_KEY_V1` |
-| Turnstile (ADR-024) | decidido, não implementado | implementar no Sprint 2 antes do go-live de `/v1/lead` |
+| Turnstile secret | middleware implementado (T-2-009) | `wrangler secret put TURNSTILE_SECRET_KEY` antes do go-live |
+
+### [SYNC-PENDING]
+
+| Item | Prazo |
+|---|---|
+| `docs/20-domain/13-mod-tracker.md §12`: `pixel-coexist.ts` não criado ainda (Onda 2) | Onda 2 |
+| `docs/30-contracts/07-module-interfaces.md`: consent.ts usa `workspace_id` explícito vs `ctx` no contrato | Final Sprint 2 |
 
 ### Decisões já tomadas (não reabrir)
 
