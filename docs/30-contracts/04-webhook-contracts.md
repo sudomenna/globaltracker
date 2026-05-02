@@ -19,7 +19,7 @@
 POST /v1/webhook/:platform
 ```
 
-Onde `platform` ∈ `['hotmart', 'kiwify', 'stripe', 'webinarjam', 'typeform', 'tally']`.
+Onde `platform` ∈ `['guru', 'hotmart', 'kiwify', 'stripe', 'webinarjam', 'typeform', 'tally']`.
 
 Headers comuns:
 - Específicos por provedor (assinatura, timestamp).
@@ -31,6 +31,21 @@ Resposta:
 - `5xx` em erros internos — provedor retry.
 
 ## Por provedor
+
+### Digital Manager Guru (`POST /v1/webhook/guru`)
+
+| Item | Detalhe |
+|---|---|
+| **Eventos suportados (Fase 3)** | `webhook_type=transaction` (approved, refunded, chargedback, canceled) + `webhook_type=subscription` (active, canceled) |
+| **Autenticação** | `api_token` (40 chars) no corpo JSON — comparado em tempo constante com `workspace_integrations.guru_api_token`. **Sem header HMAC.** |
+| **Idempotency key** | `event_id = sha256("guru:" + webhook_type + ":" + id + ":" + status)[:32]` |
+| **`platform_event_id`** | `id` (UUID da transação) ou `id` da assinatura |
+| **Mapper** | `mapGuruTransactionToInternal()`, `mapGuruSubscriptionToInternal()` |
+| **Eventos canônicos resultantes** | `Purchase`, `RefundProcessed`, `Chargeback`, `OrderCanceled`, `SubscriptionActivated`, `SubscriptionCanceled` |
+| **Associação a lead** | `source.pptc.lead_public_id` → `contact.email` (hash) → `contact.phone` (hash) |
+| **Valores monetários** | Em centavos (inteiros); dividir por 100 antes de persistir |
+| **E-tickets** | Recebidos com 202, persistidos como `skipped` — não processados na Fase 3 |
+| **Spec completa** | [`docs/40-integrations/13-digitalmanager-guru-webhook.md`](../40-integrations/13-digitalmanager-guru-webhook.md) |
 
 ### Hotmart (`POST /v1/webhook/hotmart`)
 

@@ -81,6 +81,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | [`docs/40-integrations/10-webinarjam-webhook.md`](docs/40-integrations/10-webinarjam-webhook.md) | WebinarJam |
 | [`docs/40-integrations/11-typeform-tally-webhook.md`](docs/40-integrations/11-typeform-tally-webhook.md) | Typeform/Tally |
 | [`docs/40-integrations/12-fx-rates-provider.md`](docs/40-integrations/12-fx-rates-provider.md) | FX rates |
+| [`docs/40-integrations/13-digitalmanager-guru-webhook.md`](docs/40-integrations/13-digitalmanager-guru-webhook.md) | Digital Manager Guru webhook (inbound) |
 
 ### 50 — Business Rules
 | Domínio | Arquivo |

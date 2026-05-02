@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlobalTracker - Live Event Console</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --surface-dark: #1e293b;
+            --primary: #3b82f6;
+            --text-light: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-green: #10b981;
+            --accent-yellow: #f59e0b;
+            --accent-red: #ef4444;
+            --border-color: #334155;
+        }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        .header {
+            padding: 20px 30px;
+            background: var(--surface-dark);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .header h1 { margin: 0 0 15px 0; font-size: 1.5rem; }
+        
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .control-group {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .btn-control {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-light);
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-control:hover { background: rgba(255,255,255,0.05); }
+        .toggle-test {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--accent-yellow);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+        
+        .filters select {
+            background: rgba(0,0,0,0.2);
+            color: var(--text-light);
+            border: 1px solid var(--border-color);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        .stream-container {
+            flex: 1;
+            padding: 20px 30px;
+            overflow-y: auto;
+            background: var(--bg-dark);
+        }
+        .stream-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--accent-green);
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+        .pulse {
+            width: 10px; height: 10px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Console Table */
+        .console-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        .console-table tr {
+            border-bottom: 1px solid var(--border-color);
+        }
+        .console-table tr:hover {
+            background: rgba(255,255,255,0.02);
+        }
+        .console-table td {
+            padding: 16px 10px;
+            vertical-align: top;
+        }
+        
+        .col-time { width: 100px; color: var(--text-muted); }
+        .col-status { width: 40px; font-weight: bold; }
+        .status-ok { color: var(--accent-green); }
+        .status-warn { color: var(--accent-yellow); }
+        .status-err { color: var(--accent-red); }
+        
+        .col-event { width: 150px; font-weight: 600; color: var(--text-light); }
+        .col-source { width: 200px; color: var(--primary); }
+        
+        .col-dispatch { flex: 1; }
+        .badge-dispatch {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            margin-right: 5px;
+            background: rgba(255,255,255,0.1);
+        }
+        .badge-dispatch.ok { color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .badge-dispatch.pause { color: var(--text-muted); border: 1px solid var(--border-color); }
+        .badge-dispatch.err { color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.3); }
+        
+        .col-actions { width: 150px; text-align: right; }
+        .btn-link {
+            color: var(--primary);
+            text-decoration: none;
+            font-size: 0.8rem;
+            margin-left: 10px;
+            font-family: 'Inter', sans-serif;
+            background: none; border: none; cursor: pointer;
+        }
+        .btn-link:hover { text-decoration: underline; }
+        
+        .event-meta {
+            margin-top: 5px;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Console de Eventos ao Vivo</h1>
+        <div class="controls">
+            <div class="control-group">
+                <button class="btn-control">⏸ Pausar Stream</button>
+                <div class="toggle-test">⚠️ Modo Teste: ON</div>
+                <button class="btn-control">🗑️ Limpar</button>
+            </div>
+            <div class="control-group filters">
+                <select><option>Todos os Eventos</option><option>Purchase</option><option>Lead</option></select>
+                <select><option>Todos os Status</option><option>Aceitos</option><option>Rejeitados</option></select>
+            </div>
+        </div>
+    </div>
+
+    <div class="stream-container">
+        <div class="stream-status">
+            <div class="pulse"></div>
+            Conectado — recebendo eventos em tempo real
+        </div>
+
+        <div style="background: rgba(245, 158, 11, 0.1); border-left: 4px solid var(--accent-yellow); padding: 15px; margin-bottom: 20px; font-size: 0.9rem; border-radius: 4px;">
+            <strong>Modo Teste Ativo:</strong> Eventos marcados com flag de teste. O sistema enviará os dados para o Meta CAPI usando o `TEST_EVENT_CODE` e não impactará os dashboards reais. Desliga automaticamente em 56:42.
+        </div>
+
+        <table class="console-table">
+            <tbody>
+                <tr>
+                    <td class="col-time">12:03:24</td>
+                    <td class="col-status status-ok">✓</td>
+                    <td class="col-event">Lead</td>
+                    <td class="col-source">captura-v3</td>
+                    <td class="col-dispatch">
+                        <span class="badge-dispatch ok">Meta ✓</span>
+                        <span class="badge-dispatch ok">GA4 ✓</span>
+                        <span class="badge-dispatch err">GAds ✗</span>
+                        <div class="event-meta">ID: ld_abc123 | t***@gmail.com</div>
+                    </td>
+                    <td class="col-actions">
+                        <button class="btn-link">[Detalhes]</button>
+                        <button class="btn-link">[Replay]</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-time">12:03:21</td>
+                    <td class="col-status status-ok">✓</td>
+                    <td class="col-event">PageView</td>
+                    <td class="col-source">captura-v3</td>
+                    <td class="col-dispatch">
+                        <span class="badge-dispatch pause">Meta ⏸</span>
+                        <span class="badge-dispatch ok">GA4 ✓</span>
+                        <div class="event-meta">lp.cliente.com/captura</div>
+                    </td>
+                    <td class="col-actions">
+                        <button class="btn-link">[Detalhes]</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-time">12:03:18</td>
+                    <td class="col-status status-warn">⚠</td>
+                    <td class="col-event">Purchase</td>
+                    <td class="col-source">webhook-guru</td>
+                    <td class="col-dispatch">
+                        <span class="badge-dispatch pause">Meta ⏸</span>
+                        <span class="badge-dispatch pause">GA4 ⏸</span>
+                        <div class="event-meta">consent_denied (ad_user_data)</div>
+                    </td>
+                    <td class="col-actions">
+                        <button class="btn-link">[Detalhes]</button>
+                        <button class="btn-link">[Replay]</button>
+                    </td>
+                </tr>
+                <tr>
+                    <td class="col-time">12:03:15</td>
+                    <td class="col-status status-ok">✓</td>
+                    <td class="col-event">PageView</td>
+                    <td class="col-source">home-v2</td>
+                    <td class="col-dispatch">
+                        <span class="badge-dispatch pause">Meta ⏸</span>
+                        <span class="badge-dispatch ok">GA4 ✓</span>
+                        <div class="event-meta">lp.cliente.com/home</div>
+                    </td>
+                    <td class="col-actions">
+                        <button class="btn-link">[Detalhes]</button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>

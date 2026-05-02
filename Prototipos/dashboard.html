@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlobalTracker - Dashboard Analítico</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --surface-dark: #1e293b;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --text-light: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-green: #10b981;
+            --accent-purple: #8b5cf6;
+        }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 250px;
+            background-color: var(--surface-dark);
+            padding: 2rem 1rem;
+            box-sizing: border-box;
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+        }
+        .sidebar h2 {
+            color: var(--primary);
+            font-size: 1.5rem;
+            margin-bottom: 2.5rem;
+            text-align: center;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+        .sidebar nav a {
+            display: flex;
+            align-items: center;
+            color: var(--text-muted);
+            text-decoration: none;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+        .sidebar nav a:hover, .sidebar nav a.active {
+            background-color: rgba(59, 130, 246, 0.1);
+            color: var(--primary);
+        }
+        .main-content {
+            flex: 1;
+            padding: 2rem 3rem;
+            overflow-y: auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2.5rem;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--accent-purple));
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: opacity 0.3s ease;
+        }
+        .btn-primary:hover {
+            opacity: 0.9;
+        }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+        .card {
+            background-color: var(--surface-dark);
+            padding: 1.5rem 2rem;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.2);
+            border: 1px solid #334155;
+            position: relative;
+            overflow: hidden;
+        }
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: var(--primary);
+        }
+        .card:nth-child(2)::before { background: var(--accent-green); }
+        .card:nth-child(3)::before { background: var(--accent-purple); }
+        
+        .card h3 {
+            margin: 0 0 10px 0;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .card .value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            color: var(--text-light);
+            margin-bottom: 5px;
+        }
+        .card .trend {
+            color: var(--accent-green);
+            font-size: 0.85rem;
+            font-weight: 500;
+            display: inline-block;
+            background: rgba(16, 185, 129, 0.1);
+            padding: 4px 8px;
+            border-radius: 20px;
+        }
+        .section-title {
+            font-size: 1.2rem;
+            margin-bottom: 1.5rem;
+            color: var(--text-light);
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            background-color: var(--surface-dark);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.2);
+            border: 1px solid #334155;
+        }
+        .data-table th, .data-table td {
+            padding: 16px 20px;
+            text-align: left;
+            border-bottom: 1px solid #334155;
+        }
+        .data-table th {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background-color: rgba(0,0,0,0.2);
+            font-weight: 600;
+        }
+        .data-table tr:last-child td {
+            border-bottom: none;
+        }
+        .data-table tbody tr {
+            transition: background-color 0.2s ease;
+        }
+        .data-table tbody tr:hover {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+        .badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-active {
+            background-color: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+        .badge-paused {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <aside class="sidebar">
+        <h2>GlobalTracker</h2>
+        <nav>
+            <a href="#" class="active">Dashboard</a>
+            <a href="lead_timeline.html">Timeline de Leads</a>
+            <a href="#">Lançamentos</a>
+            <a href="#">Integrações</a>
+            <a href="#">Configurações</a>
+        </nav>
+    </aside>
+    <main class="main-content">
+        <div class="header">
+            <h1>Visão Geral da Campanha (Lançamento Maio)</h1>
+            <button class="btn-primary">+ Nova Integração</button>
+        </div>
+
+        <div class="cards">
+            <div class="card">
+                <h3>Total de Leads</h3>
+                <div class="value">12.450</div>
+                <span class="trend">↑ +14.2%</span>
+            </div>
+            <div class="card">
+                <h3>Custo Por Lead (CPL)</h3>
+                <div class="value">R$ 4,50</div>
+                <span class="trend">↓ -5.1%</span>
+            </div>
+            <div class="card">
+                <h3>Investimento Total (Media)</h3>
+                <div class="value">R$ 56.025</div>
+                <span class="trend" style="color: var(--text-muted); background: rgba(255,255,255,0.05);">Atualizado hoje</span>
+            </div>
+        </div>
+
+        <h2 class="section-title">Desempenho por Anúncio (Top 5)</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Anúncio</th>
+                    <th>Plataforma</th>
+                    <th>Leads Gerados</th>
+                    <th>Custo Total</th>
+                    <th>CPL Calculado</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="font-weight: 500;">Ad_Video_01_Conversao</td>
+                    <td><span style="color: #06b6d4;">Meta Ads</span></td>
+                    <td>3.400</td>
+                    <td>R$ 10.200,00</td>
+                    <td style="color: var(--accent-green); font-weight: 600;">R$ 3,00</td>
+                    <td><span class="badge badge-active">Ativo</span></td>
+                </tr>
+                <tr>
+                    <td style="font-weight: 500;">Search_Fundo_Funil</td>
+                    <td><span style="color: #f59e0b;">Google Ads</span></td>
+                    <td>1.250</td>
+                    <td>R$ 6.250,00</td>
+                    <td style="color: var(--text-light); font-weight: 600;">R$ 5,00</td>
+                    <td><span class="badge badge-active">Ativo</span></td>
+                </tr>
+                <tr>
+                    <td style="font-weight: 500;">Ad_Carrossel_Beneficios</td>
+                    <td><span style="color: #06b6d4;">Meta Ads</span></td>
+                    <td>890</td>
+                    <td>R$ 4.895,00</td>
+                    <td style="color: #ef4444; font-weight: 600;">R$ 5,50</td>
+                    <td><span class="badge badge-paused">Pausado</span></td>
+                </tr>
+            </tbody>
+        </table>
+    </main>
+</body>
+</html>
