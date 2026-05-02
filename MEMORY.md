@@ -43,14 +43,14 @@ Estado:        SPRINT 7 COMPLETO — pronto para iniciar SPRINT 8
 Último commit: 62e5659 (branch main) — MEMORY.md Sprint 7 completed
 Branch:        main (17 commits à frente de origin/main — não pushado)
 Verificação:   typecheck ✓  lint ✓  1297 testes passando (88 test files)
-DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator PENDENTE de apply
+DB Supabase:   migrations 0000–0025 aplicadas ✓
 ```
 
 ### Pendências operacionais antes de produção
 
 | Item | Status | Ação necessária |
 |---|---|---|
-| Migration 0025_orchestrator | **não aplicada** | `supabase db push` ou aplicar manualmente no Supabase dashboard |
+| Migration 0025_orchestrator | ✅ aplicada (2026-05-02) | — |
 | Smoke E2E (T-1-021) | escrita, não executada | `wrangler dev` com `localConnectionString` |
 | Secrets produção (base) | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET PII_MASTER_KEY_V1 TURNSTILE_SECRET_KEY` |
 | Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
