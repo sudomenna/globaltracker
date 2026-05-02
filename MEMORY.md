@@ -26,7 +26,7 @@
 | Sprint | Status | Fonte canônica |
 |---|---|---|
 | Sprint 0 | **completed** (2026-05-01, commit `0d0d42b`) | `docs/80-roadmap/00-sprint-0-foundations.md` |
-| Sprint 1 | planned | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
+| Sprint 1 | **em andamento** (Ondas 1–5 ✓, Onda 6 pendente) | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
 | Sprint 2 | planned | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
 | Sprint 3 | planned | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
 | Sprint 4 | planned | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
@@ -68,7 +68,7 @@ Próximo passo: Sprint 1 — Onda 6 (T-1-016..T-1-020: endpoints HTTP)
 | Pendência | Detalhe |
 |---|---|
 | OQ-004 (bot mitigation) | Bloqueia `/v1/lead` em produção. Recomendação: honeypot+timing. Ver [OQ-004](docs/90-meta/03-open-questions-log.md). |
-| FK `ad_spend_daily.launch_id` | Sem FK por ora (paralelo). Adicionar em T-1-005 ou migration separada. |
+| FK `ad_spend_daily.launch_id` | Sem FK por ora. T-1-005 concluído sem resolver — adicionar em migration separada antes de Sprint 2. |
 
 ### Secrets — onde estão
 
@@ -84,7 +84,7 @@ Configurar após Sprint 1 (precisa do Supabase connection pooler URL). Por enqua
 
 1. Ler este §5 + `git log -5` + `git status`
 2. Abrir `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md`
-3. Identificar Onda 1 do Sprint 1 e despachar subagents
+3. Despachar Onda 6: T-1-016 (`/v1/config`), T-1-017 (`/v1/events`), T-1-018 (`/v1/lead`), T-1-019 (`/r/:slug`), T-1-020 (admin SAR stub) — todas parallel-safe, subagent `globaltracker-edge-author`
 
 ### Decisões já tomadas (não reabrir)
 
@@ -97,7 +97,7 @@ Configurar após Sprint 1 (precisa do Supabase connection pooler URL). Por enqua
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `0d0d42b` — Sprint 0 foundations |
+| Último commit | `73bf1c2` — Sprint 1 Ondas 3–5 (schema completo + helpers + middleware) |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
