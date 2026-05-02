@@ -27,7 +27,7 @@
 |---|---|---|
 | Sprint 0 | **completed** (2026-05-01, commit `0d0d42b`) | `docs/80-roadmap/00-sprint-0-foundations.md` |
 | Sprint 1 | **completed** (2026-05-01, commit `79ec7d4`) | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
-| Sprint 2 | planned | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
+| Sprint 2 | **completed** (2026-05-02, commit 9e01566) | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
 | Sprint 3 | planned | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
 | Sprint 4 | planned | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
 | Sprint 5 | planned | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
@@ -38,8 +38,8 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 2 — Onda 1 completa (commit c4adb3f, 2026-05-02)
-Verificação:   typecheck ✓  lint ✓  329 testes passando
+Estado:        SPRINT 2 COMPLETO (commit 9e01566, 2026-05-02)
+Verificação:   typecheck ✓  lint ✓  431 testes passando
 
 Sprint 0: COMPLETO
 Sprint 1: COMPLETO
@@ -52,7 +52,8 @@ Sprint 2: EM ANDAMENTO
     T-2-004+005+011: tracker.js identify + page + pixel-coexist (3.04 KB gz)
     T-2-006: ingestion processor raw-events-processor.ts (OQ-011: dispatch_jobs aguarda Sprint 3)
     T-2-008+010: lead_token real (issueLeadToken+validateLeadToken) + Set-Cookie __ftk + middleware
-  Onda 3 (PRÓXIMA): E2E FLOW-02, FLOW-07, FLOW-08
+  Onda 3 (COMPLETA, commit 9e01566, 2026-05-02):
+    T-2-012: 34 testes integração — FLOW-02, FLOW-07, FLOW-08
 ```
 
 ### Pendências operacionais antes de produção

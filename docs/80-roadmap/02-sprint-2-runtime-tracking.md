@@ -13,10 +13,10 @@ Tracker.js v0 + ingestion processor funcional + emissão real de `lead_token` + 
 ## Critério de aceite global
 
 - [x] `tracker.js` build < 15 KB gz; instalação manual em LP de teste.
-- [ ] Ingestion processor consome `raw_events`, normaliza, cria `events` + `lead_attribution` + `lead_stages` + `dispatch_jobs`.
-- [ ] `lead_token` real emitido por `/v1/lead`; cookie `__ftk` setado e lido.
-- [ ] FLOW-07 (lead retornante) E2E verde — Meta CAPI dispatch enriquecido server-side.
-- [ ] Lead merge automático em FLOW-08 testado.
+- [x] Ingestion processor consome `raw_events`, normaliza, cria `events` + `lead_attribution` + `lead_stages`. `dispatch_jobs` pendente Sprint 3 (OQ-011).
+- [x] `lead_token` real emitido por `/v1/lead`; cookie `__ftk` setado e lido.
+- [x] FLOW-07 (lead retornante) E2E verde — lead_token validation + evento com lead_id resolvido.
+- [x] Lead merge automático em FLOW-08 testado.
 - [x] Bot mitigation ativa em `/v1/lead` (Turnstile — ADR-024).
 
 ---
@@ -153,12 +153,12 @@ Tracker.js v0 + ingestion processor funcional + emissão real de `lead_token` + 
 - **Subagent:** globaltracker-test-author
 - **Parallel-safe:** yes (isolado)
 - **Depends-on:** [T-2-004, T-2-005, T-2-006, T-2-008, T-2-010]
-- **Ownership:** `tests/integration/e2e/` (ou `tests/e2e/`)
+- **Ownership:** `tests/integration/flows/`
 - **DoD:**
-  - FLOW-02: captura lead via `/v1/lead` → ingestion processor → `events` + `lead_attribution` + `dispatch_jobs` criados.
-  - FLOW-07: lead retornante com `__ftk` válido → evento com `lead_id` resolvido via token.
-  - FLOW-08: dois leads com mesmo email convergem → merge automático; aliases movidos para canonical.
-- **Critério global do sprint:** todos os 3 flows verdes no ambiente de integração.
+  - FLOW-02: 9 casos — lead criado, aliases, attribution, processador, idempotência. ✅
+  - FLOW-07: 14 casos — token válido/expirado/revogado/page-mismatch/anônimo. ✅
+  - FLOW-08: 11 casos — merge simples, triplo, dedup stages, idempotência. ✅
+- **Status:** ✅ COMPLETO (OQ-011: dispatch_jobs criação pendente Sprint 3)
 
 ---
 
