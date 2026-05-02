@@ -32,5 +32,5 @@ ENVIRONMENT = "development"
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "39156b974a274f969ca96d4e0c32bce1"
-# Para dev local: descomentar e preencher com DATABASE_URL do .env.local
+# Para dev local: copie DATABASE_URL do .env.local e descomentar (não commitar com senha preenchida)
 # localConnectionString = "postgresql://postgres:<pass>@db.kaxcmhfaqrxwnpftkslj.supabase.co:5432/postgres"
