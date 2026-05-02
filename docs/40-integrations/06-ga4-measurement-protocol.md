@@ -73,9 +73,11 @@ Validation API (`/mp/collect?...&debug_mode=1`) usada em testes.
 ## Adapter
 
 `apps/edge/src/dispatchers/ga4-mp/`:
-- `client.ts`
-- `mapper.ts`
-- `client-id-resolver.ts`
+- `client.ts` — `sendToGa4`, `classifyGa4Error`, `Ga4Config`, `Ga4Result`
+- `mapper.ts` — `mapEventToGa4Payload`, tipos `Ga4MpPayload`, `Ga4DispatchableEvent`, etc.
+- `client-id-resolver.ts` — `resolveClientId`, `ClientIdUserData`
+- `eligibility.ts` — `checkEligibility`, `EligibilityResult`, `Ga4SkipReason`
+- `index.ts` — re-exporta todos os símbolos públicos
 
 ## Fixtures
 

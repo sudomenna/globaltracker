@@ -45,9 +45,11 @@ OAuth (mesmo que Conversion Upload).
 ## Adapter
 
 `apps/edge/src/dispatchers/google-enhanced-conversions/`:
-- `client.ts`
-- `mapper.ts` (normaliza hash conforme spec Google: lowercase, trim, SHA-256)
-- `eligibility.ts`
+- `client.ts` — `sendEnhancedConversion`, `classifyGoogleEnhancedError`, `GoogleEnhancedConversionsConfig`, `GoogleAdsResult`
+- `mapper.ts` — `mapEventToEnhancedConversion` (normaliza hash: lowercase, trim, SHA-256), tipos de payload
+- `eligibility.ts` — `checkEligibility`, `EligibilityResult`, `SkipReason`
+- `oauth.ts` — `refreshAccessToken`, `OAuthConfig` (OAuth 2.0 compartilhado com Conversion Upload)
+- `index.ts` — re-exporta todos os símbolos públicos
 
 ## Fixtures
 

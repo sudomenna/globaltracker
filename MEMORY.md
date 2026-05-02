@@ -28,8 +28,8 @@
 | Sprint 0 | **completed** (2026-05-01, commit `0d0d42b`) | `docs/80-roadmap/00-sprint-0-foundations.md` |
 | Sprint 1 | **completed** (2026-05-01, commit `79ec7d4`) | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
 | Sprint 2 | **completed** (2026-05-02, commit 9e01566) | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
-| Sprint 3 | **em execução** (iniciado 2026-05-02) | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
-| Sprint 4 | planned | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
+| Sprint 3 | **completed** (2026-05-02) | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
+| Sprint 4 | **em execução** (iniciado 2026-05-02) | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
 | Sprint 5 | planned | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
 | Sprint 6 | planned | `docs/80-roadmap/06-sprint-6-control-plane.md` |
 | Sprint 7 | planned | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
@@ -39,7 +39,7 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 3 EM EXECUÇÃO
+Estado:        SPRINT 4 EM EXECUÇÃO
 Último commit: bd6ff23 (branch main)
 Verificação S2: typecheck ✓  lint ✓  431 testes passando
 
@@ -50,40 +50,76 @@ Sprint 2: COMPLETO
   Onda 2: T-2-004/005/011 (tracker 3.04KB), T-2-006 (processor), T-2-008/010 (lead_token real+middleware)
   Onda 3: T-2-012 (34 testes FLOW-02/07/08)
 
-Sprint 3: EM EXECUÇÃO (2026-05-02)
+Sprint 3: COMPLETO (2026-05-02)
   Pré-onda: schema workspace_integrations (migration 0021) + workspace_integrations.guru_api_token
   Onda 0: dispatch.ts (createDispatchJobs, processDispatchJob, markDeadLetter, requeueDeadLetter, createSkippedJob, computeIdempotencyKey, computeBackoff)
   Onda 1: Meta CAPI dispatcher (T-3-001 mapper, T-3-002 client, T-3-003 eligibility)
   Onda 2: Adapter Digital Manager Guru — mapper + types + rota POST /v1/webhook/guru (T-3-004)
-  Pendente: Dispatch worker CF Queue consumer (T-3-007), backoff+DLQ (T-3-008), E2E FLOW-03/04 (T-3-009)
   OQ-011 FECHADA: resolvida via tabela workspace_integrations + adapter Guru
   REMOVIDO: Hotmart, Kiwify, Stripe → movidos para Sprint 9
+
+Sprint 4: EM EXECUÇÃO (2026-05-02)
+  Onda 1 (Cost ingestor + FX):
+    - apps/edge/src/integrations/fx-rates/ — ECB/Wise/Manual clients + cache + factory
+    - apps/edge/src/lib/fx.ts — getRateForPair (KV cache → provider retry → stale fallback)
+    - apps/edge/src/integrations/meta-insights/client.ts — Meta Ads Insights API client
+    - apps/edge/src/integrations/google-ads-reporting/client.ts — Google Ads Reporting client
+    - apps/edge/src/crons/cost-ingestor.ts — ingestDailySpend (Meta + Google, FX normalização)
+  Onda 2 (Dispatchers Google + GA4):
+    - apps/edge/src/dispatchers/ga4-mp/ — client + mapper + client-id-resolver + eligibility + index
+    - apps/edge/src/dispatchers/google-ads-conversion/ — client + mapper + eligibility + oauth + index
+    - apps/edge/src/dispatchers/google-enhanced-conversions/ — client + mapper + eligibility + oauth + index
+    - apps/edge/src/index.ts — scheduled handler (cost cron) + 3 novos destinations no queue handler
+      (ga4_mp, google_ads_conversion, google_enhancement)
+  Infra:
+    - packages/db/migrations/0022_metabase_views.sql — views SQL para Metabase
+    - docs/80-roadmap/metabase-setup.md — guia de setup Metabase
+  OQ-001 FECHADA: ECB como provider default (implementado)
+  OQ-003 FECHADA: opção B — mintar client_id derivado de __fvid (implementado)
+  OQ-012 ABERTA: GA4 client_id para comprador sem passagem pela LP (ver OQ-012 no log)
 ```
 
-### Escopo Sprint 3 — contexto chave
+### Escopo Sprint 4 — contexto chave
 
-**Adapter Guru** (`POST /v1/webhook/guru`):
-- Autenticação por `api_token` no body JSON (sem HMAC) — diferente de todos os outros provedores
-- Resolve `workspace_id` via lookup em `workspace_integrations.guru_api_token`
-- Exige nova coluna `guru_api_token` em `workspace_integrations` (migration + schema)
-- Spec completa: `docs/40-integrations/13-digitalmanager-guru-webhook.md`
-- Contrato: `docs/30-contracts/04-webhook-contracts.md`
+**Cost ingestor** (`apps/edge/src/crons/cost-ingestor.ts`):
+- `ingestDailySpend(date, env, db, fetchFn?, sleepFn?)` — nunca lança, erros em `errors[]`
+- Busca Meta Insights (granularity=`ad`) + Google Ads Reporting (granularity=`adset`)
+- Normaliza para BRL via `getRateForPair` (ECB default, stale fallback, KV cache)
+- Upsert via constraint `uq_ad_spend_daily_natural_key` (INV-COST-001)
+- Scheduled handler no `index.ts` — 17:30 UTC diário
 
-**OQ-011** — dispatch_jobs no ingestion processor precisa de tabela de config de integrações por workspace (ponto de entrada para T-3-001+).
+**FX rates** (`apps/edge/src/lib/fx.ts`):
+- `getRateForPair(from, to, date, env, fetchFn?, sleepFn?): Promise<FxRateResult>`
+- Fluxo: KV cache → provider (3× retry, backoff 1s/2s/4s) → stale KV → `FxRatesUnavailableError`
+- Provider selecionado via `FX_RATES_PROVIDER` env (`ecb` default / `wise` / `manual`)
+
+**Dispatchers Google** (Sprint 4 Onda 2):
+- `ga4_mp` — eligibility (consent analytics + measurementId), mapper (mintar client_id de __fvid), client (POST MP)
+- `google_ads_conversion` — eligibility (click ID + consent ad_user_data), mapper, OAuth refresh, client
+- `google_enhancement` — eligibility (order_id + 24h + email/phone hash + consent), mapper (SHA-256 normalized), OAuth, client
+- Todos roteados no queue handler de `index.ts`
+
+**OQ-012** — GA4 client_id para comprador direto no checkout (sem LP): default é skip via eligibility.
+Ver `docs/90-meta/03-open-questions-log.md#OQ-012`.
 
 ### Pendências operacionais antes de produção
 
 | Item | Status | Ação necessária |
 |---|---|---|
 | Migration 0020 (FK ad_spend_daily→launches) | **aplicada** | — |
+| Migration 0022 (Metabase views) | implementada, não aplicada em prod | `supabase db push` |
 | Smoke E2E (T-1-021) | escrita, não executada | descomentar `localConnectionString` no `wrangler.toml` + `wrangler dev` |
-| Secrets produção | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET`, `PII_MASTER_KEY_V1`, `TURNSTILE_SECRET_KEY` |
+| Secrets produção (base) | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET`, `PII_MASTER_KEY_V1`, `TURNSTILE_SECRET_KEY` |
+| Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID`, `META_ADS_ACCESS_TOKEN`, `GOOGLE_ADS_CUSTOMER_ID`, `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_CURRENCY`, `GA4_MEASUREMENT_ID`, `GA4_API_SECRET`, `FX_RATES_PROVIDER` |
 
 ### Decisões já tomadas (não reabrir)
 
 - ADR-001 a ADR-024 em `docs/90-meta/04-decision-log.md`
+- OQ-001 FECHADA: ECB como provider FX default
+- OQ-003 FECHADA: mintar client_id GA4 de __fvid (opção B)
 - OQ-007 FECHADA: `lead_token` stateful (tabela `lead_tokens`)
 - OQ-004 FECHADA → ADR-024: Cloudflare Turnstile em `/v1/lead`
+- OQ-011 FECHADA: `workspace_integrations` + `createDispatchJobs` implementados
 
 ### Secrets — onde estão
 
@@ -94,8 +130,8 @@ Sprint 3: EM EXECUÇÃO (2026-05-02)
 ### Como retomar em nova sessão
 
 1. Ler este §5 + `git log -5` + `git status`
-2. Abrir `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md`
-3. Verificar OQ-011 — config de integrações por workspace (depende do adapter Guru e do Meta CAPI)
+2. Abrir `docs/80-roadmap/04-sprint-4-analytics-google.md`
+3. Verificar OQ-012 — GA4 client_id para comprador direto no checkout (não bloqueia Sprint 4)
 4. Decompor em ondas + despachar subagents conforme `CLAUDE.md §2`
 
 ## §6 Ambiente operacional

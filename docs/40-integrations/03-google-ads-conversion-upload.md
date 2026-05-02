@@ -64,9 +64,11 @@ OAuth refresh token é por workspace (em `integration_credentials` quando multi-
 ## Adapter
 
 `apps/edge/src/dispatchers/google-ads-conversion/`:
-- `client.ts` — Google Ads API client com OAuth refresh
-- `mapper.ts`
-- `eligibility.ts`
+- `client.ts` — `sendConversionUpload`, `classifyGoogleAdsError`, `GoogleAdsConfig`, `GoogleAdsResult`
+- `mapper.ts` — `mapEventToConversionUpload`, `formatConversionDateTime`, tipos de payload
+- `eligibility.ts` — `checkEligibility`, `EligibilityResult`, `SkipReason`
+- `oauth.ts` — `refreshAccessToken`, `OAuthConfig` (OAuth 2.0 com refresh token)
+- `index.ts` — re-exporta todos os símbolos públicos
 
 ## Fixtures
 

@@ -151,6 +151,7 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-021 | Replay protection com TTL de 7 dias alinhado com janela CAPI; purge incremental | aceito |
 | ADR-022 | Stripe webhook signature: `constructEvent` + tolerância 5min + comparação tempo-constante | aceito |
 | ADR-023 | Page token rotation com janela de overlap configurável (default 14 dias); status `active`/`rotating`/`revoked` | aceito |
+| ADR-024 | Cloudflare Turnstile como camada principal de bot mitigation em `/v1/lead`; honeypot como camada complementar futura | aceito |
 
 ## OQ-*
 
@@ -158,13 +159,18 @@ Em `90-meta/03-open-questions-log.md`.
 
 | ID | Status | Bloqueante? |
 |---|---|---|
-| OQ-001 | aberta | pode esperar |
+| OQ-001 | **fechada** (Sprint 4) | pode esperar |
 | OQ-002 | aberta | pode esperar |
-| OQ-003 | aberta | pode esperar |
-| OQ-004 | aberta | bloqueante (Fase 2) |
+| OQ-003 | **fechada** (Sprint 4) | pode esperar |
+| OQ-004 | **fechada → ADR-024** (Sprint 2) | bloqueante (resolvida) |
 | OQ-005 | aberta | pode esperar |
 | OQ-006 | aberta | pode esperar |
-| OQ-007 | aberta | pode esperar |
+| OQ-007 | **fechada** (Sprint 2) | pode esperar |
+| OQ-008 | aberta | pode esperar |
+| OQ-009 | aberta | pode esperar |
+| OQ-010 | aberta | pode esperar |
+| OQ-011 | **fechada** (Sprint 3) | bloqueante (resolvida) |
+| OQ-012 | aberta | pode esperar (antes Sprint 6) |
 
 ## T-*
 

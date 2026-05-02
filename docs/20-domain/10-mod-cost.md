@@ -78,9 +78,18 @@ Sem state machine — `ad_spend_daily` é tabela de fatos append/upsert. Modific
 
 ## 10. Contratos expostos
 
-- `ingestDailySpend(date, ctx): Promise<{ingested: number, errors: ErrorReport[]}>`
-- `getNormalizedSpend(launch_id, date_range, granularity, ctx): Promise<AdSpendDaily[]>`
-- `reprocessFxRetroactive(workspace_id, days_back, ctx): Promise<{updated: number}>`
+- `ingestDailySpend(date, env: CostIngestorEnv, db: Db, fetchFn?: typeof fetch, sleepFn?: (ms: number) => Promise<void>): Promise<{ingested: number, errors: string[]}>`
+  - `env` — bindings do Worker (credenciais Meta/Google, KV para cache FX, variáveis `FX_RATES_*`)
+  - `db` — cliente Drizzle injetado (DI para testabilidade)
+  - `fetchFn` — fetch injetável (opcional; default = global `fetch`)
+  - `sleepFn` — sleep injetável para backoff de FX (opcional; testes passam no-op)
+  - Nunca lança exceção — erros por plataforma são coletados em `errors[]`
+- `getRateForPair(from, to, date, env: FxEnv, fetchFn?, sleepFn?): Promise<FxRateResult>` — em `apps/edge/src/lib/fx.ts`
+  - Fluxo: KV cache → provider com retry (3×, backoff 1s/2s/4s) → stale fallback → `FxRatesUnavailableError`
+- `normalizeSpendCents(spendCents: number, rate: number): number` — em `apps/edge/src/lib/fx.ts`
+  - `Math.round(spendCents * rate)` — INV-COST-003
+- `getNormalizedSpend(launch_id, date_range, granularity, ctx): Promise<AdSpendDaily[]>` — planejado (Sprint 6)
+- `reprocessFxRetroactive(workspace_id, days_back, ctx): Promise<{updated: number}>` — planejado (Sprint 6)
 
 ## 11. Eventos de timeline emitidos
 
