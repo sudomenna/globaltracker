@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Request contains an invalid argument.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+      {
+        "errorCode": {
+          "conversionUploadError": "ORDER_ID_NOT_FOUND"
+        },
+        "message": "The provided order_id ORD-2024-UNKNOWN does not match any existing conversion. Ensure the original conversion was tagged with the same order_id.",
+        "trigger": {
+          "stringValue": "ORD-2024-UNKNOWN"
+        }
+      }
+    ]
+  }
+}

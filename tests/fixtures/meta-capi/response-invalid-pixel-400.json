@@ -1,0 +1,10 @@
+{
+  "error": {
+    "message": "Invalid parameter",
+    "type": "OAuthException",
+    "code": "invalid_pixel_id",
+    "error_user_title": "Invalid Pixel ID",
+    "error_user_msg": "The Pixel ID provided is not valid or does not belong to this app.",
+    "fbtrace_id": "Xk9pQrNvMzTw2BcDeF4gH"
+  }
+}

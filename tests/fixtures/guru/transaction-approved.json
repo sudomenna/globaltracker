@@ -1,0 +1,43 @@
+{
+  "webhook_type": "transaction",
+  "api_token": "test_token_0000000000000000000000000000000000",
+  "id": "9081534a-7512-4dab-9172-218c1dc1f263",
+  "type": "producer",
+  "status": "approved",
+  "created_at": "2024-01-15T10:30:00Z",
+  "confirmed_at": "2024-01-15T10:31:00Z",
+  "contact": {
+    "name": "Comprador Teste",
+    "email": "comprador@example.com",
+    "doc": "12345678900",
+    "phone_number": "999999999",
+    "phone_local_code": "55"
+  },
+  "payment": {
+    "method": "credit_card",
+    "total": 29700,
+    "gross": 29700,
+    "net": 25245,
+    "currency": "BRL",
+    "installments": {
+      "qty": 1,
+      "value": 29700
+    }
+  },
+  "product": {
+    "id": "prod-uuid-0000-0001",
+    "name": "Curso Teste XYZ",
+    "type": "product",
+    "offer": {
+      "id": "offer-uuid-0000-0001",
+      "name": "Oferta Principal"
+    }
+  },
+  "source": {
+    "utm_source": "facebook",
+    "utm_campaign": "camp_123",
+    "utm_medium": "paid",
+    "utm_content": "ad_456",
+    "utm_term": null
+  }
+}

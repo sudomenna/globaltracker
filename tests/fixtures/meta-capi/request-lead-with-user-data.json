@@ -1,0 +1,12 @@
+{
+  "event_name": "Lead",
+  "event_time": 1714608000,
+  "action_source": "website",
+  "event_id": "evt_01HXK2N3P4QR5ST6UV7WX8YZ90",
+  "user_data": {
+    "em": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+    "fbc": "fb.1.1714608000000.AbCdEfGhIjKlMn",
+    "client_ip_address": "203.0.113.42",
+    "client_user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+  }
+}

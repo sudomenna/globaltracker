@@ -1,0 +1,40 @@
+{
+  "webhook_type": "transaction",
+  "api_token": "test_token_0000000000000000000000000000000000",
+  "id": "a4c7b912-0f11-4ecc-8d73-5b2e9f3c1a08",
+  "type": "producer",
+  "status": "refunded",
+  "created_at": "2024-01-20T14:00:00Z",
+  "confirmed_at": "2024-01-20T14:01:00Z",
+  "contact": {
+    "name": "Comprador Reembolso",
+    "email": "reembolso@example.com",
+    "doc": "98765432100",
+    "phone_number": "988887777",
+    "phone_local_code": "55"
+  },
+  "payment": {
+    "method": "pix",
+    "total": 9700,
+    "gross": 9700,
+    "net": 8245,
+    "currency": "BRL",
+    "installments": null
+  },
+  "product": {
+    "id": "prod-uuid-0000-0002",
+    "name": "Workshop Teste ABC",
+    "type": "product",
+    "offer": {
+      "id": "offer-uuid-0000-0002",
+      "name": "Oferta Padrão"
+    }
+  },
+  "source": {
+    "utm_source": "google",
+    "utm_campaign": "camp_456",
+    "utm_medium": "cpc",
+    "utm_content": null,
+    "utm_term": "curso online"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "client_id": "GA1.1.12345678.1234567890",
+  "user_id": "lead_pub_01HXK2N3P4QR5ST6UV7WX8YZ90",
+  "timestamp_micros": 1714608000000000,
+  "events": [
+    {
+      "name": "purchase",
+      "params": {
+        "value": 197.0,
+        "currency": "BRL",
+        "transaction_id": "ORD-2024-001",
+        "session_id": "session_abc123"
+      }
+    }
+  ],
+  "consent": {
+    "ad_user_data": "granted",
+    "ad_personalization": "granted"
+  }
+}

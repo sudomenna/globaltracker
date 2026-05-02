@@ -1,0 +1,24 @@
+{
+  "webhook_type": "subscription",
+  "api_token": "test_token_0000000000000000000000000000000000",
+  "id": "sub_CXBFk3XULpdmnh5Y",
+  "internal_id": "2bc704gf-5477-598c-9bd4-gg5942975a30",
+  "subscription_code": "sub_0DGzXUvQxYeKVjlT",
+  "name": "Plano Anual Teste",
+  "last_status": "canceled",
+  "provider": "guru",
+  "payment_method": "boleto",
+  "charged_every_days": 365,
+  "subscriber": {
+    "id": "017e2f48-ef7b-5g5e-9382-02fde1e76fd7",
+    "name": "Ex-Assinante Teste",
+    "email": "cancelado@example.com",
+    "doc": "11122233344"
+  },
+  "current_invoice": {
+    "id": "0c82dgc3-eb3f-55e6-03df-e94560edf96g",
+    "status": "overdue",
+    "value": 19700,
+    "cycle": 4
+  }
+}

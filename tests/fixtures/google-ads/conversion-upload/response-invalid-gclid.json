@@ -1,0 +1,29 @@
+{
+  "results": [],
+  "partialFailureError": {
+    "code": 3,
+    "message": "Multiple errors in 'errors' field.",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.ads.googleads.v17.errors.GoogleAdsFailure",
+        "errors": [
+          {
+            "errorCode": {
+              "conversionUploadError": "INVALID_GCLID"
+            },
+            "message": "The gclid is not valid.",
+            "location": {
+              "fieldPathElements": [
+                {
+                  "fieldName": "conversions",
+                  "index": 0
+                }
+              ]
+            }
+          }
+        ],
+        "requestId": "req-id-invalid-gclid-001"
+      }
+    ]
+  }
+}

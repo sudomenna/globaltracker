@@ -1,0 +1,19 @@
+{
+  "conversionAdjustments": [
+    {
+      "conversionAction": "customers/1234567890/conversionActions/987654321",
+      "orderId": "ORD-2024-001",
+      "adjustmentDateTime": "2024-05-02 12:30:00+00:00",
+      "adjustmentType": "ENHANCEMENT",
+      "userIdentifiers": [
+        {
+          "hashedEmail": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+        },
+        {
+          "hashedPhoneNumber": "b3a8e0e1f9ab1bfe3a36f231f676f78bb28a2d0b2a6f4e8f3d3f4a2e9c1d7b5e"
+        }
+      ]
+    }
+  ],
+  "partialFailure": true
+}

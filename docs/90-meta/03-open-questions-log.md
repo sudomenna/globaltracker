@@ -12,7 +12,8 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 - **Contexto:** sistema converte `spend_cents` em `spend_cents_normalized` para ROAS cross-currency. Provedores candidatos: ECB (gratuito, oficial, atualização diária), Wise (API paga, taxa real de mercado), manual (operador insere).
 - **Pergunta:** qual provedor é default para Fase 3? Como tratar workspaces sem internet ao provedor escolhido?
 - **Impacto se decidir errado:** ROAS impreciso, retrabalho em `MOD-COST`.
-- **Status:** aberta.
+- **Status:** **FECHADA — Sprint 4 (2026-05-02).**
+- **Decisão:** ECB como provider default (`FX_RATES_PROVIDER=ecb`). Moeda base de normalização: BRL (já default em `workspaces.fx_normalization_currency`). Sistema implementa os 3 providers (ecb/wise/manual); ECB suficiente para dashboards de marketing. Wise reservado para caso de precisão financeira contábil futura.
 - **Classificação:** pode esperar (relevante apenas na Fase 3 — Sprint 4).
 
 ---
@@ -34,7 +35,8 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 - **Contexto:** se a LP não tem GA4 client-side, sistema mintera `client_id` próprio derivado de `__fvid`. Mas isso quebra continuidade com qualquer GA4 web property pré-existente do operador. Alternativas: (a) só dispatchar GA4 quando `_ga` cookie presente; (b) mintar próprio aceitando descontinuidade; (c) deixar configurável por workspace.
 - **Pergunta:** qual default? Documentar trade-off ao operador?
 - **Impacto se decidir errado:** relatórios GA4 server-side descolados de relatórios web do cliente.
-- **Status:** aberta.
+- **Status:** **FECHADA — Sprint 4 (2026-05-02). Decisão: opção B.**
+- **Decisão:** mintar `client_id` próprio derivado de `__fvid` no formato compatível GA4 (`GA1.1.<8digits>.<10digits>`). Trade-off documentado na UI do Control Plane. Ver OQ-012 para caso edge de checkout direto via plataforma (Digital Manager Guru) sem passagem pela LP.
 - **Classificação:** pode esperar (Fase 3 — Sprint 4).
 
 ---
@@ -127,6 +129,22 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 - **Decisão:** Alternativa B foi adotada no Sprint 2 (skip silencioso). No Sprint 3, implementada a tabela `workspace_integrations` com coluna `guru_api_token` (migration 0021) e `createDispatchJobs` em `apps/edge/src/lib/dispatch.ts`. Processor pode agora criar jobs reais a partir da config de integração por workspace.
 - **Status:** **FECHADA — Sprint 3 (2026-05-02).**
 - **Classificação:** bloqueante para feature completa de dispatch — resolvida.
+
+---
+
+## OQ-012 — GA4 client_id para comprador que chega direto no checkout do Digital Manager Guru
+
+- **Origem:** decisão de OQ-003 (Sprint 4, 2026-05-02).
+- **Contexto:** o fluxo principal é: visitante acessa LP → tracker.js grava `__fvid` + captura `_ga` cookie → clica no CTA → vai para o checkout do Guru → compra. Nesse fluxo, o `client_id` GA4 está disponível (via `_ga` ou via `__fvid` mintado).
+  O caso edge é: comprador cai **direto na página de checkout do Guru** sem passar pela LP (ex.: link direto compartilhado, remarketing direto para checkout, busca orgânica do produto). Nesse cenário, o tracker.js nunca rodou, `__fvid` não existe, `_ga` pode não existir, e o GlobalTracker não tem `client_id` para associar à compra.
+- **Pergunta:** como tratar compras via webhook Guru onde não há `client_id` GA4 disponível?
+  - Alternativa A: dispatchar GA4 com `client_id` gerado aleatoriamente (UUID) — cria sessão fantasma no GA4, distorce relatórios mas não perde o evento de Purchase.
+  - Alternativa B: skip do dispatch GA4 para essa compra com `skip_reason='no_client_id'` — compra não aparece no GA4, mas não distorce relatórios.
+  - Alternativa C: tentar correlacionar por email hash com uma visita anterior na LP (lookup em `events` por `lead_id + event_name=PageView`) — usa o `client_id` da visita anterior se encontrada dentro de uma janela de tempo.
+  - Alternativa D: configurável por workspace — operador decide.
+- **Impacto:** volume de compras "diretas" pode ser baixo no início, mas cresce com remarketing e indicações. Decisão errada distorce ROAS no GA4.
+- **Status:** aberta — avaliar após testes em produção (pós-Sprint 9, com dados reais de comportamento).
+- **Classificação:** não bloqueia Sprint 4 (implementação atual usa opção B como default implícito — sem `client_id`, dispatch GA4 é skipped por eligibility). Decidir antes de Sprint 6 (Control Plane) quando operador poderá ver a taxa de skip.
 
 ---
 

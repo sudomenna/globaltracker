@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "gclidDateRangePair": {
+        "gclid": "TeSter-gclid-ABC123XYZabc456def789",
+        "conversionDateTime": "2024-05-02 05:05:00+00:00"
+      },
+      "userIdentifiers": [],
+      "conversionAction": "customers/1234567890/conversionActions/987654321",
+      "adjustedValue": 197.0,
+      "adjustedValueCurrencyCode": "BRL"
+    }
+  ]
+}

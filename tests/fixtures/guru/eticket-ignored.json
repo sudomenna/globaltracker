@@ -1,0 +1,15 @@
+{
+  "webhook_type": "eticket",
+  "api_token": "test_token_0000000000000000000000000000000000",
+  "id": "eti_c7a1b2d3-e4f5-6789-abcd-ef0123456789",
+  "event_id": "evt_test_000001",
+  "attendee": {
+    "name": "Participante Teste",
+    "email": "participante@example.com"
+  },
+  "webinar": {
+    "id": "web_000001",
+    "name": "Webinar Teste"
+  },
+  "issued_at": "2024-02-10T18:00:00Z"
+}

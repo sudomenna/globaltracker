@@ -1,0 +1,34 @@
+import { pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { workspaces } from './workspace.js';
+
+// BR-PRIVACY-001: guru_api_token é segredo externo (token do painel Digital Manager Guru).
+// Não logar, não incluir em respostas de API, não serializar em audit payloads.
+// BR-WEBHOOK-001 (Guru inbound): token é validado no Edge antes de processar payload.
+
+export const workspaceIntegrations = pgTable('workspace_integrations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+
+  // INV-WI-001: one-to-one com workspace (uq_workspace_integrations_workspace_id).
+  // onDelete cascade: remover workspace remove credenciais associadas.
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .references(() => workspaces.id, { onDelete: 'cascade' })
+    .unique(),
+
+  // Digital Manager Guru webhook authentication token.
+  // chk_workspace_integrations_guru_token_length: quando não nulo, length = 40.
+  // Nullable — workspace sem integração Guru simplesmente não tem valor aqui.
+  // Futuras colunas por provider (meta_capi_token, ga4_api_secret, etc.)
+  // devem seguir o mesmo padrão: nullable, com check de formato específico.
+  guruApiToken: text('guru_api_token'),
+
+  createdAt: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type WorkspaceIntegration = typeof workspaceIntegrations.$inferSelect;
+export type NewWorkspaceIntegration = typeof workspaceIntegrations.$inferInsert;

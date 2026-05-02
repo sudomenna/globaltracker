@@ -1,0 +1,18 @@
+{
+  "event_name": "Purchase",
+  "event_time": 1714608300,
+  "action_source": "website",
+  "event_id": "evt_02IYL3O4Q5RS6TU7VW8XY9ZA01",
+  "user_data": {
+    "em": "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3",
+    "ph": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+    "fbp": "fb.1.1714600000000.1234567890",
+    "client_ip_address": "198.51.100.77",
+    "client_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+  },
+  "custom_data": {
+    "value": 197.0,
+    "currency": "BRL",
+    "order_id": "ORD-2024-00042"
+  }
+}

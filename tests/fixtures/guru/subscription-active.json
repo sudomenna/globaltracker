@@ -1,0 +1,24 @@
+{
+  "webhook_type": "subscription",
+  "api_token": "test_token_0000000000000000000000000000000000",
+  "id": "sub_BOAEj2WTKoclmg4X",
+  "internal_id": "9ad693fe-4366-487b-8ac3-ff4831864929",
+  "subscription_code": "sub_9CFyWTuPwXdJUikS",
+  "name": "Plano Mensal Teste",
+  "last_status": "active",
+  "provider": "guru",
+  "payment_method": "credit_card",
+  "charged_every_days": 30,
+  "subscriber": {
+    "id": "906d1e37-de6a-4f4d-8271-91ecd0d65ec6",
+    "name": "Assinante Teste",
+    "email": "assinante@example.com",
+    "doc": "01234567890"
+  },
+  "current_invoice": {
+    "id": "9b71cfb2-da2e-44d5-92ce-d83459dec85f",
+    "status": "paid",
+    "value": 2937,
+    "cycle": 1
+  }
+}

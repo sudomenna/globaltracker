@@ -1,0 +1,13 @@
+{
+  "conversions": [
+    {
+      "conversion_action": "customers/1234567890/conversionActions/987654321",
+      "conversion_date_time": "2024-05-02 05:05:00+00:00",
+      "gclid": "TeSter-gclid-ABC123XYZabc456def789",
+      "conversion_value": 197.0,
+      "currency_code": "BRL",
+      "order_id": "ORD-2024-00042"
+    }
+  ],
+  "partialFailure": true
+}
