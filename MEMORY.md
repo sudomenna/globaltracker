@@ -32,16 +32,16 @@
 | Sprint 4 | **completed** (2026-05-02, commit c1e4abc) | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
 | Sprint 5 | **completed** (2026-05-02, commit 3757690) | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
 | Sprint 6 | **completed** (2026-05-02, commit e613140) | `docs/80-roadmap/06-sprint-6-control-plane.md` |
-| Sprint 7 | **em andamento** (onda 2/5 concluída) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
+| Sprint 7 | **completed** (2026-05-02, commit bd44b7f) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | planned | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 | Sprint 9 | planned | `docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 7 — onda 3 completa, PRONTO PARA ONDA 4
-Último commit: 292fdec (branch main) — Sprint 7 onda 3
-Verificação:   typecheck ✓  lint ✓  1245 testes passando
+Estado:        SPRINT 7 — COMPLETO (todas as 5 ondas)
+Último commit: bd44b7f (branch main) — Sprint 7 onda 5 (BR audit fixes)
+Verificação:   typecheck ✓  lint ✓  1297 testes passando
 DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator PENDENTE de apply
 ```
 
@@ -53,8 +53,8 @@ DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator PENDENTE
 | 1 | T-7-001, T-7-002, T-7-003 | ✓ | fee6142 |
 | 2 | T-7-004, T-7-005, T-7-006 | ✓ | 81e8388 |
 | 3 | T-7-007, T-7-008, T-7-009 | ✓ | 292fdec |
-| 4 | T-7-010 | **pendente** | — |
-| 5 | T-7-011 | pendente | — |
+| 4 | T-7-010 | ✓ | 2ebaf3a |
+| 5 | T-7-011 | ✓ | bd44b7f |
 
 ### O que foi entregue (histórico completo)
 
