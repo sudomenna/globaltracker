@@ -38,15 +38,17 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 1 — Ondas 1 e 2 concluídas; pronto para Onda 3
+Estado:        SPRINT 1 — Ondas 1–5 concluídas; pronto para Onda 6
 Sprint 0:      COMPLETO — monorepo, packages/shared, packages/db, apps/edge, CI, Supabase
 Sprint 1:      EM ANDAMENTO
   Onda 1 ✓    T-1-001 — Schema MOD-WORKSPACE + RLS (workspaces, workspace_members, workspace_api_keys)
   Onda 2 ✓    T-1-002 (MOD-LAUNCH), T-1-004 (MOD-IDENTITY x5), T-1-010 (MOD-COST), T-1-012 (MOD-AUDIT)
-  Migrations: aplicadas no Supabase (supabase db push) — 5 migrations (0001..0012)
-  Onda 3:     T-1-003, T-1-006, T-1-007, T-1-009, T-1-011, T-1-013 (próxima)
+  Migrations: 0001..0019 aplicadas no Supabase (supabase db push — 2026-05-01)
+  Onda 3 ✓    T-1-003 (MOD-PAGE), T-1-006 (MOD-FUNNEL), T-1-007 (MOD-ATTRIBUTION), T-1-009 (MOD-AUDIENCE), T-1-011 (MOD-ENGAGEMENT), T-1-013 (helpers PII/idempotency/clamp/replay)
+  Onda 4 ✓    T-1-005 (MOD-EVENT), T-1-008 (MOD-DISPATCH), T-1-014 (lead-token + cookies)
+  Onda 5 ✓    T-1-015 (middleware: auth-public-token, cors, rate-limit, sanitize-logs)
 Repo Git:      https://github.com/sudomenna/globaltracker (privado, branch main)
-Próximo passo: Sprint 1 — Onda 3
+Próximo passo: Sprint 1 — Onda 6 (T-1-016..T-1-020: endpoints HTTP)
 ```
 
 ### Ondas Sprint 1 — status
@@ -55,9 +57,9 @@ Próximo passo: Sprint 1 — Onda 3
 |---|---|---|
 | 1 | T-1-001 | ✓ DONE |
 | 2 | T-1-002, T-1-004, T-1-010, T-1-012 | ✓ DONE |
-| 3 | T-1-003, T-1-006, T-1-007, T-1-009, T-1-011, T-1-013 | próxima |
-| 4 | T-1-005, T-1-008, T-1-014 | pendente |
-| 5 | T-1-015 | pendente |
+| 3 | T-1-003, T-1-006, T-1-007, T-1-009, T-1-011, T-1-013 | ✓ DONE |
+| 4 | T-1-005, T-1-008, T-1-014 | ✓ DONE |
+| 5 | T-1-015 | ✓ DONE |
 | 6 | T-1-016–T-1-020 | pendente |
 | 7 | T-1-021, T-1-022 | pendente |
 

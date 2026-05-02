@@ -11,6 +11,9 @@ importers:
       '@biomejs/biome':
         specifier: ^1.9.4
         version: 1.9.4
+      hono:
+        specifier: ^4.0.0
+        version: 4.12.16
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
