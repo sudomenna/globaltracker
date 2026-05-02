@@ -26,6 +26,11 @@ import {
 import { type GetAllowedDomainsFn, corsMiddleware } from './middleware/cors.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { sanitizeLogs } from './middleware/sanitize-logs.js';
+import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
+import { configRoute } from './routes/config.js';
+import { eventsRoute } from './routes/events.js';
+import { leadRoute } from './routes/lead.js';
+import { redirectRoute } from './routes/redirect.js';
 
 // ---------------------------------------------------------------------------
 // Bindings
@@ -99,53 +104,45 @@ const getAllowedDomains: GetAllowedDomainsFn = async (_pageId) => {
   return [];
 };
 
-// /v1/events — 100 req/min/workspace
-app.post(
+// ---------------------------------------------------------------------------
+// Public route middleware — applied before sub-router handlers via .use()
+// Middleware order per path: auth → cors → rate-limit
+// ---------------------------------------------------------------------------
+
+app.use(
   '/v1/events',
   authPublicToken(lookupPageToken),
   corsMiddleware({ mode: 'public', getAllowedDomains }),
   rateLimit({ routeGroup: 'events' }),
-  (c) => {
-    // Stub — handler implemented by edge-author in T-1-016 / T-1-017
-    const requestId = c.get('request_id');
-    return c.json({ status: 'stub', request_id: requestId }, 202);
-  },
 );
-
-// /v1/lead — 20 req/min/workspace
-app.post(
+app.use(
   '/v1/lead',
   authPublicToken(lookupPageToken),
   corsMiddleware({ mode: 'public', getAllowedDomains }),
   rateLimit({ routeGroup: 'lead' }),
-  (c) => {
-    // Stub — handler implemented by edge-author
-    const requestId = c.get('request_id');
-    return c.json({ status: 'stub', request_id: requestId }, 202);
-  },
 );
-
-// /v1/config — 60 req/min/workspace (accepts rotating tokens too)
-app.get(
-  '/v1/config/:launch_public_id/:page_public_id',
+app.use(
+  '/v1/config/*',
   authPublicToken(lookupPageToken),
   corsMiddleware({ mode: 'public', getAllowedDomains }),
   rateLimit({ routeGroup: 'config' }),
-  (c) => {
-    // Stub — handler implemented by edge-author
-    const requestId = c.get('request_id');
-    return c.json({ status: 'stub', request_id: requestId }, 200);
-  },
 );
 
-// OPTIONS preflight for public routes — handled by CORS middleware
-// Hono needs an explicit OPTIONS handler per path or a wildcard
+// OPTIONS preflight — must be before route mounts so CORS headers are set
 app.options(
   '/v1/*',
   corsMiddleware({ mode: 'public', getAllowedDomains }),
-  () => {
-    return new Response(null, { status: 204 });
-  },
+  () => new Response(null, { status: 204 }),
 );
+
+// ---------------------------------------------------------------------------
+// Route mounts — sub-routers registered by T-1-016..T-1-020
+// ---------------------------------------------------------------------------
+
+app.route('/v1/events', eventsRoute);
+app.route('/v1/lead', leadRoute);
+app.route('/v1/config', configRoute);
+app.route('/r', redirectRoute);
+app.route('/v1/admin/leads', adminLeadsEraseRoute);
 
 export default app;
