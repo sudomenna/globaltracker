@@ -48,11 +48,11 @@ Sprint 2: EM ANDAMENTO
     T-2-001/002/003: apps/tracker/ criado — init, cookies, decorate (2.28 KB gz)
     T-2-007: lead-resolver.ts + attribution.ts + consent.ts
     T-2-009: middleware Turnstile em /v1/lead (ADR-024)
-  Onda 2 (PRÓXIMA):
-    T-2-004+005+011: tracker.js identify + page + pixel-coexist
-    T-2-006: ingestion processor (raw-events-processor.ts)
-    T-2-008+010: lead_token real emission + Set-Cookie __ftk + middleware validação
-  Onda 3: E2E FLOW-02, FLOW-07, FLOW-08
+  Onda 2 (COMPLETA, commit 8e93314, 2026-05-02):
+    T-2-004+005+011: tracker.js identify + page + pixel-coexist (3.04 KB gz)
+    T-2-006: ingestion processor raw-events-processor.ts (OQ-011: dispatch_jobs aguarda Sprint 3)
+    T-2-008+010: lead_token real (issueLeadToken+validateLeadToken) + Set-Cookie __ftk + middleware
+  Onda 3 (PRÓXIMA): E2E FLOW-02, FLOW-07, FLOW-08
 ```
 
 ### Pendências operacionais antes de produção
@@ -68,7 +68,7 @@ Sprint 2: EM ANDAMENTO
 
 | Item | Prazo |
 |---|---|
-| `docs/20-domain/13-mod-tracker.md §12`: `pixel-coexist.ts` não criado ainda (Onda 2) | Onda 2 |
+| `docs/20-domain/13-mod-tracker.md §7`: mecanismo `window.__funil_event_id` + sessionStorage TTL 5min não documentado | Final Sprint 2 |
 | `docs/30-contracts/07-module-interfaces.md`: consent.ts usa `workspace_id` explícito vs `ctx` no contrato | Final Sprint 2 |
 
 ### Decisões já tomadas (não reabrir)
