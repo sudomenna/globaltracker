@@ -114,11 +114,16 @@ export interface IdentityModule {
     consent: ConsentSnapshot,
     source: string,
     policy_version: string | null,
-    ctx: Ctx,
-  ): Promise<Result<LeadConsent, InvalidLead>>;
+    workspace_id: string,
+    db: Db,
+  ): Promise<Result<LeadConsent, ConsentError>>;
 
-  getLatestConsent(lead_id: string, finality: ConsentFinality):
-    Promise<Result<ConsentValue, NotFound>>;
+  getLatestConsent(
+    lead_id: string,
+    finality: ConsentFinality,
+    workspace_id: string,
+    db: Db,
+  ): Promise<Result<ConsentValue, ConsentError>>;
 
   issueLeadToken(
     lead_id: string,

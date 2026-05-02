@@ -60,9 +60,30 @@
 - **INV-TRACKER-003 — `__fvid` só é setado se `consent_analytics='granted'`.** Lógica em `cookies.ts` do tracker. Testável.
 - **INV-TRACKER-004 — `__ftk` é lido (não criado pelo tracker) — emissor é o backend.** Testável.
 - **INV-TRACKER-005 — Tracker nunca envia PII em claro a `/v1/events`.** Apenas `/v1/lead` aceita PII em claro (que o backend hasheia/encrypta). Validado por integration test. Testável.
-- **INV-TRACKER-006 — Em política `browser_and_server_managed`, `eventID` do Pixel browser é igual ao `event_id` enviado a CAPI.** Coordenação client-side. Testável.
+- **INV-TRACKER-006 — Em política `browser_and_server_managed`, `eventID` do Pixel browser é igual ao `event_id` enviado a CAPI.** Coordenação client-side via `window.__funil_event_id`. Testável.
 - **INV-TRACKER-007 — Falha no `/v1/config` não quebra a página — tracker degrada silenciosamente.** Testável: simular 500 do config e confirmar que página carrega normalmente.
 - **INV-TRACKER-008 — `Funil.identify({lead_token})` aceita apenas token assinado válido — não aceita `lead_id` em claro a partir do browser.** ADR-006. Testável.
+
+### Mecanismo de deduplicação de eventos (implementado no Sprint 2)
+
+**`window.__funil_event_id`**
+
+Propriedade global exposta pelo tracker a cada chamada de `track()`. Contém o `event_id` UUID gerado para o evento mais recente. Serve para que snippets inline de Pixel (e.g. `fbq('track', 'Lead', {eventID: window.__funil_event_id})`) leiam o mesmo identificador de forma síncrona antes de o Pixel disparar, satisfazendo INV-TRACKER-006 (mesmo `event_id` para browser Pixel e CAPI server).
+
+Implementado em `apps/tracker/src/pixel-coexist.ts`, constante `WINDOW_KEY = '__funil_event_id'`.
+
+**sessionStorage com TTL de 5 minutos**
+
+Cada `event_id` gerado é persistido em `sessionStorage` com a chave `__funil_eid_<eventName>` e um campo `expiresAt` (timestamp Unix em ms, TTL = 5 minutos). O TTL de 5 minutos cobre janelas de SPA navigation e hot-reload dentro da mesma sessão de browser, evitando que o Pixel e o CAPI usem ids diferentes em recargas rápidas, sem risco de reutilizar ids entre sessões distintas.
+
+Há dois comportamentos distintos conforme `pixel_policy` (ver `docs/30-contracts/01-enums.md`):
+
+| `pixel_policy` | Função chamada | Comportamento |
+|---|---|---|
+| `browser_and_server_managed` | `createEventId(eventName)` | Sempre gera novo UUID, sobrescreve entrada em sessionStorage e expõe em `window.__funil_event_id`. |
+| `server_only` (ou ausente) | `getOrCreateEventId(eventName)` | Reutiliza entrada válida de sessionStorage se ainda dentro do TTL; caso contrário gera novo UUID. |
+
+Entrada expirada ou ausente no sessionStorage é tratada silenciosamente (INV-TRACKER-007): um novo UUID é gerado e retornado mesmo se o storage não estiver disponível.
 
 ## 8. BRs relacionadas
 
