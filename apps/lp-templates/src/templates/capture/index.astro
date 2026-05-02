@@ -1,0 +1,135 @@
+---
+// Template: capture — Página de captura de leads
+// Configurado via variáveis de ambiente:
+//   PUBLIC_EDGE_URL     — URL base do Edge Worker (ex: https://track.globaltracker.io)
+//   PUBLIC_PAGE_ID      — public_id da Page registrada no GlobalTracker
+//   PUBLIC_WORKSPACE_ID — public_id do workspace (usado no tracker)
+//   PUBLIC_TRACKER_URL  — URL do tracker.js (ex: https://cdn.../tracker.js)
+
+const edgeUrl = import.meta.env.PUBLIC_EDGE_URL;
+const pageId = import.meta.env.PUBLIC_PAGE_ID;
+const workspaceId = import.meta.env.PUBLIC_WORKSPACE_ID;
+const trackerUrl = import.meta.env.PUBLIC_TRACKER_URL;
+---
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cadastre-se</title>
+  <style>
+    /* estilos básicos inline — customizar por projeto */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #f8f9fa; }
+    .container { max-width: 480px; width: 100%; padding: 2rem; background: white; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #111; }
+    .field { margin-bottom: 1rem; }
+    label { display: block; font-size: 0.875rem; color: #555; margin-bottom: 0.25rem; }
+    input { width: 100%; padding: 0.625rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 1rem; }
+    input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,0.2); }
+    button[type="submit"] { width: 100%; padding: 0.75rem; background: #6366f1; color: white; border: none; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status { margin-top: 1rem; padding: 0.75rem; border-radius: 6px; font-size: 0.875rem; display: none; }
+    .status.success { background: #d1fae5; color: #065f46; display: block; }
+    .status.error { background: #fee2e2; color: #991b1b; display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Cadastre-se</h1>
+    <form id="capture-form">
+      <div class="field">
+        <label for="name">Nome</label>
+        <input type="text" id="name" name="name" placeholder="Seu nome" required />
+      </div>
+      <div class="field">
+        <label for="email">E-mail</label>
+        <input type="email" id="email" name="email" placeholder="seu@email.com" required />
+      </div>
+      <div class="field">
+        <label for="phone">Telefone (opcional)</label>
+        <input type="tel" id="phone" name="phone" placeholder="(11) 99999-9999" />
+      </div>
+      <button type="submit" id="submit-btn">Quero me cadastrar</button>
+      <div class="status" id="status-msg"></div>
+    </form>
+  </div>
+
+  <!-- Tracker GlobalTracker: injeta e inicializa captura de eventos -->
+  <script
+    is:inline
+    src={trackerUrl}
+    data-page-id={pageId}
+    data-workspace-id={workspaceId}
+    async
+  ></script>
+
+  <script is:inline define:vars={{ edgeUrl, pageId }}>
+    const form = document.getElementById('capture-form');
+    const submitBtn = document.getElementById('submit-btn');
+    const statusMsg = document.getElementById('status-msg');
+
+    function generateEventId() {
+      return crypto.randomUUID();
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      statusMsg.className = 'status';
+      statusMsg.textContent = '';
+
+      const formData = new FormData(form);
+      const email = formData.get('email');
+      const phone = formData.get('phone') || undefined;
+      const name = formData.get('name') || undefined;
+
+      // Ler attribution do localStorage (injetado pelo tracker.js)
+      let attribution = {};
+      try {
+        const raw = localStorage.getItem('__gt_attribution');
+        if (raw) attribution = JSON.parse(raw);
+      } catch { /* ignora */ }
+
+      // Ler lead_token do cookie __ftk se presente
+      const leadToken = document.cookie
+        .split('; ')
+        .find(row => row.startsWith('__ftk='))
+        ?.split('=')[1];
+
+      try {
+        const res = await fetch(`${edgeUrl}/v1/lead`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event_id: generateEventId(),
+            schema_version: 1,
+            launch_public_id: pageId.split(':')[0],
+            page_public_id: pageId,
+            email,
+            phone: phone || undefined,
+            name: name || undefined,
+            attribution,
+            lead_token: leadToken || undefined,
+            consent: { consent_analytics: 'granted', consent_marketing: 'granted', consent_ad_user_data: 'granted', consent_ad_personalization: 'granted' },
+          }),
+        });
+
+        if (res.ok) {
+          statusMsg.className = 'status success';
+          statusMsg.textContent = 'Cadastro realizado com sucesso!';
+          form.reset();
+        } else {
+          throw new Error(`HTTP ${res.status}`);
+        }
+      } catch (err) {
+        statusMsg.className = 'status error';
+        statusMsg.textContent = 'Ocorreu um erro. Por favor, tente novamente.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

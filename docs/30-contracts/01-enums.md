@@ -228,6 +228,44 @@ export const FxSource = ['ecb', 'wise', 'manual'] as const;
 export const WatchMarker = ['25%', '50%', '75%', '100%', 'completed'] as const;
 ```
 
+### `WorkflowName` (Sprint 7)
+```ts
+export const WorkflowName = [
+  'setup-tracking',
+  'deploy-lp',
+  'provision-campaigns',
+  'rollback-provisioning',
+] as const;
+```
+
+### `WorkflowStatus` (Sprint 7)
+```ts
+export const WorkflowStatus = [
+  'running',
+  'waiting_approval',
+  'completed',
+  'failed',
+  'rolled_back',
+  'expired',
+] as const;
+```
+
+### `LpDeploymentStatus` (Sprint 7)
+```ts
+export const LpDeploymentStatus = ['deploying', 'deployed', 'failed'] as const;
+```
+
+### `CampaignProvisionStatus` (Sprint 7)
+```ts
+export const CampaignProvisionStatus = [
+  'pending',
+  'pending_approval',
+  'active',
+  'failed',
+  'rolled_back',
+] as const;
+```
+
 ### `AuditAction` (lista canônica)
 ```ts
 export const AuditAction = [
@@ -237,6 +275,7 @@ export const AuditAction = [
   'read_pii_decrypted',
   'sync_audience',
   'reprocess_dlq',
+  'workflow_triggered', 'workflow_approved', 'workflow_rollback', 'workflow_step_completed',
 ] as const;
 ```
 

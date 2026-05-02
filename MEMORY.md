@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- `POST /v1/dispatch-jobs/:id/replay` não está em `docs/30-contracts/05-api-server-actions.md` — adicionar na Sprint 7 ou T-ID de contract-change isolada.
+- `POST /v1/dispatch-jobs/:id/replay`: contrato JÁ existe em `docs/30-contracts/05-api-server-actions.md` (CONTRACT-api-dispatch-replay-v1) e implementação existe em `apps/edge/src/routes/dispatch-replay.ts`. **Divergência de shape**: implementação retorna 200 + `{ queued, job_id, destination }`, contrato especifica 202 + `{ new_job_id, status: 'queued' }` e body `{ justification }` vs `{ reason }`. Fix incluído em T-7-004 do Sprint 7.
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -39,10 +39,15 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 7 — não iniciado
-Último commit: e613140 (branch main) — Sprint 6 completo
+Estado:        SPRINT 7 — onda 1 completa, pronto para onda 2
+Último commit: (a commitar) — Sprint 7 onda 1
 Verificação:   typecheck ✓  lint ✓  1230 testes passando
-DB Supabase:   migrations 0000–0024 aplicadas ✓
+DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator pendente de apply
+Sprint 7 doc:  docs/80-roadmap/07-sprint-7-orchestrator.md (decomposição completa)
+Onda 0:        T-7-000 ✓ — 6 contratos em docs/30-contracts/05-api-server-actions.md + enums em 01-enums.md
+Onda 1:        T-7-001 ✓ schema (workflow_runs, lp_deployments, campaign_provisions)
+               T-7-002 ✓ apps/orchestrator/ — Trigger.dev 3.3.17, 4 tasks stub
+               T-7-003 ✓ apps/lp-templates/ — Astro 4.x, capture template
 ```
 
 ### Sprint 6 entregues (referência rápida)

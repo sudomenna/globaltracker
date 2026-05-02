@@ -226,6 +226,93 @@ SAR/erasure. Auth restrita.
 
 ---
 
+## Endpoints do Orchestrator (Sprint 7+, Fase 5)
+
+Endpoints internos consumidos pela UI do Control Plane e pelo próprio `apps/orchestrator/` via callback. Autenticação por session cookie (OPERATOR/ADMIN). Trigger.dev 3.x é o motor de execução — estes endpoints acionam e monitoram os workflows.
+
+> **Base path:** `/v1/orchestrator/workflows`
+
+### `POST /v1/orchestrator/workflows/setup-tracking`
+
+Dispara workflow `setup-tracking` para uma Page: configura pixel policy, event_config e emite page_token.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-trigger-setup-tracking-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Body** | `{ page_id: uuid, launch_id: uuid }` |
+| **Side effects** | Insere `workflow_runs` com `workflow='setup-tracking'` + `status='running'`; aciona task Trigger.dev; emite `audit_log` action=`'workflow_triggered'` |
+| **Response 202** | `{ run_id: uuid, workflow: 'setup-tracking', status: 'running' }` |
+| **Errors** | `404 page_not_found`, `409 workflow_already_running` (run ativo para mesmo page_id), `400 validation_error` |
+
+### `POST /v1/orchestrator/workflows/deploy-lp`
+
+Dispara workflow `deploy-lp`: faz fork do template Astro, configura variáveis, publica no CF Pages e chama `setup-tracking` como sub-task.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-trigger-deploy-lp-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Body** | `{ template: string, launch_id: uuid, slug: string, domain?: string }` |
+| **Validações** | `slug` único por workspace; `template` pertence ao catálogo de `apps/lp-templates/`; `domain` quando presente deve ser FQDN válido |
+| **Side effects** | Insere `workflow_runs` + `lp_deployments` (`status='deploying'`); aciona task Trigger.dev; audit |
+| **Response 202** | `{ run_id: uuid, workflow: 'deploy-lp', status: 'running' }` |
+| **Errors** | `404 launch_not_found`, `400 slug_taken`, `400 invalid_template`, `400 validation_error` |
+
+### `POST /v1/orchestrator/workflows/provision-campaigns`
+
+Dispara workflow `provision-campaigns`: cria estrutura de campanha paused no Meta/Google e aguarda aprovação humana antes de ativar.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-trigger-provision-campaigns-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Body** | `{ launch_id: uuid, platforms: ('meta' \| 'google')[] }` |
+| **Validações** | Launch em status `live`; `platforms` não vazio; credenciais de API configuradas para cada platform |
+| **Side effects** | Insere `workflow_runs` + `campaign_provisions` por platform; aciona task Trigger.dev; workflow pausa em `waiting_approval` após criar campanhas paused; audit |
+| **Response 202** | `{ run_id: uuid, workflow: 'provision-campaigns', status: 'running' }` |
+| **Errors** | `404 launch_not_found`, `409 launch_not_live`, `400 missing_credentials`, `400 validation_error` |
+
+### `GET /v1/orchestrator/workflows/:run_id`
+
+Retorna estado atual de um workflow run com steps detalhados.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-status-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Response 200** | `{ run_id, workflow, status, steps: [{ name, status, started_at, finished_at, error? }], result?, created_at, updated_at }` |
+| **Status possíveis** | `running`, `waiting_approval`, `completed`, `failed`, `rolled_back`, `expired` |
+| **Errors** | `404 run_not_found`, `403 forbidden_workspace` |
+
+### `POST /v1/orchestrator/workflows/:run_id/approve`
+
+Desbloqueia um workflow em `waiting_approval` — envia evento externo ao Trigger.dev para retomar execução.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-approve-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Body** | `{ justification: string (min 10, max 500) }` |
+| **Side effects** | Emite evento externo `approved` ao Trigger.dev (`triggerdev.sendEvent`); atualiza `workflow_runs.status='running'`; `audit_log` action=`'workflow_approved'` com justification + actor |
+| **Response 200** | `{ run_id, status: 'running' }` |
+| **Errors** | `404 run_not_found`, `409 not_approvable` (status ≠ `waiting_approval`), `403 forbidden_workspace` |
+
+### `POST /v1/orchestrator/workflows/:run_id/rollback`
+
+Aciona rollback de um workflow: desfaz mudanças criadas (campanhas Meta/Google deletadas via API) e marca run como `rolled_back`.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-orc-rollback-v1` |
+| **Auth** | session OPERATOR/ADMIN |
+| **Body** | `{ reason: string (min 10, max 500) }` |
+| **Side effects** | Dispara task `rollback-provisioning` no Trigger.dev; atualiza `workflow_runs.status='rolled_back'`; `campaign_provisions.status='rolled_back'` por provision; `audit_log` action=`'workflow_rollback'` com reason + actor |
+| **Response 202** | `{ run_id, status: 'rolled_back' }` |
+| **Errors** | `404 run_not_found`, `409 not_rollbackable` (status ∉ `{waiting_approval, completed, failed}`), `409 already_rolled_back`, `403 forbidden_workspace` |
+
+---
+
 ## Convenção `Result<T, E>`
 
 Todas as funções de domínio que podem falhar de forma esperada retornam `Result`:
