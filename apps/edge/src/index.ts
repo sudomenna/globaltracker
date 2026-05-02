@@ -41,8 +41,7 @@ type Bindings = {
   QUEUE_EVENTS: Queue;
   QUEUE_DISPATCH: Queue;
   ENVIRONMENT: string;
-  /** Hyperdrive binding for DB access — injected in production. */
-  DB?: Fetcher;
+  HYPERDRIVE: Hyperdrive;
 };
 
 // ---------------------------------------------------------------------------

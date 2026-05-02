@@ -28,9 +28,9 @@ ENVIRONMENT = "development"
 # Secrets (não colocar valores aqui — usar wrangler secret put):
 # LEAD_TOKEN_HMAC_SECRET
 # PII_MASTER_KEY_V1
-# DATABASE_URL (via Hyperdrive quando configurado)
 
-# Hyperdrive — configurar após Supabase connection pooler estar pronto:
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "<hyperdrive-config-id>"
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "39156b974a274f969ca96d4e0c32bce1"
+# Para dev local: descomentar e preencher com DATABASE_URL do .env.local
+# localConnectionString = "postgresql://postgres:<pass>@db.kaxcmhfaqrxwnpftkslj.supabase.co:5432/postgres"
