@@ -1,0 +1,17 @@
+{
+  "description": "Expected stub response from the Data Manager client. Counts are 0 because the API spec is not yet public (ADR-012).",
+  "userListId": "9876543210",
+  "additions": [
+    {
+      "hashedEmail": "a8d4b2e1c3f5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1",
+      "hashedPhoneNumber": null
+    }
+  ],
+  "removals": [],
+  "expectedResult": {
+    "status": "succeeded",
+    "sentAdditions": 0,
+    "sentRemovals": 0,
+    "note": "data_manager_stub_not_implemented"
+  }
+}

@@ -23,7 +23,11 @@
 
 import { fetchConfig, sendEvent } from './api-client';
 import type { EventPayload } from './api-client';
-import { capturePlatformCookies, readLeadTokenCookie } from './cookies';
+import {
+  capturePlatformCookies,
+  ensureVisitorId,
+  readLeadTokenCookie,
+} from './cookies';
 import { decorate } from './decorate';
 import { createEventId, getOrCreateEventId } from './pixel-coexist';
 import {
@@ -34,6 +38,7 @@ import {
   setLeadToken,
   setPlatformCookies,
   setState,
+  setVisitorId,
   transition,
 } from './state';
 import { captureAndPersistAttribution, clearAttribution } from './storage';
@@ -175,6 +180,13 @@ async function init(): Promise<void> {
       return;
     }
 
+    // INV-TRACKER-003: generate/read __fvid only when consent_analytics='granted'
+    // BR-CONSENT-004: own analytics cookies require consent
+    // Funil.identify() must NOT alter __fvid — it belongs to the anonymous visitor, not the lead
+    const consentAnalytics = config?.consent?.analytics === 'granted';
+    const visitorId = ensureVisitorId(consentAnalytics);
+    setVisitorId(visitorId);
+
     // Auto page view
     if (config?.event_config?.auto_page_view) {
       _funil.page();
@@ -247,6 +259,12 @@ function track(eventName: string, customData?: Record<string, unknown>): void {
     // INV-TRACKER-008 / BR-TRACKER-001: include lead_token only — never lead_id in clear
     if (state.leadToken) {
       payload.lead_token = state.leadToken;
+    }
+
+    // INV-TRACKER-003: include visitor_id only when present (set after consent granted)
+    // Backend uses this to retroactively link anonymous events to a lead (T-5-003)
+    if (state.visitorId) {
+      payload.visitor_id = state.visitorId;
     }
 
     // Fire and forget — INV-TRACKER-007

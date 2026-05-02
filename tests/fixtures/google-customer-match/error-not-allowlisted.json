@@ -1,0 +1,27 @@
+{
+  "description": "Google Ads API error response when customer is not allowlisted for Customer Match (ADR-012 auto-demote trigger).",
+  "httpStatus": 400,
+  "body": {
+    "error": {
+      "code": 400,
+      "message": "Request contains an invalid argument.",
+      "status": "INVALID_ARGUMENT",
+      "details": [
+        {
+          "@type": "type.googleapis.com/google.ads.googleads.v17.errors.GoogleAdsFailure",
+          "errors": [
+            {
+              "errorCode": {
+                "customerMatchError": "CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE"
+              },
+              "message": "Customer not allowlisted for Customer Match. Please use Data Manager API."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expectedErrorCode": "CUSTOMER_NOT_ALLOWLISTED",
+  "expectedIsNotAllowlisted": true,
+  "expectedRetryable": false
+}

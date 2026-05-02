@@ -22,6 +22,12 @@ export interface EventPayload {
   event_time: string;
   /** INV-TRACKER-008: only lead_token, never lead_id in clear. */
   lead_token?: string;
+  /**
+   * Anonymous visitor ID from __fvid cookie.
+   * INV-TRACKER-003: only present when consent_analytics='granted'.
+   * Used by backend to retroactively link anonymous events to a lead (T-5-003).
+   */
+  visitor_id?: string;
   attribution: Record<string, string | null>;
   user_data: Record<string, string | null>;
   custom_data: Record<string, unknown>;

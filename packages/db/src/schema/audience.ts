@@ -51,6 +51,11 @@ export const audiences = pgTable('audiences', {
   // chk_audiences_status enforces valid values
   status: text('status').notNull().default('draft'),
 
+  // BR-AUDIENCE-001: auto_demoted_at documents the moment the system downgraded
+  // destination_strategy to 'disabled_not_eligible' after Google returned
+  // CUSTOMER_NOT_ALLOWLISTED. NULL means no auto-demote has occurred. (ADR-012)
+  autoDemotedAt: timestamp('auto_demoted_at', { withTimezone: true }),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

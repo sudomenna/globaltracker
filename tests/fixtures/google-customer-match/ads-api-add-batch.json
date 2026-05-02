@@ -1,0 +1,43 @@
+{
+  "description": "Sample Google Ads OfflineUserDataJob create + addOperations + run payload for Customer Match additions.",
+  "createJobRequest": {
+    "job": {
+      "type": "CUSTOMER_MATCH_USER_LIST",
+      "customerMatchUserListMetadata": {
+        "userList": "customers/1234567890/userLists/9876543210"
+      }
+    }
+  },
+  "createJobResponse": {
+    "resourceName": "customers/1234567890/offlineUserDataJobs/111222333"
+  },
+  "addOperationsRequest": {
+    "operations": [
+      {
+        "create": {
+          "userIdentifiers": [
+            {
+              "hashedEmail": "a8d4b2e1c3f5d6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1"
+            },
+            {
+              "hashedPhoneNumber": "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2"
+            }
+          ]
+        },
+        "remove": false
+      },
+      {
+        "create": {
+          "userIdentifiers": [
+            {
+              "hashedEmail": "c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3"
+            }
+          ]
+        },
+        "remove": false
+      }
+    ]
+  },
+  "runJobRequest": {},
+  "runJobResponse": {}
+}

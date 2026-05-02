@@ -23,7 +23,7 @@
 
 import type { Db } from '@globaltracker/db';
 import { events, leadStages, rawEvents } from '@globaltracker/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { type AttributionParams, recordTouches } from './attribution.js';
 import type { KvStore } from './idempotency.js';
@@ -140,6 +140,9 @@ const RawEventPayloadSchema = z.object({
   user_data: z.record(z.unknown()).optional().default({}),
   custom_data: z.record(z.unknown()).optional().default({}),
   consent: ConsentSnapshotSchema,
+  // visitor_id: anonymous visitor cookie (__fvid) — present only when consent_analytics='granted'
+  // INV-TRACKER-003: tracker enforces presence; processor accepts and persists as-is
+  visitor_id: z.string().optional(),
   // Launch context (optional — some events arrive without a launch)
   launch_id: z.string().uuid().optional(),
   // Request context snapshot
@@ -261,6 +264,10 @@ export async function processRawEvent(
 
   const payload = parseResult.data;
 
+  // INV-TRACKER-003: visitor_id only present when consent_analytics='granted' (tracker enforces);
+  // processor accepts and persists whatever the tracker sends — null if absent
+  const visitorId: string | null = payload.visitor_id ?? null;
+
   // -------------------------------------------------------------------------
   // Step 3: Resolve lead identity
   //
@@ -364,6 +371,7 @@ export async function processRawEvent(
         pageId: rawEvent.pageId ?? undefined,
         launchId: payload.launch_id ?? undefined,
         leadId: resolvedLeadId ?? undefined,
+        visitorId: visitorId ?? undefined,
         eventId: payload.event_id,
         eventName: payload.event_name,
         eventSource: 'tracker', // fixed for events from tracker.js
@@ -409,6 +417,43 @@ export async function processRawEvent(
       ok: false,
       error: { code: 'db_error', message },
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 6b: Retroactive backfill — link anonymous events to resolved lead_id
+  //
+  // INV-EVENT-007: events with valid lead_token have lead_id resolved by processor
+  // When a lead is resolved and the current event has a visitor_id, backfill
+  // lead_id on prior anonymous events (lead_id IS NULL) sharing the same visitor_id.
+  //
+  // Idempotency: WHERE lead_id IS NULL ensures re-executions are noop for already-linked rows.
+  // Non-fatal: backfill failure never blocks the main event processing — log and continue.
+  // INV-TRACKER-003: visitor_id is only present when consent_analytics='granted' (tracker enforces).
+  // -------------------------------------------------------------------------
+  if (resolvedLeadId && visitorId) {
+    try {
+      await db
+        .update(events)
+        .set({ leadId: resolvedLeadId })
+        .where(
+          and(
+            eq(events.workspaceId, rawEvent.workspaceId),
+            eq(events.visitorId, visitorId),
+            isNull(events.leadId),
+          ),
+        );
+    } catch (backfillErr) {
+      // BR-PRIVACY-001: log only non-PII context — no visitor_id or lead_id values in message
+      const backfillMsg =
+        backfillErr instanceof Error
+          ? backfillErr.message
+          : String(backfillErr);
+      // eslint-disable-next-line no-console -- safeLog unavailable here; no PII in message
+      console.error(
+        `[visitor_id backfill failed] raw_event_id=${raw_event_id} err=${backfillMsg.slice(0, 200)}`,
+      );
+      // Continue — event was already inserted successfully
+    }
   }
 
   // -------------------------------------------------------------------------

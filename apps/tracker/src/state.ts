@@ -47,6 +47,8 @@ let _state: TrackerState = {
   config: null,
   leadToken: null,
   leadPublicId: null,
+  // INV-TRACKER-003: visitorId starts null; set only after consent check in init()
+  visitorId: null,
   attributionParams: { ...DEFAULT_ATTRIBUTION },
   platformCookies: { ...DEFAULT_PLATFORM_COOKIES },
   consent: { ...DEFAULT_CONSENT },
@@ -98,4 +100,9 @@ export function setAttribution(params: AttributionParams): void {
 
 export function setConsent(consent: ConsentSnapshot): void {
   _state = { ..._state, consent };
+}
+
+export function setVisitorId(visitorId: string | null): void {
+  // INV-TRACKER-003: only called after consent check; value may be null if consent denied
+  _state = { ..._state, visitorId };
 }

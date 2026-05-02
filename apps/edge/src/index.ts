@@ -32,6 +32,7 @@ import type { Db } from '@globaltracker/db';
 import { events, createDb, launches, leads } from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
 import {
   checkEligibility as checkGa4Eligibility,
@@ -798,18 +799,44 @@ async function scheduledHandler(
   _ctx: ExecutionContext,
 ): Promise<void> {
   const db = createDb(env.HYPERDRIVE.connectionString);
-  const date = new Date(event.scheduledTime)
-    .toISOString()
-    .split('T')[0] as string;
+  const cron = event.cron;
 
-  // INV-COST-006: idempotent — upsert ON CONFLICT DO UPDATE
-  const result = await ingestDailySpend(date, env, db);
+  // ---------------------------------------------------------------------------
+  // 17:30 UTC — cost ingestor (INV-COST-006: idempotent upsert)
+  // ---------------------------------------------------------------------------
+  if (cron === '30 17 * * *') {
+    const date = new Date(event.scheduledTime)
+      .toISOString()
+      .split('T')[0] as string;
 
-  // BR-PRIVACY-001: no PII — only counts and error strings logged
-  safeLog('info', {
-    event: 'cost_ingestor_completed',
-    ingested: result.ingested,
-    error_count: result.errors.length,
+    // INV-COST-006: idempotent — upsert ON CONFLICT DO UPDATE
+    const result = await ingestDailySpend(date, env, db);
+
+    // BR-PRIVACY-001: no PII — only counts and error strings logged
+    safeLog('info', {
+      event: 'cost_ingestor_completed',
+      ingested: result.ingested,
+      error_count: result.errors.length,
+    });
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 01:00 UTC — audience sync (T-5-002)
+  // Generates snapshots + diff-based sync jobs for all active audiences.
+  // Does NOT call external APIs — dispatchers handle that (T-5-005/T-5-006).
+  // BR-AUDIENCE-001: disabled_not_eligible audiences skip sync job creation.
+  // BR-PRIVACY-001: safeLog used throughout inside runAudienceSync.
+  // ---------------------------------------------------------------------------
+  if (cron === '0 1 * * *') {
+    await runAudienceSync({}, db);
+    return;
+  }
+
+  // Unknown cron expression — log and return without throwing
+  safeLog('warn', {
+    event: 'scheduled_unknown_cron',
+    cron,
   });
 }
 

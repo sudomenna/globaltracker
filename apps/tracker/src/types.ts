@@ -83,6 +83,12 @@ export interface TrackerState {
   leadToken: string | null;
   /** lead_public_id — opaque, cross-domain propagation via URL params. */
   leadPublicId: string | null;
+  /**
+   * Anonymous visitor ID — from __fvid cookie.
+   * INV-TRACKER-003: only populated when consent_analytics='granted'.
+   * Set by ensureVisitorId() during init; never changed by identify().
+   */
+  visitorId: string | null;
   attributionParams: AttributionParams;
   platformCookies: PlatformCookies;
   consent: ConsentSnapshot;
