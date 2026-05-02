@@ -137,10 +137,16 @@ export const deployLpTask = task({
       deploymentUrl = result.deploymentUrl;
     } catch (err) {
       // Atualizar deployment como failed
+      // BR-RBAC-002: filter by workspace_id in addition to id
       await db
         .update(lpDeployments)
         .set({ status: 'failed', updatedAt: new Date() })
-        .where(eq(lpDeployments.id, deployment.id));
+        .where(
+          and(
+            eq(lpDeployments.id, deployment.id),
+            eq(lpDeployments.workspaceId, payload.workspace_id),
+          ),
+        );
 
       // Atualizar workflow_run como failed — BR-RBAC-002: filtra por workspace_id
       await db
@@ -160,7 +166,7 @@ export const deployLpTask = task({
       throw err;
     }
 
-    // Step 6 — Atualizar lp_deployment como deployed
+    // Step 6 — Atualizar lp_deployment como deployed — BR-RBAC-002: filter by workspace_id
     await db
       .update(lpDeployments)
       .set({
@@ -169,7 +175,12 @@ export const deployLpTask = task({
         deployedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(lpDeployments.id, deployment.id));
+      .where(
+        and(
+          eq(lpDeployments.id, deployment.id),
+          eq(lpDeployments.workspaceId, payload.workspace_id),
+        ),
+      );
 
     // Step 7 — setup-tracking subtask (requer UUID interno da page, não disponível aqui)
     // A resolução de page UUID interno a partir de page_public_id é responsabilidade

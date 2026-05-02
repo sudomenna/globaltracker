@@ -72,7 +72,8 @@ export const rollbackProvisioningTask = task({
         .update(workflowRuns)
         .set({
           status: 'rolled_back',
-          result: { already_rolled_back: true, reason: payload.reason },
+          // BR-PRIVACY-001: reason not persisted — may contain PII
+          result: { already_rolled_back: true },
           updatedAt: new Date(),
         })
         .where(
@@ -132,10 +133,8 @@ export const rollbackProvisioningTask = task({
       .update(workflowRuns)
       .set({
         status: 'rolled_back',
-        result: {
-          rolled_back_count: provisions.length,
-          reason: payload.reason,
-        },
+        // BR-PRIVACY-001: reason not persisted — may contain PII
+        result: { rolled_back_count: provisions.length },
         updatedAt: new Date(),
       })
       .where(
