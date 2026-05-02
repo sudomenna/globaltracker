@@ -2,13 +2,19 @@
  * Integration tests — POST /v1/lead
  *
  * CONTRACT-api-lead-v1
- * T-ID: T-2-009
+ * T-ID: T-2-009, T-2-008
  *
  * Covers Turnstile bot mitigation (ADR-024):
  *   1. Token absent + ENVIRONMENT=development → 202 bypass
  *   2. Token absent + ENVIRONMENT=production  → 403 bot_detected
  *   3. Token invalid (siteverify returns success=false) → 403 bot_detected
  *   4. Token valid (siteverify returns success=true) → 202 accepted
+ *
+ * Covers T-2-008 — issueLeadToken real DB path:
+ *   9.  DB provided → resolveLeadByAliases + issueLeadToken → 202 with real token
+ *  10.  DB resolve error → 500 internal_error
+ *  11.  DB issue error → 500 internal_error
+ *  12.  No DB → falls back to temporary token (warn logged) → 202
  *
  * Also covers existing happy-path and validation cases:
  *   5. Valid body (no Turnstile binding configured) → 202 accepted
@@ -17,10 +23,10 @@
  *   8. BR-PRIVACY-001: 403 response contains no PII
  *
  * Test approach:
- *   - Real Hono app with leadRoute mounted.
+ *   - Real Hono app with createLeadRoute(db) mounted.
  *   - fetch() mocked at global level for siteverify calls only.
  *   - Mock QUEUE_EVENTS (in-memory implementation).
- *   - No DB binding required (placeholder path).
+ *   - DB mocked where needed.
  *
  * BR-PRIVACY-001: error responses must not echo back PII (email/phone).
  * ADR-024: Turnstile as primary bot mitigation.
@@ -28,7 +34,10 @@
 
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { leadRoute } from '../../../apps/edge/src/routes/lead.js';
+import {
+  createLeadRoute,
+  leadRoute,
+} from '../../../apps/edge/src/routes/lead.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,8 +87,14 @@ function buildApp(options: {
   pageId?: string;
   requestId?: string;
   queue?: Queue;
+  // biome-ignore lint/suspicious/noExplicitAny: mock db — no real Db type in tests
+  db?: any;
 }) {
   const mockQueue = options.queue ?? createMockQueue();
+
+  // When db is provided, use the factory to wire it; otherwise use default export.
+  const route =
+    options.db !== undefined ? createLeadRoute(options.db) : leadRoute;
 
   const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -95,7 +110,7 @@ function buildApp(options: {
     await next();
   });
 
-  app.route('/v1/lead', leadRoute);
+  app.route('/v1/lead', route);
 
   const mockEnv: Bindings = {
     GT_KV: {} as KVNamespace,
@@ -490,5 +505,294 @@ describe('POST /v1/lead — existing validations', () => {
     expect(text).not.toContain('sensitive@private.com');
     expect(text).not.toContain('+5511999998888');
     expect(text).not.toMatch(/@[a-zA-Z]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-2-008: issueLeadToken real DB path
+// ---------------------------------------------------------------------------
+
+describe('POST /v1/lead — issueLeadToken DB path (T-2-008)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Build a minimal mock DB that simulates resolveLeadByAliases (via lead tables)
+   * and issueLeadToken (via leadTokens insert).
+   *
+   * The mock reuses the same select/insert chain pattern from the domain lib.
+   */
+  function createMockDbForLead(options: {
+    resolveResult?: { id: string } | null;
+    tokenInsertResult?: { id: string } | null;
+  }) {
+    const resolvedLeadId = options.resolveResult?.id ?? 'lead-mock-001';
+    const tokenRowId = options.tokenInsertResult?.id ?? 'lt-mock-001';
+
+    const shouldFailResolve = options.resolveResult === null;
+    const shouldFailTokenInsert = options.tokenInsertResult === null;
+
+    // biome-ignore lint/suspicious/noExplicitAny: mock db — no real Db type in tests
+    const mock: any = {
+      _insertLeadTokenCalled: false,
+      select: () => ({
+        from: () => ({
+          where: () => {
+            // Must be both awaitable (aliases query has no .limit())
+            // and expose .limit() (lead lookup in resolveCanonical uses .limit(1))
+            // Use a real Promise with extra properties attached.
+            const p = Promise.resolve([]) as Promise<unknown[]> & {
+              limit: () => Promise<unknown[]>;
+            };
+            p.limit = async () => [];
+            return p;
+          },
+        }),
+      }),
+      insert: () => ({
+        // values() must be both awaitable (for plain inserts like leadAliases)
+        // and have a .returning() method (for leads + lead_tokens inserts).
+        values: (vals: unknown) => {
+          const v = Array.isArray(vals)
+            ? ((vals[0] as Record<string, unknown>) ?? {})
+            : (vals as Record<string, unknown>);
+
+          const isTokenInsert = 'tokenHash' in v;
+          const isLeadInsert =
+            'workspaceId' in v &&
+            !('tokenHash' in v) &&
+            !('identifierType' in v);
+
+          // Real Promise (for plain `await db.insert(...).values(...)`)
+          // with a .returning() method attached.
+          const p = Promise.resolve([]) as Promise<unknown[]> & {
+            returning: () => Promise<unknown[]>;
+          };
+          p.returning = async () => {
+            if (isTokenInsert) {
+              mock._insertLeadTokenCalled = true;
+              if (shouldFailTokenInsert) {
+                throw new Error('DB error on token insert');
+              }
+              return [{ id: tokenRowId }];
+            }
+            if (isLeadInsert) {
+              if (shouldFailResolve) {
+                throw new Error('DB error on lead insert');
+              }
+              return [{ id: resolvedLeadId }];
+            }
+            return [];
+          };
+          return p;
+        },
+      }),
+      update: () => ({
+        set: () => ({
+          where: async () => [],
+        }),
+      }),
+    };
+
+    return mock;
+  }
+
+  // -------------------------------------------------------------------------
+  // Case 9: DB provided → resolveLeadByAliases + issueLeadToken → 202
+  // -------------------------------------------------------------------------
+  it('202: issues real token when DB is provided (T-2-008)', async () => {
+    const db = createMockDbForLead({
+      resolveResult: { id: 'lead-db-001' },
+      tokenInsertResult: { id: 'lt-db-001' },
+    });
+
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      db,
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-funil-site': 'pk_live_test_page_token',
+      },
+      body: JSON.stringify(VALID_BODY),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.status).toBe('accepted');
+    expect(body.lead_token).toBeTruthy();
+    expect(body.expires_at).toBeTruthy();
+    // lead_public_id should be the resolved lead_id from DB
+    expect(body.lead_public_id).toBe('lead-db-001');
+    // DB token insert was called
+    expect(db._insertLeadTokenCalled).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Case 10: DB resolve error → 500 internal_error
+  // -------------------------------------------------------------------------
+  it('500: returns internal_error when lead resolution fails', async () => {
+    const db = createMockDbForLead({ resolveResult: null });
+
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      db,
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-funil-site': 'pk_live_test_page_token',
+      },
+      body: JSON.stringify(VALID_BODY),
+    });
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('internal_error');
+    // BR-PRIVACY-001: no PII in error response
+    expect(JSON.stringify(body)).not.toContain('user@example.com');
+  });
+
+  // -------------------------------------------------------------------------
+  // Case 11: issueLeadToken DB error → 500 internal_error
+  // -------------------------------------------------------------------------
+  it('500: returns internal_error when issueLeadToken fails', async () => {
+    const db = createMockDbForLead({
+      resolveResult: { id: 'lead-db-002' },
+      tokenInsertResult: null,
+    });
+
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      db,
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-funil-site': 'pk_live_test_page_token',
+      },
+      body: JSON.stringify(VALID_BODY),
+    });
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('internal_error');
+    // BR-PRIVACY-001: no PII in error response
+    expect(JSON.stringify(body)).not.toContain('user@example.com');
+  });
+
+  // -------------------------------------------------------------------------
+  // Case 12: No DB → fallback to temp token → 202 (warn logged)
+  // -------------------------------------------------------------------------
+  it('202: falls back to temporary token when no DB is provided', async () => {
+    // No db option → createLeadRoute() without DB (leadRoute default)
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      // db intentionally omitted
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(VALID_BODY),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.status).toBe('accepted');
+    expect(body.lead_token).toBeTruthy();
+  });
+
+  // -------------------------------------------------------------------------
+  // Case 13: __ftk Set-Cookie header set only when consent.functional === true
+  // INV-IDENTITY-006: cookie only set with functional consent
+  // -------------------------------------------------------------------------
+  it('sets __ftk Set-Cookie when consent.functional=true', async () => {
+    const db = createMockDbForLead({
+      resolveResult: { id: 'lead-cookie-001' },
+      tokenInsertResult: { id: 'lt-cookie-001' },
+    });
+
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      db,
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-funil-site': 'pk_live_test_page_token',
+      },
+      body: JSON.stringify({
+        ...VALID_BODY,
+        consent: { analytics: false, marketing: false, functional: true },
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const setCookie = res.headers.get('set-cookie');
+    expect(setCookie).not.toBeNull();
+    expect(setCookie).toContain('__ftk=');
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+  });
+
+  // -------------------------------------------------------------------------
+  // Case 14: NO __ftk cookie when consent.functional === false
+  // INV-IDENTITY-006: cookie must not be set without functional consent
+  // -------------------------------------------------------------------------
+  it('does NOT set __ftk Set-Cookie when consent.functional=false', async () => {
+    const db = createMockDbForLead({
+      resolveResult: { id: 'lead-nocookie-001' },
+      tokenInsertResult: { id: 'lt-nocookie-001' },
+    });
+
+    const app = buildApp({
+      environment: 'development',
+      workspaceId: WORKSPACE_ID,
+      pageId: PAGE_ID,
+      db,
+    });
+
+    const res = await app.fetch(LEAD_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-funil-site': 'pk_live_test_page_token',
+      },
+      body: JSON.stringify({
+        ...VALID_BODY,
+        consent: { analytics: false, marketing: false, functional: false },
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const setCookie = res.headers.get('set-cookie');
+    // No cookie set when functional consent is false
+    expect(setCookie).toBeNull();
   });
 });

@@ -10,6 +10,9 @@
  *
  * BR-IDENTITY-005: lead_token HMAC has mandatory binding to page_token_hash.
  * INV-IDENTITY-006: LeadToken valid only with matching page_token_hash claim.
+ *
+ * T-2-008: issueLeadToken — stores token_hash in lead_tokens DB row.
+ * T-2-010: validateLeadToken — validates against DB row including page_token_hash.
  */
 
 // ---------------------------------------------------------------------------
@@ -23,12 +26,38 @@ export type LeadTokenError =
   | { code: 'hmac_verification_failed'; message: string }
   | { code: 'token_generation_failed'; message: string };
 
+export type IssueLeadTokenError =
+  | { code: 'token_generation_failed'; message: string }
+  | { code: 'db_error'; message: string };
+
+export type IssueLeadTokenResult = {
+  token_clear: string;
+  expires_at: Date;
+  token_id: string;
+};
+
+export type ValidateLeadTokenError =
+  | { code: 'invalid_token'; message: string }
+  | { code: 'hmac_invalid'; message: string }
+  | { code: 'expired'; message: string }
+  | { code: 'revoked'; message: string }
+  | { code: 'page_mismatch'; message: string }
+  | { code: 'db_error'; message: string };
+
 /** Decoded payload extracted from a lead token (no signature verification). */
 export interface LeadTokenPayload {
   leadId: string;
   workspaceId: string;
   issuedAt: number; // Unix timestamp in seconds
 }
+
+// ---------------------------------------------------------------------------
+// DB import for stateful token operations (T-2-008, T-2-010)
+// ---------------------------------------------------------------------------
+
+import type { Db } from '@globaltracker/db';
+import { leadTokens } from '@globaltracker/db';
+import { and, eq } from 'drizzle-orm';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -223,5 +252,268 @@ export function parseLeadToken(token: string): LeadTokenPayload | null {
     leadId: decoded.leadId,
     workspaceId: decoded.workspaceId,
     issuedAt: decoded.issuedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SHA-256 hex helper (Web Crypto only — CF Workers compatible)
+// ---------------------------------------------------------------------------
+
+async function sha256Hex(data: string): Promise<string> {
+  const buf = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(data),
+  );
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+// ---------------------------------------------------------------------------
+// T-2-008: issueLeadToken — generate + persist to lead_tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Issue a new lead token: generate HMAC token, store token_hash in DB.
+ *
+ * Steps:
+ *   1. generateLeadToken(lead_id, workspace_id, hmac_secret) → token_clear
+ *   2. token_hash = SHA-256(token_clear) as 64-char hex
+ *   3. Insert row into lead_tokens
+ *   4. Return { token_clear, expires_at, token_id }
+ *
+ * BR-IDENTITY-005: HMAC secret from Wrangler secret; token_clear never logged.
+ * INV-IDENTITY-006: page_token_hash stored in DB row to enforce page binding.
+ *
+ * @param leadId          - internal lead UUID
+ * @param workspaceId     - workspace UUID
+ * @param pageTokenHash   - SHA-256 hex of the page_token (from X-Funil-Site header)
+ * @param ttlDays         - token lifetime in days (default 60)
+ * @param db              - Drizzle DB instance (DI)
+ * @param hmacSecret      - HMAC signing secret bytes
+ */
+export async function issueLeadToken(
+  leadId: string,
+  workspaceId: string,
+  pageTokenHash: string,
+  ttlDays: number,
+  db: Db,
+  hmacSecret: Uint8Array,
+): Promise<Result<IssueLeadTokenResult, IssueLeadTokenError>> {
+  // Step 1: generate HMAC token
+  // BR-IDENTITY-005: token HMAC signed with workspace-scoped secret
+  const genResult = await generateLeadToken(leadId, workspaceId, hmacSecret);
+  if (!genResult.ok) {
+    return {
+      ok: false,
+      error: {
+        code: 'token_generation_failed',
+        message: genResult.error.message,
+      },
+    };
+  }
+
+  const tokenClear = genResult.value;
+
+  // Step 2: token_hash = SHA-256(token_clear)
+  // ADR-006: DB stores only the hash — clear token never persisted
+  const tokenHash = await sha256Hex(tokenClear);
+
+  // Step 3: compute expires_at
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + ttlDays * 24 * 60 * 60 * 1000);
+
+  // Step 4: insert into lead_tokens
+  try {
+    const inserted = await db
+      .insert(leadTokens)
+      .values({
+        workspaceId,
+        leadId,
+        tokenHash,
+        pageTokenHash,
+        issuedAt: now,
+        expiresAt,
+      })
+      .returning({ id: leadTokens.id });
+
+    const row = inserted[0];
+    if (!row) {
+      return {
+        ok: false,
+        error: {
+          code: 'db_error',
+          message: 'lead_tokens insert returned no row',
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      value: {
+        token_clear: tokenClear,
+        expires_at: expiresAt,
+        token_id: row.id,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: 'db_error',
+        message: err instanceof Error ? err.message : 'Unknown DB error',
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// T-2-010: validateLeadToken — verify HMAC + DB lookup + page binding
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate a lead token presented in the __ftk cookie.
+ *
+ * Steps:
+ *   1. parseLeadToken(token_clear) → extract leadId, workspaceId
+ *   2. verifyLeadToken(HMAC) → timing-safe signature check
+ *   3. Compute token_hash = SHA-256(token_clear)
+ *   4. Fetch DB row by token_hash + workspace_id
+ *   5. Check: revoked_at IS NULL, expires_at > now, page_token_hash matches
+ *   6. Update last_used_at; return { lead_id }
+ *
+ * BR-IDENTITY-005: HMAC verified before DB lookup — prevents oracle attack.
+ * INV-IDENTITY-006: page_token_hash must match current page — token invalid elsewhere.
+ * BR-PRIVACY-001: on failure, callers must not log the token value.
+ *
+ * @param tokenClear            - raw token from cookie (never log this)
+ * @param currentPageTokenHash  - SHA-256 hex of the current page_token
+ * @param db                    - Drizzle DB instance (DI)
+ * @param hmacSecret            - HMAC signing secret bytes
+ */
+export async function validateLeadToken(
+  tokenClear: string,
+  currentPageTokenHash: string,
+  db: Db,
+  hmacSecret: Uint8Array,
+): Promise<Result<{ lead_id: string }, ValidateLeadTokenError>> {
+  // Step 1: parse token (extract claims — no trust without HMAC verify)
+  const parsed = parseLeadToken(tokenClear);
+  if (!parsed) {
+    return {
+      ok: false,
+      error: { code: 'invalid_token', message: 'Token format is invalid' },
+    };
+  }
+
+  // Step 2: HMAC verification — timing-safe
+  // BR-IDENTITY-005: timing-safe compare via crypto.subtle.verify
+  const hmacValid = await verifyLeadToken(
+    tokenClear,
+    parsed.leadId,
+    parsed.workspaceId,
+    hmacSecret,
+  );
+  if (!hmacValid) {
+    return {
+      ok: false,
+      error: {
+        code: 'hmac_invalid',
+        message: 'Token HMAC signature is invalid',
+      },
+    };
+  }
+
+  // Step 3: compute token_hash for DB lookup
+  const tokenHash = await sha256Hex(tokenClear);
+
+  // Step 4: fetch DB row
+  let rows: Array<{
+    id: string;
+    leadId: string;
+    workspaceId: string;
+    pageTokenHash: string;
+    expiresAt: Date;
+    revokedAt: Date | null;
+  }>;
+
+  try {
+    rows = await db
+      .select({
+        id: leadTokens.id,
+        leadId: leadTokens.leadId,
+        workspaceId: leadTokens.workspaceId,
+        pageTokenHash: leadTokens.pageTokenHash,
+        expiresAt: leadTokens.expiresAt,
+        revokedAt: leadTokens.revokedAt,
+      })
+      .from(leadTokens)
+      .where(
+        and(
+          eq(leadTokens.tokenHash, tokenHash),
+          eq(leadTokens.workspaceId, parsed.workspaceId),
+        ),
+      )
+      .limit(1);
+  } catch (err) {
+    return {
+      ok: false,
+      error: {
+        code: 'db_error',
+        message: err instanceof Error ? err.message : 'Unknown DB error',
+      },
+    };
+  }
+
+  const row = rows[0];
+  if (!row) {
+    // Token hash not found in DB — tampered or already expired+purged
+    return {
+      ok: false,
+      error: { code: 'invalid_token', message: 'Token not found in DB' },
+    };
+  }
+
+  // Step 5a: check revocation
+  if (row.revokedAt !== null) {
+    return {
+      ok: false,
+      error: { code: 'revoked', message: 'Token has been revoked' },
+    };
+  }
+
+  // Step 5b: check expiry
+  if (row.expiresAt.getTime() <= Date.now()) {
+    return {
+      ok: false,
+      error: { code: 'expired', message: 'Token has expired' },
+    };
+  }
+
+  // Step 5c: page binding — INV-IDENTITY-006
+  // BR-IDENTITY-005: token valid only on the page it was issued for
+  if (row.pageTokenHash !== currentPageTokenHash) {
+    return {
+      ok: false,
+      error: {
+        code: 'page_mismatch',
+        message: 'Token is not valid for the current page',
+      },
+    };
+  }
+
+  // Step 6: update last_used_at (fire-and-forget: failure is non-fatal)
+  try {
+    await db
+      .update(leadTokens)
+      .set({ lastUsedAt: new Date() })
+      .where(eq(leadTokens.id, row.id));
+  } catch {
+    // Non-fatal: token is valid even if last_used_at update fails
+  }
+
+  return {
+    ok: true,
+    value: { lead_id: row.leadId },
   };
 }

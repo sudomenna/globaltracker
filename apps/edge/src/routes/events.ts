@@ -2,17 +2,18 @@
  * events.ts — Sub-router for POST /v1/events.
  *
  * CONTRACT-id: CONTRACT-api-events-v1
- * T-ID: T-1-017
+ * T-ID: T-1-017, T-2-010
  *
  * Model: "fast accept" (ADR-004).
  * Validates → replay protection → lead_token HMAC → insert raw_events → enqueue → 202.
  * No synchronous normalisation; ingestion processor handles raw_events async.
  *
  * Middleware applied before this handler (from index.ts):
- *   auth-public-token  → sets c.get('workspace_id'), c.get('page_id'), c.get('request_id')
- *   cors               → validates Origin against allowed_domains
- *   rate-limit         → sliding window via KV (100 req/min/workspace)
- *   sanitize-logs      → global; sets X-Request-Id
+ *   auth-public-token          → sets workspace_id, page_id, request_id
+ *   cors                       → validates Origin against allowed_domains
+ *   rate-limit                 → sliding window via KV (100 req/min/workspace)
+ *   sanitize-logs              → global; sets X-Request-Id
+ *   lead-token-validate (T-2-010) → injects lead_id from __ftk cookie when valid
  *
  * BRs applied:
  *   BR-EVENT-002: event_time clamped (not future, not past > window)
@@ -29,10 +30,12 @@
  * testable without a real DB binding.
  */
 
+import type { Db } from '@globaltracker/db';
 import { Hono } from 'hono';
 import { clampEventTime } from '../lib/event-time-clamp.js';
 import { parseLeadToken, verifyLeadToken } from '../lib/lead-token.js';
 import { isReplay, markSeen } from '../lib/replay-protection.js';
+import { createLeadTokenValidateMiddleware } from '../middleware/lead-token-validate.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { EventPayloadSchema } from './schemas/event-payload.js';
 
@@ -54,6 +57,8 @@ type AppVariables = {
   workspace_id: string;
   page_id: string;
   request_id: string;
+  /** Injected by lead-token-validate middleware (T-2-010) when __ftk cookie is valid. */
+  lead_id?: string;
 };
 
 type AppEnv = { Bindings: AppBindings; Variables: AppVariables };
@@ -78,14 +83,21 @@ export type InsertRawEventFn = (params: {
 // ---------------------------------------------------------------------------
 
 /**
- * Create the events sub-router with an optional raw_events insert function.
+ * Create the events sub-router with optional DB and raw_events insert function.
  *
  * @param insertRawEvent - injected by app bootstrapper; undefined in tests
+ * @param db             - Drizzle DB for lead-token-validate middleware (T-2-010)
  */
 export function createEventsRoute(
   insertRawEvent?: InsertRawEventFn,
+  db?: Db,
 ): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
+
+  // T-2-010: apply lead-token-validate middleware before the POST handler.
+  // Injects lead_id when __ftk cookie is present and valid.
+  // Anonymous events (no cookie or invalid cookie) pass through unblocked.
+  router.use('/', createLeadTokenValidateMiddleware(db));
 
   router.post('/', async (c) => {
     const requestId = c.get('request_id');
@@ -309,13 +321,20 @@ export function createEventsRoute(
     // -----------------------------------------------------------------------
     // Step 8: Enqueue to QUEUE_EVENTS for async ingestion
     // Ingestion processor normalises raw_events → events + dispatch_jobs.
+    // T-2-010: include lead_id when injected by lead-token-validate middleware
     // -----------------------------------------------------------------------
+    // lead_id is set by lead-token-validate middleware when __ftk is valid.
+    // When absent the event is anonymous — still enqueued (valid path).
+    const resolvedLeadId = c.get('lead_id');
+
     try {
       await c.env.QUEUE_EVENTS.send({
         event_id: payload.event_id,
         workspace_id: workspaceId,
         page_id: pageId,
         received_at: new Date(receivedAtMs).toISOString(),
+        // T-2-010: lead_id from validated cookie; undefined for anonymous events
+        ...(resolvedLeadId ? { lead_id: resolvedLeadId } : {}),
       });
     } catch (err) {
       // Queue error — log but still return 202 (raw_events already persisted)

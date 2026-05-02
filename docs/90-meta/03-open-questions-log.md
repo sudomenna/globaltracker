@@ -117,6 +117,20 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 
 ---
 
+## OQ-011 — Criação de dispatch_jobs pelo processor sem configuração de integração
+
+- **Origem:** T-2-006 — raw-events-processor Sprint 2.
+- **Contexto:** `dispatch_jobs` exige `destination`, `destination_account_id`, `destination_resource_id` (todos `notNull`). A tabela de configuração de integrações por workspace ainda não existe (Sprint 3+). Sem essa config não é possível criar `dispatch_jobs` com valores reais.
+  - Alternativa A: criar jobs com valores placeholder (`'pending_config'`) — viola semântica da tabela; pode conflitar com `chk_dispatch_jobs_destination` que valida valores canônicos.
+  - Alternativa B: skip silencioso quando payload não incluir `dispatch_config` — `dispatch_jobs_created=0`; processor retorna success sem jobs.
+  - Alternativa C: `MOD-DISPATCH.createDispatchJobs(event, ctx)` é a interface correta — mas não implementada ainda.
+- **Pergunta:** Qual estratégia adotar até que a config de integrações por workspace (Sprint 3) esteja disponível? Alternativa B (skip) ou C (delegar a createDispatchJobs que retorna 0)?
+- **Impacto se decidir errado:** jobs criados com dados fictícios poluem a tabela; ou jobs nunca são criados quando deveriam ser.
+- **Status:** aberta — T-2-006 implementado com skip silencioso (Alternativa B), `dispatch_jobs_created=0`. Rever no início do Sprint 3 quando integração config for adicionada.
+- **Classificação:** bloqueante para feature completa de dispatch; não bloqueia Sprint 2.
+
+---
+
 ## Política de promoção OQ → ADR
 
 OQ vira ADR quando:

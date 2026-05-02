@@ -17,6 +17,8 @@ export interface ConsentSnapshot {
   marketing: ConsentValue;
   ad_user_data: ConsentValue;
   ad_personalization: ConsentValue;
+  /** ConsentFinality: customer_match — optional, defaults to 'unknown' in payloads. */
+  customer_match?: ConsentValue;
 }
 
 export interface EventConfig {
@@ -35,6 +37,12 @@ export interface TrackerConfig {
   lead_token_settings: {
     ttl_days: number;
   };
+  /**
+   * Consent snapshot from the Edge config response.
+   * If absent, tracker defaults to 'unknown' for all finalities.
+   * BR-CONSENT-004: consent_analytics='denied' → tracker transitions to 'paused'.
+   */
+  consent?: ConsentSnapshot;
 }
 
 /** Platform cookies captured (read-only — tracker never creates these). */
