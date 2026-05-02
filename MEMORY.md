@@ -29,7 +29,7 @@
 | Sprint 1 | **completed** (2026-05-01, commit `79ec7d4`) | `docs/80-roadmap/01-sprint-1-fundacao-dados-contratos.md` |
 | Sprint 2 | **completed** (2026-05-02, commit 9e01566) | `docs/80-roadmap/02-sprint-2-runtime-tracking.md` |
 | Sprint 3 | **completed** (2026-05-02) | `docs/80-roadmap/03-sprint-3-meta-capi-webhooks.md` |
-| Sprint 4 | **em execução** (iniciado 2026-05-02) | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
+| Sprint 4 | **completed** (2026-05-02, commit b7af2a3) | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
 | Sprint 5 | planned | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
 | Sprint 6 | planned | `docs/80-roadmap/06-sprint-6-control-plane.md` |
 | Sprint 7 | planned | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
@@ -39,9 +39,9 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 4 EM EXECUÇÃO
-Último commit: bd6ff23 (branch main)
-Verificação S2: typecheck ✓  lint ✓  431 testes passando
+Estado:        SPRINT 4 COMPLETO — próximo: Sprint 5
+Último commit: b7af2a3 (branch main)
+Verificação S4: typecheck ✓  lint ✓  829 testes passando
 
 Sprint 0: COMPLETO
 Sprint 1: COMPLETO
@@ -58,7 +58,7 @@ Sprint 3: COMPLETO (2026-05-02)
   OQ-011 FECHADA: resolvida via tabela workspace_integrations + adapter Guru
   REMOVIDO: Hotmart, Kiwify, Stripe → movidos para Sprint 9
 
-Sprint 4: EM EXECUÇÃO (2026-05-02)
+Sprint 4: COMPLETO (2026-05-02, commit b7af2a3)
   Onda 1 (Cost ingestor + FX):
     - apps/edge/src/integrations/fx-rates/ — ECB/Wise/Manual clients + cache + factory
     - apps/edge/src/lib/fx.ts — getRateForPair (KV cache → provider retry → stale fallback)
@@ -130,8 +130,8 @@ Ver `docs/90-meta/03-open-questions-log.md#OQ-012`.
 ### Como retomar em nova sessão
 
 1. Ler este §5 + `git log -5` + `git status`
-2. Abrir `docs/80-roadmap/04-sprint-4-analytics-google.md`
-3. Verificar OQ-012 — GA4 client_id para comprador direto no checkout (não bloqueia Sprint 4)
+2. Abrir `docs/80-roadmap/05-sprint-5-audience-multitouch.md`
+3. Verificar OQ-012 — GA4 client_id para comprador direto no checkout (não bloqueia até Sprint 6)
 4. Decompor em ondas + despachar subagents conforme `CLAUDE.md §2`
 
 ## §6 Ambiente operacional
@@ -140,7 +140,7 @@ Ver `docs/90-meta/03-open-questions-log.md#OQ-012`.
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `bd6ff23` — docs Sprint 3 + protótipos |
+| Último commit | `b7af2a3` — Sprint 3 + Sprint 4 completos |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
