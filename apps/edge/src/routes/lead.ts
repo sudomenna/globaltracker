@@ -19,6 +19,10 @@ import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
 import { generateLeadToken } from '../lib/lead-token.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
+import {
+  shouldBypassTurnstile,
+  verifyTurnstileToken,
+} from '../middleware/turnstile.js';
 import { LeadPayloadSchema } from './schemas/lead-payload.js';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +41,12 @@ type AppBindings = {
    * BR-IDENTITY-005: HMAC secret must be a Wrangler secret — never hardcoded.
    */
   LEAD_TOKEN_HMAC_SECRET?: string;
+  /**
+   * Cloudflare Turnstile secret key for server-side token verification.
+   * ADR-024: bot mitigation on /v1/lead.
+   * Value set via: wrangler secret put TURNSTILE_SECRET_KEY
+   */
+  TURNSTILE_SECRET_KEY?: string;
 };
 
 type AppVariables = {
@@ -137,14 +147,83 @@ leadRoute.post('/', async (c) => {
   const payload = parsed.data;
 
   // -------------------------------------------------------------------------
-  // 3. Generate temporary lead_public_id for this fast-accept response.
+  // 3. Turnstile bot verification (ADR-024).
+  //    Runs after Zod validation but before any side effects (DB, queue).
+  //    BR-PRIVACY-001: 403 response must not include PII (email/phone).
+  // -------------------------------------------------------------------------
+  const turnstileToken = payload.cf_turnstile_response;
+  const turnstileSecret = c.env.TURNSTILE_SECRET_KEY;
+  const environment = c.env.ENVIRONMENT ?? 'production';
+
+  if (
+    shouldBypassTurnstile({
+      token: turnstileToken,
+      secretKey: turnstileSecret,
+      environment,
+    })
+  ) {
+    // ADR-024: dev bypass or no secret binding configured — skip verification
+    safeLog('info', {
+      event: 'turnstile_bypass',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      reason: !turnstileSecret ? 'no_secret_binding' : 'dev_environment',
+    });
+  } else if (!turnstileToken) {
+    // ADR-024: token absent in non-development environment → 403
+    // BR-PRIVACY-001: no PII in error response
+    return c.json(
+      {
+        code: 'bot_detected',
+        message: 'Bot verification failed.',
+        request_id: requestId,
+      },
+      403,
+    );
+  } else {
+    // Verify token against Cloudflare siteverify API
+    // ADR-024: < 5ms latency target; no retry loop
+    const result = await verifyTurnstileToken(
+      turnstileToken,
+      // turnstileSecret is guaranteed non-undefined here (shouldBypassTurnstile
+      // returns true when it's absent, so we only reach this branch with a value)
+      turnstileSecret as string,
+    );
+
+    if (!result.success) {
+      // ADR-024: invalid token → 403 bot_detected
+      // BR-PRIVACY-001: no PII (email/phone) in error response
+      safeLog('warn', {
+        event: 'turnstile_verification_failed',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        error_codes: result.error_codes,
+        // BR-PRIVACY-001: no PII logged
+      });
+      return c.json(
+        {
+          code: 'bot_detected',
+          message: 'Bot verification failed.',
+          request_id: requestId,
+        },
+        403,
+      );
+    }
+  }
+
+  // Strip cf_turnstile_response before inserting into raw_events.
+  // ADR-024: it is a mitigation field, not a business field.
+  const { cf_turnstile_response: _stripped, ...businessPayload } = payload;
+
+  // -------------------------------------------------------------------------
+  // 4. Generate temporary lead_public_id for this fast-accept response.
   //    The ingestion processor resolves/creates the real lead via
   //    resolveLeadByAliases() in Sprint 2.
   // -------------------------------------------------------------------------
   const leadPublicId = crypto.randomUUID();
 
   // -------------------------------------------------------------------------
-  // 4. Insert into raw_events (skip if DB binding not available).
+  // 5. Insert into raw_events (skip if DB binding not available).
   //    BR-EVENT-001: Edge inserts raw_events before returning 202.
   //    BR-PRIVACY-001: raw payload MAY contain PII in transit — that is
   //      intentional for the ingestion processor to hash/encrypt; do not log it.
@@ -159,7 +238,7 @@ leadRoute.post('/', async (c) => {
   }
 
   // -------------------------------------------------------------------------
-  // 5. Enqueue in QUEUE_EVENTS for ingestion processor.
+  // 6. Enqueue in QUEUE_EVENTS for ingestion processor.
   //    Payload contains PII — acceptable in transit to queue (encrypted in CF).
   //    BR-PRIVACY-001: this is not a log entry.
   // -------------------------------------------------------------------------
@@ -170,7 +249,8 @@ leadRoute.post('/', async (c) => {
       page_id: c.get('page_id'),
       lead_public_id: leadPublicId,
       received_at: new Date().toISOString(),
-      payload,
+      // ADR-024: use businessPayload (cf_turnstile_response already stripped)
+      payload: businessPayload,
     });
   } catch (err) {
     // Queue failure is non-fatal for 202 response — processor will retry.
@@ -184,7 +264,7 @@ leadRoute.post('/', async (c) => {
   }
 
   // -------------------------------------------------------------------------
-  // 6. Emit lead_token (HMAC).
+  // 7. Emit lead_token (HMAC).
   //    BR-IDENTITY-005: token is HMAC-signed; secret from Wrangler secret.
   //    BR-IDENTITY-005: lead_token must never appear in logs.
   // -------------------------------------------------------------------------
@@ -222,20 +302,20 @@ leadRoute.post('/', async (c) => {
   ).toISOString();
 
   // -------------------------------------------------------------------------
-  // 7. Set __ftk cookie if consent.functional === true.
+  // 8. Set __ftk cookie if consent.functional === true.
   //    INV-IDENTITY-006: __ftk only when consent.functional is true.
   //    BR-IDENTITY-005: HttpOnly, Secure, SameSite=Lax.
   //    Cookie: __ftk=<token>; Path=/; SameSite=Lax; Secure; Max-Age=5184000
   //    BR-PRIVACY-001: lead_token in cookie header is not a log entry.
   // -------------------------------------------------------------------------
-  if (payload.consent.functional) {
+  if (businessPayload.consent.functional) {
     // INV-IDENTITY-006: consent.functional must be true to set cookie
     const cookieHeader = buildLeadTokenCookie(leadToken, FTK_MAX_AGE_SECONDS);
     c.res.headers.append('Set-Cookie', cookieHeader);
   }
 
   // -------------------------------------------------------------------------
-  // 8. Return 202 Accepted.
+  // 9. Return 202 Accepted.
   //    BR-IDENTITY-005: lead_token IS returned in body — that is by contract.
   //    It is the browser's token and needs to be read by the tracker SDK.
   //    BR-PRIVACY-001: no PII (email/phone/name) in response.

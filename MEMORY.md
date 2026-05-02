@@ -56,7 +56,7 @@ Próximo: Sprint 2 — runtime de tracking
 
 | Item | Status | Ação necessária |
 |---|---|---|
-| Migration 0020 (FK ad_spend_daily→launches) | criada, não aplicada | `supabase db push` |
+| Migration 0020 (FK ad_spend_daily→launches) | ~~criada, não aplicada~~ **aplicada** (2026-05-02) | — |
 | Smoke E2E (T-1-021) | escrita, não executada | descomentar `localConnectionString` no `wrangler.toml` + `wrangler dev` |
 | Secrets produção | gerados localmente, não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET` e `wrangler secret put PII_MASTER_KEY_V1` |
 | Turnstile (ADR-024) | decidido, não implementado | implementar no Sprint 2 antes do go-live de `/v1/lead` |

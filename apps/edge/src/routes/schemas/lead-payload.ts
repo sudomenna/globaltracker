@@ -39,6 +39,12 @@ export const LeadPayloadSchema = z
     name: z.string().optional(),
     attribution: AttributionSchema,
     consent: ConsentSchema,
+    /**
+     * ADR-024: Cloudflare Turnstile response token.
+     * Optional for backwards compatibility with dev environments.
+     * Stripped from payload before raw_events insert (not a business field).
+     */
+    cf_turnstile_response: z.string().optional(),
   })
   .strict()
   .refine(

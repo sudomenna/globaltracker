@@ -24,10 +24,15 @@ max_batch_timeout = 5
 
 [vars]
 ENVIRONMENT = "development"
+# Bot mitigation — Cloudflare Turnstile (ADR-024)
+# Valor real via: wrangler secret put TURNSTILE_SECRET_KEY
+# Este placeholder NÃO vai para produção — é substituído pelo secret.
+TURNSTILE_SECRET_KEY = "REPLACE_WITH_WRANGLER_SECRET"
 
 # Secrets (não colocar valores aqui — usar wrangler secret put):
 # LEAD_TOKEN_HMAC_SECRET
 # PII_MASTER_KEY_V1
+# TURNSTILE_SECRET_KEY
 
 [[hyperdrive]]
 binding = "HYPERDRIVE"

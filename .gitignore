@@ -18,6 +18,7 @@ node_modules/
 .yarn/install-state.gz
 dist/
 build/
+!tests/build/
 .next/
 out/
 .turbo/
