@@ -147,6 +147,8 @@ const RawEventPayloadSchema = z.object({
   launch_id: z.string().uuid().optional(),
   // Request context snapshot
   request_context: z.record(z.unknown()).optional().default({}),
+  // is_test: injected by Edge when X-GT-Test-Mode: 1 header or __gt_test=1 cookie (T-8-004)
+  is_test: z.boolean().optional().default(false),
 });
 
 type RawEventPayload = z.infer<typeof RawEventPayloadSchema>;
@@ -384,6 +386,7 @@ export async function processRawEvent(
         consentSnapshot: consentSnapshot as Record<string, unknown>,
         requestContext: payload.request_context as Record<string, unknown>,
         processingStatus: 'accepted',
+        isTest: payload.is_test,
       })
       .returning({ id: events.id });
 

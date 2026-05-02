@@ -2,31 +2,33 @@
  * Integration tests — POST /v1/dispatch-jobs/:id/replay
  *
  * CONTRACT-api-dispatch-replay-v1
- * T-ID: T-6-008
+ * T-ID: T-8-009
  *
  * Covers:
- *   happy path: job in 'dead_letter' → 200, queued=true, audit recorded
- *   happy path: job in 'failed' → 200, queued=true
- *   not replayable: job in 'pending' → 409 job_not_replayable
- *   not replayable: job in 'processing' → 409 job_not_replayable
- *   not replayable: job in 'succeeded' → 409 job_not_replayable
+ *   happy path: job in 'dead_letter' → 202, new_job_id, status='queued', audit recorded
+ *   happy path: job in 'failed' → 202, new_job_id
+ *   happy path: job in 'succeeded' → 202 (succeeded is replayable per ADR-025)
+ *   not replayable: job in 'pending' → 409 not_replayable / job_in_progress
+ *   not replayable: job in 'processing' → 409 not_replayable / job_in_progress
+ *   not replayable: job in 'retrying' → 409 not_replayable / job_in_progress
  *   not found: job not in DB → 404 job_not_found
- *   concurrent modification: requeue returns null → 409 concurrent_modification
- *   invalid UUID :id → 400 validation_error
- *   body missing reason → 400 validation_error
- *   body reason too short → 400 validation_error
- *   body reason too long → 400 validation_error
+ *   missing justification → 400 validation_error
  *   body with extra field (.strict) → 400 validation_error
  *   body malformed JSON → 400 validation_error
+ *   invalid UUID :id → 400 validation_error
  *   missing Authorization header → 401
  *   malformed Authorization header → 401
  *   X-Request-Id present on all responses
+ *   audit action='replay_dispatch' with justification + original_job_id
+ *   test_mode=true sets is_test:true in new job payload (tested via createReplayJob stub)
  *
  * Test approach: real Hono app, injected stub DB functions + env bindings.
  * No external DB or Cloudflare runtime required — runs with vitest node environment.
  *
+ * ADR-025: creates new job child — does NOT reset the original.
+ * BR-DISPATCH-001: replay idempotency_key is distinct from original.
  * BR-DISPATCH-005: dead_letter não reprocessa automaticamente.
- * BR-AUDIT-001: toda mutação sensível registra audit_log (action='reprocess_dlq').
+ * BR-AUDIT-001: toda mutação sensível registra audit_log (action='replay_dispatch').
  * BR-PRIVACY-001: zero PII em logs e error responses.
  * BR-RBAC-002: workspace_id isolation via context variable.
  */
@@ -34,10 +36,10 @@
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  type CreateReplayJobFn,
   type DispatchJobForReplay,
   type GetDispatchJobFn,
   type InsertAuditEntryFn,
-  type RequeueDispatchJobFn,
   createDispatchReplayRoute,
 } from '../../../apps/edge/src/routes/dispatch-replay.js';
 
@@ -61,18 +63,34 @@ type Variables = {
 // ---------------------------------------------------------------------------
 
 const VALID_JOB_ID = '11111111-1111-1111-1111-111111111111';
+const NEW_JOB_ID = '22222222-2222-2222-2222-222222222222';
 const VALID_WORKSPACE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-const VALID_REASON = 'Reprocessing after platform outage was resolved';
+const VALID_JUSTIFICATION = 'Reprocessing after platform outage was resolved';
 
-function makeDeadLetterJob(
-  status: 'dead_letter' | 'failed' = 'dead_letter',
+function makeJob(
+  status: DispatchJobForReplay['status'] = 'dead_letter',
 ): DispatchJobForReplay {
   return {
     id: VALID_JOB_ID,
     workspace_id: VALID_WORKSPACE_ID,
+    lead_id: null,
+    event_id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    event_workspace_id: VALID_WORKSPACE_ID,
     destination: 'meta_capi',
+    destination_account_id: 'acct-123',
+    destination_resource_id: 'pixel-456',
+    destination_subresource: null,
+    max_attempts: 5,
+    payload: { event_name: 'Lead' },
     status,
   };
+}
+
+function makeCreateReplayJob(): CreateReplayJobFn {
+  return vi.fn(async () => ({
+    id: NEW_JOB_ID,
+    destination: 'meta_capi',
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -92,14 +110,12 @@ function makeFakeQueue(): Queue & { sent: unknown[] } {
 
 // ---------------------------------------------------------------------------
 // App + env builder
-// Following the pattern in tests/integration/routes/integrations-test.test.ts:
-// env is passed as the third argument to app.request() — not via middleware.
 // ---------------------------------------------------------------------------
 
 function buildApp(opts: {
   workspaceId?: string;
   getDispatchJob?: GetDispatchJobFn;
-  requeueDispatchJob?: RequeueDispatchJobFn;
+  createReplayJob?: CreateReplayJobFn;
   insertAuditEntry?: InsertAuditEntryFn;
   queue?: Queue & { sent: unknown[] };
 }): {
@@ -123,7 +139,7 @@ function buildApp(opts: {
     '/v1/dispatch-jobs',
     createDispatchReplayRoute({
       getDispatchJob: opts.getDispatchJob,
-      requeueDispatchJob: opts.requeueDispatchJob,
+      createReplayJob: opts.createReplayJob,
       insertAuditEntry: opts.insertAuditEntry,
     }),
   );
@@ -158,7 +174,9 @@ async function post(
   const bodyStr =
     opts.rawBody !== undefined
       ? opts.rawBody
-      : JSON.stringify(opts.body ?? { reason: VALID_REASON });
+      : JSON.stringify(
+          opts.body ?? { justification: VALID_JUSTIFICATION },
+        );
 
   return app.request(
     `/v1/dispatch-jobs/${jobId}/replay`,
@@ -224,7 +242,7 @@ describe('POST /v1/dispatch-jobs/:id/replay — validation', () => {
     expect(body.code).toBe('validation_error');
   });
 
-  it('returns 400 when body reason is missing', async () => {
+  it('returns 400 when body justification is missing', async () => {
     const { app, env } = buildApp({ workspaceId: VALID_WORKSPACE_ID });
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer token',
@@ -236,11 +254,11 @@ describe('POST /v1/dispatch-jobs/:id/replay — validation', () => {
     expect(body.code).toBe('validation_error');
   });
 
-  it('returns 400 when reason is too short (< 10 chars)', async () => {
+  it('returns 400 when justification is empty string', async () => {
     const { app, env } = buildApp({ workspaceId: VALID_WORKSPACE_ID });
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer token',
-      body: { reason: 'short' },
+      body: { justification: '' },
     });
 
     expect(res.status).toBe(400);
@@ -248,11 +266,11 @@ describe('POST /v1/dispatch-jobs/:id/replay — validation', () => {
     expect(body.code).toBe('validation_error');
   });
 
-  it('returns 400 when reason is too long (> 500 chars)', async () => {
+  it('returns 400 when justification is too long (> 500 chars)', async () => {
     const { app, env } = buildApp({ workspaceId: VALID_WORKSPACE_ID });
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer token',
-      body: { reason: 'a'.repeat(501) },
+      body: { justification: 'a'.repeat(501) },
     });
 
     expect(res.status).toBe(400);
@@ -264,7 +282,10 @@ describe('POST /v1/dispatch-jobs/:id/replay — validation', () => {
     const { app, env } = buildApp({ workspaceId: VALID_WORKSPACE_ID });
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer token',
-      body: { reason: VALID_REASON, unexpected_field: 'value' },
+      body: {
+        justification: VALID_JUSTIFICATION,
+        unexpected_field: 'value',
+      },
     });
 
     expect(res.status).toBe(400);
@@ -300,7 +321,6 @@ describe('POST /v1/dispatch-jobs/:id/replay — not found', () => {
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
       getDispatchJob: async () => null,
-      requeueDispatchJob: async () => null,
     });
 
     const res = await post(app, env, VALID_JOB_ID, { auth: 'Bearer token' });
@@ -312,50 +332,28 @@ describe('POST /v1/dispatch-jobs/:id/replay — not found', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 409 — not replayable
+// 409 — not replayable (job in progress)
 // ---------------------------------------------------------------------------
 
 describe('POST /v1/dispatch-jobs/:id/replay — not replayable', () => {
-  it.each([
-    'pending',
-    'processing',
-    'succeeded',
-    'skipped',
-    'retrying',
-  ] as const)(
-    'returns 409 job_not_replayable when status is %s',
+  // ADR-025: pending/processing/retrying are in-progress — cannot create duplicate
+  it.each(['pending', 'processing', 'retrying'] as const)(
+    'returns 409 not_replayable when status is %s',
     async (status) => {
       const { app, env } = buildApp({
         workspaceId: VALID_WORKSPACE_ID,
-        getDispatchJob: async () => ({
-          ...makeDeadLetterJob(),
-          status,
-        }),
-        requeueDispatchJob: async () => null,
+        getDispatchJob: async () => makeJob(status),
+        createReplayJob: makeCreateReplayJob(),
       });
 
       const res = await post(app, env, VALID_JOB_ID, { auth: 'Bearer token' });
 
       expect(res.status).toBe(409);
-      const body = await res.json<{ code: string }>();
-      expect(body.code).toBe('job_not_replayable');
+      const body = await res.json<{ error: string; reason: string }>();
+      expect(body.error).toBe('not_replayable');
+      expect(body.reason).toBe('job_in_progress');
     },
   );
-
-  it('returns 409 concurrent_modification when requeue returns null (race condition)', async () => {
-    const { app, env } = buildApp({
-      workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      // Simulates another process already changing status before our UPDATE
-      requeueDispatchJob: async () => null,
-    });
-
-    const res = await post(app, env, VALID_JOB_ID, { auth: 'Bearer token' });
-
-    expect(res.status).toBe(409);
-    const body = await res.json<{ code: string }>();
-    expect(body.code).toBe('concurrent_modification');
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -363,16 +361,12 @@ describe('POST /v1/dispatch-jobs/:id/replay — not replayable', () => {
 // ---------------------------------------------------------------------------
 
 describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
-  it('returns 200 queued=true for dead_letter job', async () => {
+  it('returns 202 with new_job_id for dead_letter job', async () => {
     const auditEntries: unknown[] = [];
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'meta_capi',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async (entry) => {
         auditEntries.push(entry);
       }),
@@ -380,55 +374,55 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
 
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer operator-token',
-      body: { reason: VALID_REASON },
+      body: { justification: VALID_JUSTIFICATION },
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json<{
-      queued: boolean;
-      job_id: string;
-      destination: string;
-      message: string;
-    }>();
-
-    expect(body.queued).toBe(true);
-    expect(body.job_id).toBe(VALID_JOB_ID);
-    expect(body.destination).toBe('meta_capi');
-    expect(body.message).toBe('Job enfileirado para re-processamento');
+    expect(res.status).toBe(202);
+    const body = await res.json<{ new_job_id: string; status: string }>();
+    expect(body.new_job_id).toBe(NEW_JOB_ID);
+    expect(body.status).toBe('queued');
   });
 
-  it('returns 200 queued=true for failed job', async () => {
+  it('returns 202 with new_job_id for failed job', async () => {
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('failed'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'ga4_mp',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('failed'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async () => {}),
     });
 
     const res = await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer operator-token',
-      body: { reason: VALID_REASON },
+      body: { justification: VALID_JUSTIFICATION },
     });
 
-    expect(res.status).toBe(200);
-    const body = await res.json<{ queued: boolean; destination: string }>();
-    expect(body.queued).toBe(true);
-    expect(body.destination).toBe('ga4_mp');
+    expect(res.status).toBe(202);
+    const body = await res.json<{ new_job_id: string; status: string }>();
+    expect(body.new_job_id).toBe(NEW_JOB_ID);
+    expect(body.status).toBe('queued');
   });
 
-  it('enqueues message to QUEUE_DISPATCH on success', async () => {
+  it('returns 202 for succeeded job (succeeded is replayable per ADR-025)', async () => {
+    const { app, env } = buildApp({
+      workspaceId: VALID_WORKSPACE_ID,
+      getDispatchJob: async () => makeJob('succeeded'),
+      createReplayJob: makeCreateReplayJob(),
+      insertAuditEntry: vi.fn(async () => {}),
+    });
+
+    const res = await post(app, env, VALID_JOB_ID, {
+      auth: 'Bearer operator-token',
+      body: { justification: VALID_JUSTIFICATION },
+    });
+
+    expect(res.status).toBe(202);
+  });
+
+  it('enqueues new_job_id to QUEUE_DISPATCH on success', async () => {
     const { app, env, queue } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'meta_capi',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async () => {}),
     });
 
@@ -439,12 +433,12 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
     expect(queue.send).toHaveBeenCalledOnce();
     const callArg = (queue.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(callArg).toMatchObject({
-      dispatch_job_id: VALID_JOB_ID,
+      dispatch_job_id: NEW_JOB_ID,
       destination: 'meta_capi',
     });
   });
 
-  it('records audit log with action=reprocess_dlq on success', async () => {
+  it('records audit log with action=replay_dispatch and justification', async () => {
     const auditEntries: Array<{
       action: string;
       entity_type: string;
@@ -454,12 +448,8 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
 
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'meta_capi',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async (entry) => {
         auditEntries.push(
           entry as {
@@ -474,29 +464,78 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
 
     await post(app, env, VALID_JOB_ID, {
       auth: 'Bearer operator-token',
-      body: { reason: VALID_REASON },
+      body: { justification: VALID_JUSTIFICATION },
     });
 
     expect(auditEntries).toHaveLength(1);
     // biome-ignore lint/style/noNonNullAssertion: guarded by toHaveLength(1) assertion above
     const entry = auditEntries[0]!;
-    expect(entry.action).toBe('reprocess_dlq');
+    // BR-AUDIT-001: action='replay_dispatch' per CONTRACT-api-dispatch-replay-v1
+    expect(entry.action).toBe('replay_dispatch');
     expect(entry.entity_type).toBe('dispatch_job');
-    expect(entry.entity_id).toBe(VALID_JOB_ID);
-    expect(entry.metadata.reason).toBe(VALID_REASON);
+    expect(entry.entity_id).toBe(NEW_JOB_ID);
+    // ADR-025: audit records both original and new job IDs
+    expect(entry.metadata.original_job_id).toBe(VALID_JOB_ID);
+    expect(entry.metadata.new_job_id).toBe(NEW_JOB_ID);
+    expect(entry.metadata.justification).toBe(VALID_JUSTIFICATION);
     // BR-PRIVACY-001: no PII in audit metadata
     expect(JSON.stringify(entry)).not.toMatch(/email|phone|name/i);
   });
 
-  it('returns X-Request-Id header on 200', async () => {
+  it('passes test_mode=true in payload to createReplayJob when test_mode=true', async () => {
+    const createReplayJob = vi.fn(async () => ({
+      id: NEW_JOB_ID,
+      destination: 'meta_capi',
+    }));
+
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'meta_capi',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob,
+      insertAuditEntry: vi.fn(async () => {}),
+    });
+
+    await post(app, env, VALID_JOB_ID, {
+      auth: 'Bearer operator-token',
+      body: { justification: VALID_JUSTIFICATION, test_mode: true },
+    });
+
+    expect(createReplayJob).toHaveBeenCalledOnce();
+    const callArg = (createReplayJob as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as { payload: Record<string, unknown> };
+    expect(callArg.payload.is_test).toBe(true);
+  });
+
+  it('createReplayJob receives replayed_from_dispatch_job_id = original job id', async () => {
+    const createReplayJob = vi.fn(async () => ({
+      id: NEW_JOB_ID,
+      destination: 'meta_capi',
+    }));
+
+    const { app, env } = buildApp({
+      workspaceId: VALID_WORKSPACE_ID,
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob,
+      insertAuditEntry: vi.fn(async () => {}),
+    });
+
+    await post(app, env, VALID_JOB_ID, {
+      auth: 'Bearer operator-token',
+      body: { justification: VALID_JUSTIFICATION },
+    });
+
+    expect(createReplayJob).toHaveBeenCalledOnce();
+    const callArg = (createReplayJob as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as { replayed_from_dispatch_job_id: string };
+    // ADR-025: new job must link back to the original
+    expect(callArg.replayed_from_dispatch_job_id).toBe(VALID_JOB_ID);
+  });
+
+  it('returns X-Request-Id header on 202', async () => {
+    const { app, env } = buildApp({
+      workspaceId: VALID_WORKSPACE_ID,
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async () => {}),
     });
 
@@ -504,15 +543,11 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
     expect(res.headers.get('X-Request-Id')).toBeTruthy();
   });
 
-  it('returns 200 even when insertAuditEntry throws (audit soft-fail)', async () => {
+  it('returns 202 even when insertAuditEntry throws (audit soft-fail)', async () => {
     const { app, env } = buildApp({
       workspaceId: VALID_WORKSPACE_ID,
-      getDispatchJob: async () => makeDeadLetterJob('dead_letter'),
-      requeueDispatchJob: async (jobId) => ({
-        id: jobId,
-        destination: 'meta_capi',
-        status: 'pending',
-      }),
+      getDispatchJob: async () => makeJob('dead_letter'),
+      createReplayJob: makeCreateReplayJob(),
       insertAuditEntry: vi.fn(async () => {
         throw new Error('DB unavailable');
       }),
@@ -520,17 +555,17 @@ describe('POST /v1/dispatch-jobs/:id/replay — happy path', () => {
 
     const res = await post(app, env, VALID_JOB_ID, { auth: 'Bearer token' });
     // BR-AUDIT-001: audit failure should NOT fail the request (job already enqueued)
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
   });
 
-  it('returns 200 with no DB deps injected (stub mode)', async () => {
+  it('returns 202 with no DB deps injected (stub mode)', async () => {
     // When no deps are provided, route skips DB checks and goes straight
     // to queue.send — useful for smoke-testing the route wiring.
     const { app, env } = buildApp({ workspaceId: VALID_WORKSPACE_ID });
 
     const res = await post(app, env, VALID_JOB_ID, { auth: 'Bearer token' });
-    expect(res.status).toBe(200);
-    const body = await res.json<{ queued: boolean }>();
-    expect(body.queued).toBe(true);
+    expect(res.status).toBe(202);
+    const body = await res.json<{ status: string }>();
+    expect(body.status).toBe('queued');
   });
 });

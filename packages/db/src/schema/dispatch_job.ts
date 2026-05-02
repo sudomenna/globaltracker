@@ -120,6 +120,11 @@ export const dispatchJobs = pgTable('dispatch_jobs', {
   updatedAt: timestamp('updated_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
+
+  // replayed_from_dispatch_job_id: logical reference to the original job (ADR-025, T-8-001).
+  // NULL for jobs created by ingestion processor. Non-null when created via replay endpoint.
+  // No referential FK — avoids self-referential cycle; integrity at app layer.
+  replayedFromDispatchJobId: uuid('replayed_from_dispatch_job_id'),
 });
 
 export type DispatchJob = typeof dispatchJobs.$inferSelect;

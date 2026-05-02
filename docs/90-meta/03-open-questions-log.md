@@ -164,7 +164,8 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
   - **Opção B — atualizar o contrato:** manter o reset do job existente. Mais simples, sem migration. Adequado se auditoria de tentativas individuais não for necessária para o produto.
 - **Impacto:** se Opção A, precisar de migration + ajuste do schema `dispatch_jobs` + refatoração do route + testes. Se Opção B, atualizar `05-api-server-actions.md` e remover o SYNC-PENDING.
 - **Não bloqueia** nenhum sprint ativo (Sprint 8).
-- **Status:** **ABERTA**
+- **Status:** **FECHADA — Sprint 8 (2026-05-02). Decisão: Opção A → ADR-025.**
+- **Decisão:** Criar novo `dispatch_job` filho com `replayed_from_dispatch_job_id`. Preserva histórico completo. Migration 0026 adicionou a coluna. T-8-009 refatorou a route.
 
 ---
 

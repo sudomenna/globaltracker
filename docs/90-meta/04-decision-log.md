@@ -630,6 +630,32 @@ Aceito (2026-05-01).
 
 ---
 
+## ADR-025 — dispatch-replay: criar novo job filho (Opção A)
+
+### Status
+Aceito (2026-05-02). Fecha OQ-013.
+
+### Contexto
+`POST /v1/dispatch-jobs/:id/replay` tinha divergência: o contrato previa criação de novo job filho com `replayed_from_dispatch_job_id`; a implementação resetava o job existente (perdia histórico de tentativas).
+
+### Alternativas consideradas
+- **(Opção A):** criar novo `dispatch_job` com `replayed_from_dispatch_job_id = original_id`. Preserva histórico completo. Requer migration.
+- **(Opção B):** manter reset do job existente. Mais simples, sem migration. Histórico perdido.
+
+### Decisão
+**Opção A.** Histórico completo de tentativas é essencial para diagnóstico (BR-AUDIT-001). Coluna `replayed_from_dispatch_job_id uuid NULL` adicionada em migration 0026.
+
+### Consequências
+- (+) Rastreabilidade completa: cada replay é um job distinto com seus próprios `dispatch_attempts`.
+- (+) Sem breaking change — contrato já estava correto.
+- (-) Migration 0026 adiciona coluna nullable (impacto mínimo).
+- (-) Route refatorada para criar novo job em vez de resetar.
+
+### Impacta
+`packages/db/src/schema/dispatch_job.ts` · `packages/db/migrations/0026_test_mode_replay.sql` · `apps/edge/src/routes/dispatch-replay.ts` · `apps/edge/src/lib/dispatch.ts`.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

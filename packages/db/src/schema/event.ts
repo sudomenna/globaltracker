@@ -1,4 +1,5 @@
 import {
+  boolean,
   integer,
   jsonb,
   pgTable,
@@ -116,6 +117,11 @@ export const events = pgTable('events', {
   // EventProcessingStatus: 'accepted' | 'enriched' | 'rejected_archived_launch' | 'rejected_consent' | 'rejected_validation'
   // chk_events_processing_status enforces valid values
   processingStatus: text('processing_status').notNull().default('accepted'),
+
+  // is_test: true when ingested in test mode (BR-TEST-MODE, T-8-001)
+  // BR-PRIVACY-001: not PII; no special access restriction.
+  // Events with is_test=true do NOT count toward dashboards or audiences.
+  isTest: boolean('is_test').notNull().default(false),
 
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()

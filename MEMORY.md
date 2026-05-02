@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- `POST /v1/dispatch-jobs/:id/replay`: divergência contrato ↔ implementação registrada em **OQ-013** (`docs/90-meta/03-open-questions-log.md`). Aguarda decisão: criar novo job (Opção A) vs. atualizar contrato para refletir reset (Opção B).
+- `POST /v1/dispatch-jobs/:id/replay`: OQ-013 **FECHADA** → ADR-025 (Opção A). Route refatorada para criar job filho em T-8-009. SYNC resolvido.
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -33,18 +33,33 @@
 | Sprint 5 | **completed** (2026-05-02, commit 3757690) | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
 | Sprint 6 | **completed** (2026-05-02, commit e613140) | `docs/80-roadmap/06-sprint-6-control-plane.md` |
 | Sprint 7 | **completed** (2026-05-02, commit bd44b7f) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
-| Sprint 8 | **planned** | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
+| Sprint 8 | **completed** (2026-05-02, commit pendente) | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 | Sprint 9 | planned | `docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 7 COMPLETO — pronto para iniciar SPRINT 8
-Último commit: 62e5659 (branch main) — MEMORY.md Sprint 7 completed
+Estado:        SPRINT 8 COMPLETO — commit feito, migration 0026 aplicada
+Último commit: 62e5659 (branch main) — Sprint 7 completed (Sprint 8 não commitado ainda)
 Branch:        main (17 commits à frente de origin/main — não pushado)
-Verificação:   typecheck ✓  lint ✓  1297 testes passando (88 test files)
-DB Supabase:   migrations 0000–0025 aplicadas ✓
+Verificação:   typecheck ✓  lint ✓  1351 testes passando (82 test files)
+DB Supabase:   migrations 0000–0026 aplicadas ✓
 ```
+
+### Sprint 8 — estado das T-IDs
+
+| T-ID | Status | Descrição |
+|---|---|---|
+| T-8-001 | ✅ done | schema: events.isTest + dispatch_jobs.replayedFromDispatchJobId + migration 0026 |
+| T-8-002 | ✅ done | lib/test-mode.ts (helpers KV + detecção header/cookie) |
+| T-8-003 | ✅ done | routes POST/GET /v1/workspace/test-mode + audit log |
+| T-8-004 | ✅ done | propagação is_test no events.ts + raw-events-processor |
+| T-8-005 | ✅ done | dispatchers: Meta test_event_code, GA4 debug, Google Ads skip(test_mode) |
+| T-8-006 | ✅ done | 54 novos testes (detection, kv, routes, propagation) |
+| T-8-007 | ✅ done | Live Event Console UI (Supabase Realtime + TanStack Virtual) |
+| T-8-008 | ✅ done | Test Mode Toggle UI (AlertDialog + countdown + filtro is_test) |
+| T-8-009 | ✅ done | dispatch-replay refatorado → cria job filho (ADR-025) |
+| T-8-010 | ✅ done | Replay modal UI no CP (ReplayModal.tsx) |
 
 ### Pendências operacionais antes de produção
 
@@ -56,11 +71,12 @@ DB Supabase:   migrations 0000–0025 aplicadas ✓
 | Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
 | Secrets Sprint 5 (audience) | não deployados | `META_CUSTOM_AUDIENCE_TOKEN META_DEFAULT_AD_ACCOUNT_ID` |
 | Secrets Sprint 7 (orchestrator) | não deployados | `TRIGGER_SECRET_KEY DATABASE_URL CF_PAGES_API_TOKEN CF_ACCOUNT_ID` |
-| dispatch-replay shape | OQ-013 ABERTA | Decidir entre criar novo job vs. atualizar contrato (ver §2 e OQ-013) |
+| Migration 0026 (Sprint 8) | ✅ aplicada (2026-05-02) | — |
+| dispatch-replay shape | ✅ OQ-013 → ADR-025 | T-8-009 concluída — cria job filho |
 
 ### Decisões já tomadas (não reabrir)
 
-- ADR-001 a ADR-024 em `docs/90-meta/04-decision-log.md`
+- ADR-001 a ADR-025 em `docs/90-meta/04-decision-log.md`
 - OQ-012 ABERTA: GA4 client_id para comprador direto no checkout (não bloqueia Sprint 8)
 
 ### Notas técnicas
@@ -100,10 +116,10 @@ DB Supabase:   migrations 0000–0025 aplicadas ✓
 
 ```
 1. Ler este §5 (estado atual)
-2. git log -5 + git status (confirmar branch main + commit 62e5659)
-3. Abrir docs/80-roadmap/08-sprint-8-ai-dashboard.md (tabela mestre T-IDs)
-4. Verificar pnpm typecheck && pnpm test antes de iniciar
-5. Despachar ondas do Sprint 8 conforme protocolo de paralelização
+2. git log -5 + git status (confirmar branch main — Sprint 8 não commitado ainda)
+3. Aplicar migration 0026 no Supabase antes de qualquer deploy
+4. Verificar pnpm typecheck && pnpm test (deve estar verde: 1351 testes)
+5. Sprint 9 planejado em docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md
 ```
 
 ## §6 Ambiente operacional

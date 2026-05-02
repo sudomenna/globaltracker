@@ -407,6 +407,15 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     }
 
     // 5. Map internal event → MetaCapiPayload.
+    // T-8-005: test_event_code only added when is_test=true; never leak env var to prod events.
+    let resolvedTestEventCode: string | undefined;
+    if (event.isTest) {
+      resolvedTestEventCode = env.META_CAPI_TEST_EVENT_CODE;
+      if (!resolvedTestEventCode) {
+        safeLog('warn', { event: 'meta_capi_test_mode_no_code', dispatch_job_id: job.id });
+      }
+    }
+
     const payload = mapEventToMetaPayload(
       {
         event_id: event.id,
@@ -422,7 +431,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         >[0]['custom_data'],
       },
       lead ? { email_hash: lead.emailHash, phone_hash: lead.phoneHash } : null,
-      { testEventCode: env.META_CAPI_TEST_EVENT_CODE },
+      { testEventCode: resolvedTestEventCode },
     );
 
     // 6. Send to Meta CAPI — injectable fetch.
@@ -431,7 +440,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       {
         pixelId: job.destinationResourceId,
         accessToken: env.META_CAPI_TOKEN,
-        testEventCode: env.META_CAPI_TEST_EVENT_CODE,
+        testEventCode: resolvedTestEventCode,
       },
       fetch,
     );
@@ -549,7 +558,8 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
       {
         measurementId: env.GA4_MEASUREMENT_ID,
         apiSecret: env.GA4_API_SECRET,
-        debugMode: env.DEBUG_GA4 === 'true',
+        // T-8-005: use debug endpoint when is_test=true OR DEBUG_GA4 env var set
+        debugMode: event.isTest || env.DEBUG_GA4 === 'true',
       },
       fetch,
     );
@@ -590,6 +600,12 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
 
     if (!event) {
       return { ok: false, kind: 'permanent_failure', code: 'event_not_found' };
+    }
+
+    // T-8-005: Google Ads Conversion Upload has no test/sandbox concept isolated from prod.
+    // Skip entirely to avoid polluting real conversion data. BR-DISPATCH-004: skip_reason non-empty.
+    if (event.isTest) {
+      return { ok: false, kind: 'skip', reason: 'test_mode' };
     }
 
     // 2. Load launch config (for conversion_actions + ads_customer_id).
@@ -708,6 +724,12 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
 
     if (!event) {
       return { ok: false, kind: 'permanent_failure', code: 'event_not_found' };
+    }
+
+    // T-8-005: Enhanced Conversions has no sandbox mode — skip test events entirely.
+    // BR-DISPATCH-004: skip_reason non-empty.
+    if (event.isTest) {
+      return { ok: false, kind: 'skip', reason: 'test_mode' };
     }
 
     // 2. Load lead (if associated).

@@ -146,6 +146,38 @@ export async function computeIdempotencyKey(
 }
 
 // ---------------------------------------------------------------------------
+// computeReplayIdempotencyKey — pure function, no I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives a deterministic idempotency key for a replay job.
+ *
+ * ADR-025: replay creates a new job child — must have a key distinct from the
+ *   original to avoid violating INV-DISPATCH-001 (unique constraint).
+ * BR-DISPATCH-001: key must remain globally unique.
+ *
+ * Formula: sha256(original_id|'replay'|replayed_at_iso)
+ * Including the ISO timestamp ensures two replays of the same job at different
+ * times each receive a unique key.
+ *
+ * @param originalJobId - UUID of the original dispatch_job being replayed
+ * @param replayedAt    - timestamp of the replay request (use new Date().toISOString())
+ * @returns hex-encoded SHA-256 digest
+ */
+export async function computeReplayIdempotencyKey(
+  originalJobId: string,
+  replayedAt: string,
+): Promise<string> {
+  // ADR-025: include 'replay' literal + original_id + timestamp to guarantee uniqueness
+  const raw = [originalJobId, 'replay', replayedAt].join('|');
+
+  const encoded = new TextEncoder().encode(raw);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ---------------------------------------------------------------------------
 // computeBackoff — pure function, no I/O
 // ---------------------------------------------------------------------------
 

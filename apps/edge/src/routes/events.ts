@@ -33,6 +33,7 @@
 import type { Db } from '@globaltracker/db';
 import { Hono } from 'hono';
 import { clampEventTime } from '../lib/event-time-clamp.js';
+import { isTestModeRequest } from '../lib/test-mode.js';
 import { parseLeadToken, verifyLeadToken } from '../lib/lead-token.js';
 import { isReplay, markSeen } from '../lib/replay-protection.js';
 import { createLeadTokenValidateMiddleware } from '../middleware/lead-token-validate.js';
@@ -271,10 +272,14 @@ export function createEventsRoute(
     //
     // If insertRawEvent is undefined (no DB wired), skip silently and log warn.
     // -----------------------------------------------------------------------
+    // T-8-004: detect test mode from header/cookie and embed in payload
+    const isTest = isTestModeRequest(c.req.raw.headers);
     const rawPayload: Record<string, unknown> = {
       ...(rawBody as Record<string, unknown>),
       // Store clamped event_time so processor sees the corrected value
       event_time: effectiveEventTime,
+      // BR-TEST-MODE: propagate test flag to processor for events.is_test
+      is_test: isTest,
     };
 
     if (insertRawEvent) {
