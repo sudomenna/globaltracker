@@ -98,10 +98,15 @@
 
 ## 10. Contratos expostos
 
-- `createDispatchJobs(event, ctx): Promise<DispatchJob[]>` — ingestion processor cria jobs após normalizar evento.
-- `processDispatchJob(job_id, ctx): Result<DispatchAttempt, ProcessingError>`
-- `markDeadLetter(job_id, reason, ctx): Promise<void>`
-- `requeueDeadLetter(job_id, ctx): Result<void, NotInDeadLetter>` — reprocessamento manual.
+Todas as funções recebem `db: Db` como último parâmetro (injeção de dependência explícita — sem singleton).
+
+- `createDispatchJobs(inputs: DispatchJobInput[], db: Db): Promise<DispatchJob[]>` — ingestion processor cria jobs após normalizar evento. Usa `ON CONFLICT DO NOTHING`; retorna registros existentes em caso de replay.
+- `processDispatchJob(jobId: string, dispatchFn: DispatchFn, db: Db): Promise<Result<DispatchAttempt, ProcessingError>>` — adquire lock atômico, chama `dispatchFn` injetado, registra attempt.
+- `markDeadLetter(jobId: string, reason: string, db: Db, attemptOpts?: DeadLetterAttemptOpts): Promise<void>` — move job para `dead_letter`; `attemptOpts` evita round-trip extra quando chamado internamente pelo `processDispatchJob`.
+- `requeueDeadLetter(jobId: string, db: Db): Promise<Result<void, RequeueError>>` — reprocessamento manual; só aceita jobs em `dead_letter`.
+- `createSkippedJob(input: DispatchJobInput, skipReason: string, db: Db): Promise<Result<DispatchJob, {code: 'empty_skip_reason'} | {code: 'conflict_existing'}>>` — cria job diretamente em estado `skipped`; valida `skipReason` não-vazio (INV-DISPATCH-004).
+- `computeIdempotencyKey(params: IdempotencyKeyParams): Promise<string>` — função pura; SHA-256 dos 5 campos canônicos (INV-DISPATCH-002).
+- `computeBackoff(attempt: number, random?: () => number): number` — função pura; retorna delay em ms com ±20% jitter (INV-DISPATCH-007).
 
 ## 11. Eventos de timeline emitidos
 

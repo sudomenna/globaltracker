@@ -77,9 +77,9 @@ Rotação: anual ou após incidente. Tokens novos coexistem em window de 24h dur
 
 `apps/edge/src/dispatchers/meta-capi/`:
 - `index.ts` — main dispatcher
-- `mapper.ts` — `mapEventToMetaPayload(event, lead, ctx): MetaCapiRequest`
-- `client.ts` — HTTP client com retry awareness
-- `eligibility.ts` — pre-dispatch checks
+- `mapper.ts` — `mapEventToMetaPayload(event: DispatchableEvent, lead: DispatchableLead | null, ctx?: MapperContext): MetaCapiPayload` — função pura, sem I/O
+- `client.ts` — `sendToMetaCapi(payload: MetaCapiPayload, config: MetaCapiConfig, fetchFn?): Promise<MetaCapiResult>` com retry awareness; `classifyMetaCapiError(result): 'retry' | 'permanent' | 'skip'`
+- `eligibility.ts` — `checkEligibility(event: EligibilityEvent, lead: EligibilityLead | null, launchConfig: MetaLaunchConfig | null): EligibilityResult` — pré-dispatch checks (pixel_id, consent, user_data)
 
 ## Observabilidade
 

@@ -7,12 +7,12 @@ Receber notificações de transações, assinaturas e e-tickets do Digital Manag
 
 | `webhook_type` | `status` / gatilho | Mapeia para evento interno | Idempotency key derivada de |
 |---|---|---|---|
-| `transaction` | `approved` | `Purchase` | `"guru:" + id + ":approved"` |
-| `transaction` | `refunded` | `RefundProcessed` | `"guru:" + id + ":refunded"` |
-| `transaction` | `chargedback` | `Chargeback` | `"guru:" + id + ":chargedback"` |
-| `transaction` | `canceled` | `OrderCanceled` | `"guru:" + id + ":canceled"` |
-| `subscription` | `active` | `SubscriptionActivated` | `"guru:sub:" + id + ":active"` |
-| `subscription` | `canceled` | `SubscriptionCanceled` | `"guru:sub:" + id + ":canceled"` |
+| `transaction` | `approved` | `Purchase` | `sha256("guru:transaction:" + id + ":approved")[:32]` |
+| `transaction` | `refunded` | `RefundProcessed` | `sha256("guru:transaction:" + id + ":refunded")[:32]` |
+| `transaction` | `chargedback` | `Chargeback` | `sha256("guru:transaction:" + id + ":chargedback")[:32]` |
+| `transaction` | `canceled` | `OrderCanceled` | `sha256("guru:transaction:" + id + ":canceled")[:32]` |
+| `subscription` | `active` | `SubscriptionActivated` | `sha256("guru:subscription:" + id + ":active")[:32]` |
+| `subscription` | `canceled` | `SubscriptionCanceled` | `sha256("guru:subscription:" + id + ":canceled")[:32]` |
 | `eticket` | qualquer | *(Fase 4+, ignorar por ora)* | — |
 
 > Eventos `eticket` são recebidos com 202 e não processados na Fase 3; persisted em `raw_events` com `processing_status='skipped'`.
@@ -118,11 +118,17 @@ if (!workspace) return c.json({ error: 'unauthorized' }, 400);
 
 ```ts
 // apps/edge/src/integrations/guru/mapper.ts
-mapGuruTransactionToInternal(payload: GuruTransactionPayload): Result<InternalEvent, MappingError>
-mapGuruSubscriptionToInternal(payload: GuruSubscriptionPayload): Result<InternalEvent, MappingError>
+
+// MapResult é uma union de três variantes:
+//   { ok: true; value: InternalEvent }
+//   { ok: false; skip: true; reason: string }          — status ignorável (waiting_payment, expired, overdue)
+//   { ok: false; skip?: false; error: MappingError }   — erro real (campo ausente, status desconhecido)
+
+mapGuruTransactionToInternal(payload: GuruTransactionPayload): Promise<MapResult>
+mapGuruSubscriptionToInternal(payload: GuruSubscriptionPayload): Promise<MapResult>
 ```
 
-Funções puras, testáveis com fixtures sem I/O.
+Funções assíncronas (usam Web Crypto para derivar `event_id`), sem outros efeitos colaterais; testáveis com fixtures sem I/O de rede ou banco.
 
 ## Associação a lead
 
@@ -146,11 +152,13 @@ const amountBRL = payload.payment.total / 100; // 29700 → 297.00
 ## Idempotência
 
 ```ts
-event_id = sha256("guru:" + webhook_type + ":" + id + ":" + status)[:32]
+// BR-WEBHOOK-002: função deriveGuruEventId em mapper.ts
+event_id = sha256("guru:" + webhookType + ":" + id + ":" + status).slice(0, 32)
 ```
 
-Para `transaction`: `id` = UUID da transação.  
-Para `subscription`: `id` = `id` da assinatura (ex: `sub_BOAEj2WTKoclmg4X`).
+`webhookType` é o valor literal (`"transaction"` ou `"subscription"`).  
+Para `transaction`: `id` = UUID da transação; `status` = valor do campo `status`.  
+Para `subscription`: `id` = campo `id` da assinatura (ex: `sub_BOAEj2WTKoclmg4X`); `status` = valor de `last_status`.
 
 ## Status de transação mapeáveis
 
