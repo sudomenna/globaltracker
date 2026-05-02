@@ -79,6 +79,7 @@ import { integrationsTestRoute } from './routes/integrations-test.js';
 import { leadRoute } from './routes/lead.js';
 import { leadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
+import { orchestratorRoute } from './routes/orchestrator.js';
 import { pagesStatusRoute } from './routes/pages-status.js';
 import { redirectRoute } from './routes/redirect.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
@@ -241,6 +242,7 @@ app.route('/v1/onboarding', onboardingStateRoute);
 app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);
 app.route('/v1/leads', leadsTimelineRoute);
+app.route('/v1/orchestrator/workflows', orchestratorRoute);
 
 // ---------------------------------------------------------------------------
 // Queue consumer — gt-dispatch

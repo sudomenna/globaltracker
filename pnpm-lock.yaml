@@ -122,9 +122,15 @@ importers:
 
   apps/orchestrator:
     dependencies:
+      '@globaltracker/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@trigger.dev/sdk':
         specifier: ^3.0.0
         version: 3.3.17(zod@3.25.76)
+      drizzle-orm:
+        specifier: ^0.30.0
+        version: 0.30.10(@cloudflare/workers-types@4.20260501.1)(@opentelemetry/api@1.9.0)(@types/react@19.2.14)(postgres@3.4.9)(react@19.2.5)
     devDependencies:
       '@trigger.dev/build':
         specifier: ^3.0.0

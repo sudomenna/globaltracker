@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@trigger.dev/sdk": "^3.0.0"
+    "@globaltracker/db": "workspace:*",
+    "@trigger.dev/sdk": "^3.0.0",
+    "drizzle-orm": "^0.30.0"
   },
   "devDependencies": {
     "@trigger.dev/build": "^3.0.0",
