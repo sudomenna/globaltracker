@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- `POST /v1/dispatch-jobs/:id/replay`: contrato JÁ existe em `docs/30-contracts/05-api-server-actions.md` (CONTRACT-api-dispatch-replay-v1) e implementação existe em `apps/edge/src/routes/dispatch-replay.ts`. **Divergência de shape**: implementação retorna 200 + `{ queued, job_id, destination }`, contrato especifica 202 + `{ new_job_id, status: 'queued' }` e body `{ justification }` vs `{ reason }`. Fix incluído em T-7-004 do Sprint 7.
+- `POST /v1/dispatch-jobs/:id/replay`: contrato em `docs/30-contracts/05-api-server-actions.md` especifica 202 + `{ new_job_id, status: 'queued' }` + body `{ justification }`, mas implementação em `apps/edge/src/routes/dispatch-replay.ts` retorna 200 + `{ queued, job_id, destination }` + body `{ reason }`. Correção planejada antes da onda 3 ou como T-ID isolada.
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -32,40 +32,78 @@
 | Sprint 4 | **completed** (2026-05-02, commit c1e4abc) | `docs/80-roadmap/04-sprint-4-analytics-google.md` |
 | Sprint 5 | **completed** (2026-05-02, commit 3757690) | `docs/80-roadmap/05-sprint-5-audience-multitouch.md` |
 | Sprint 6 | **completed** (2026-05-02, commit e613140) | `docs/80-roadmap/06-sprint-6-control-plane.md` |
-| Sprint 7 | **próximo** | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
+| Sprint 7 | **em andamento** (onda 2/5 concluída) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | planned | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 | Sprint 9 | planned | `docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 7 — onda 1 completa, pronto para onda 2
-Último commit: (a commitar) — Sprint 7 onda 1
-Verificação:   typecheck ✓  lint ✓  1230 testes passando
-DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator pendente de apply
-Sprint 7 doc:  docs/80-roadmap/07-sprint-7-orchestrator.md (decomposição completa)
-Onda 0:        T-7-000 ✓ — 6 contratos em docs/30-contracts/05-api-server-actions.md + enums em 01-enums.md
-Onda 1:        T-7-001 ✓ schema (workflow_runs, lp_deployments, campaign_provisions)
-               T-7-002 ✓ apps/orchestrator/ — Trigger.dev 3.3.17, 4 tasks stub
-               T-7-003 ✓ apps/lp-templates/ — Astro 4.x, capture template
+Estado:        SPRINT 7 — onda 3 completa, PRONTO PARA ONDA 4
+Último commit: 292fdec (branch main) — Sprint 7 onda 3
+Verificação:   typecheck ✓  lint ✓  1245 testes passando
+DB Supabase:   migrations 0000–0024 aplicadas ✓ | 0025_orchestrator PENDENTE de apply
 ```
 
-### Sprint 6 entregues (referência rápida)
+### Sprint 7 — progresso por onda
 
-- **Edge**: 7 novos endpoints (`/v1/pages/:id/status`, `/v1/health/*`, `/v1/integrations/:p/test`, `/v1/onboarding/state`, `/v1/dispatch-jobs/:id/replay`, `/v1/help/skip-reason/:reason`, `/v1/leads/:id/timeline`)
-- **CP** (`apps/control-plane/`): Next.js 15 App Router — onboarding wizard, page registration, integration health, lead timeline, workspace header badge, glossary, tooltips, deep-links, skip-reason copy deck
-- **DB**: migration 0024 — `onboarding_state JSONB` em `workspaces`
-- **Testes**: 130 novos testes (unit + integration + a11y static analysis)
+| Onda | T-IDs | Status | Commit |
+|---|---|---|---|
+| 0 | T-7-000 | ✓ | fee6142 |
+| 1 | T-7-001, T-7-002, T-7-003 | ✓ | fee6142 |
+| 2 | T-7-004, T-7-005, T-7-006 | ✓ | 81e8388 |
+| 3 | T-7-007, T-7-008, T-7-009 | ✓ | 292fdec |
+| 4 | T-7-010 | **pendente** | — |
+| 5 | T-7-011 | pendente | — |
+
+### O que foi entregue (histórico completo)
+
+**Onda 0 — T-7-000**
+- `docs/30-contracts/05-api-server-actions.md` — 6 contratos do Orchestrator API
+- `docs/30-contracts/01-enums.md` — WorkflowName, WorkflowStatus, LpDeploymentStatus, CampaignProvisionStatus
+
+**Onda 1 — T-7-001/002/003**
+- `packages/db/src/schema/orchestrator.ts` — 3 tabelas: `workflow_runs`, `lp_deployments`, `campaign_provisions`
+- `packages/db/migrations/0025_orchestrator.sql` + `supabase/migrations/20260502000025_orchestrator.sql`
+- `apps/orchestrator/` — Trigger.dev 3.3.17, trigger.config.ts, 4 task stubs
+- `apps/lp-templates/` — Astro 4.x output:static, template capture, `_headers` CF Pages
+
+**Onda 2 — T-7-004/005/006**
+- `apps/edge/src/routes/orchestrator.ts` — 4 endpoints (trigger, status, approve, rollback) + mount
+- `tests/integration/routes/orchestrator.test.ts` — 15 testes
+- `apps/orchestrator/src/tasks/setup-tracking.ts` — impl real (INV-LAUNCH-003, INV-PAGE-004, INV-PAGE-006)
+- `apps/orchestrator/src/tasks/deploy-lp.ts` — impl real (CF Pages API, lp_deployments)
+
+**Onda 3 — T-7-007/008/009**
+- `apps/orchestrator/src/tasks/provision-campaigns.ts` — cria Meta Ad Set paused + Google (mock); wait.for(72h); ativa após resume; idempotente via rollback_payload
+- `apps/orchestrator/src/tasks/rollback-provisioning.ts` — idempotent DELETE Meta Ad Set; Google mock; status rolled_back
+- `apps/control-plane/src/app/(app)/orchestrator/` — 3 telas: lista, detalhe ([run_id]), novo; sidebar entry "Workflows" (GitBranch icon)
+
+### Próxima onda (onda 4) — T-7-010
+
+| T-ID | Tipo | Subagent | Ownership |
+|---|---|---|---|
+| T-7-010 | test | globaltracker-test-author | `tests/unit/orchestrator/**`, `tests/integration/orchestrator/**` |
+
+**Critério:** ≥30 novos testes cobrindo: transitions de status em workflow_runs, campaign_provisions state machine, rollback idempotência, audit entries. `pnpm test` verde.
+
+**Contexto para T-7-010:**
+- Tasks implementadas: setup-tracking, deploy-lp, provision-campaigns, rollback-provisioning
+- Edge routes: `apps/edge/src/routes/orchestrator.ts` (trigger, status, approve, rollback)
+- Schema: `packages/db/src/schema/orchestrator.ts`
+- Testes existentes (não duplicar): `tests/integration/routes/orchestrator.test.ts` (15 testes)
 
 ### Pendências operacionais antes de produção
 
 | Item | Status | Ação necessária |
 |---|---|---|
+| Migration 0025_orchestrator | **não aplicada** | `supabase db push` ou aplicar manualmente no Supabase dashboard |
 | Smoke E2E (T-1-021) | escrita, não executada | `wrangler dev` com `localConnectionString` |
 | Secrets produção (base) | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET PII_MASTER_KEY_V1 TURNSTILE_SECRET_KEY` |
 | Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
 | Secrets Sprint 5 (audience) | não deployados | `META_CUSTOM_AUDIENCE_TOKEN META_DEFAULT_AD_ACCOUNT_ID` |
-| SYNC-PENDING doc contrato | aberto | `POST /v1/dispatch-jobs/:id/replay` → `docs/30-contracts/05-api-server-actions.md` |
+| Secrets Sprint 7 (orchestrator) | não deployados | `TRIGGER_SECRET_KEY DATABASE_URL CF_PAGES_API_TOKEN CF_ACCOUNT_ID` |
+| dispatch-replay shape | SYNC-PENDING | Alinhar implementação com contrato (ver §2) |
 
 ### Decisões já tomadas (não reabrir)
 
@@ -74,21 +112,39 @@ Onda 1:        T-7-001 ✓ schema (workflow_runs, lp_deployments, campaign_provi
 
 ### Notas técnicas
 
+**Trigger.dev 3.x (Sprint 7)**
+- SDK 3.3.17 instalado em `apps/orchestrator/`
+- `trigger.config.ts` com `project: 'globaltracker'`, `dirs: ['./src/tasks']`, `maxDuration: 300`
+- Tasks conectam ao DB via `DATABASE_URL` env var (não Hyperdrive — tasks rodam em Node.js, não CF Workers)
+- Aprovação humana: task usa `wait.for({ event: ... })`; edge `/approve` envia evento via Trigger.dev Management API (`POST https://api.trigger.dev/api/v1/runs/{triggerRunId}/...`)
+
+**CF Pages (Sprint 7)**
+- Deploy via CF Pages REST API (`POST /client/v4/accounts/{account_id}/pages/projects`)
+- Graceful fallback quando `CF_PAGES_API_TOKEN`/`CF_ACCOUNT_ID` ausentes (retorna URL mock para dev/testes)
+- Template `apps/lp-templates/src/templates/capture/index.astro` injeta tracker.js via `<script data-page-id data-workspace-id>`
+
 **OXC + Biome (para subagents de teste)**
 `typeof import('long/path')` em type aliases multi-linha → parse error no OXC.
 Fix: `Record<string, unknown>` como cast intermediário em `vi.mock` factories.
 
 **Dois diretórios de migrations**
-Ao criar em `packages/db/migrations/0NNN_*.sql`, copiar para `supabase/migrations/20260501000NNN_*.sql`.
+Ao criar em `packages/db/migrations/0NNN_*.sql`, copiar para `supabase/migrations/20260502000NNN_*.sql`.
 
 **A11y nos componentes CP**
 Padrão de `<dialog open>` nativo (não `div role="dialog"`) estabelecido na Sprint 6. Overlay `aria-hidden` com biome-ignore `useKeyWithClickEvents`. Usar `<output>` no lugar de `div role="status"`.
 
+**Biome scanning worktrees**
+Biome varre `.claude/worktrees/` se deixado. Remover worktrees com `git worktree remove -f -f <path>` após extrair arquivos. Se locked, usar `-f -f` (duplo force).
+
 ### Como retomar em nova sessão
 
-1. Ler este §5 + `git log -5` + `git status`
-2. Abrir `docs/80-roadmap/07-sprint-7-orchestrator.md`
-3. Decompor em ondas + despachar subagents conforme `CLAUDE.md §2`
+```
+1. Ler este §5 (estado sprint + próxima onda)
+2. git log -5 + git status (confirmar branch main + commit 81e8388)
+3. Abrir docs/80-roadmap/07-sprint-7-orchestrator.md (tabela mestre + critérios onda 3)
+4. Despachar T-7-007, T-7-008, T-7-009 em paralelo (ver "Próxima onda" acima)
+5. Verificar pnpm typecheck && pnpm lint && pnpm test antes de continuar
+```
 
 ## §6 Ambiente operacional
 
@@ -96,7 +152,7 @@ Padrão de `<dialog open>` nativo (não `div role="dialog"`) estabelecido na Spr
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `e613140` — Sprint 6 completo |
+| Último commit | `292fdec` — Sprint 7 onda 3 |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
