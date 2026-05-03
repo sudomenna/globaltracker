@@ -92,6 +92,7 @@ export function StepGa4({
         onComplete({
           completed_at: new Date().toISOString(),
           measurement_id: values.measurement_id,
+          api_secret: values.api_secret,
           validated: true,
         });
       } else {

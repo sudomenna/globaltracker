@@ -95,6 +95,7 @@ export function StepMeta({
         onComplete({
           completed_at: new Date().toISOString(),
           pixel_id: values.pixel_id,
+          capi_token: values.capi_token,
           validated: true,
         });
       } else {
@@ -119,10 +120,12 @@ export function StepMeta({
       });
       return;
     }
+    const capiToken = values.capi_token;
     toast.info('Configuracao salva sem validacao');
     onComplete({
       completed_at: new Date().toISOString(),
       pixel_id: pixelId,
+      capi_token: capiToken || undefined,
       validated: false,
     });
   }

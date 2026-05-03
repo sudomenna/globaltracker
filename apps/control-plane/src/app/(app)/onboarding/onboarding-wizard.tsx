@@ -66,12 +66,35 @@ export function OnboardingWizard({
     try {
       const step = STEP_KEY_MAP[stepKey];
       const body: Record<string, unknown> = { step };
-      if (data && 'completed_at' in data && data.completed_at)
-        body.completed_at = data.completed_at;
-      if (data && 'validated' in data && data.validated !== undefined)
-        body.validated = data.validated;
-      if (data && 'first_ping_at' in data && data.first_ping_at)
-        body.first_ping_at = data.first_ping_at;
+
+      if (data) {
+        if ('completed_at' in data && data.completed_at)
+          body.completed_at = data.completed_at;
+        if ('skipped' in data && data.skipped)
+          body.skipped = data.skipped;
+
+        if (stepKey === 'step_meta' && 'validated' in data) {
+          if (data.validated !== undefined) body.validated = data.validated;
+          if ('pixel_id' in data && data.pixel_id) body.pixel_id = data.pixel_id;
+          if ('capi_token' in data && data.capi_token) body.capi_token = data.capi_token;
+        }
+        if (stepKey === 'step_ga4' && 'validated' in data) {
+          if (data.validated !== undefined) body.validated = data.validated;
+          if ('measurement_id' in data && data.measurement_id)
+            body.measurement_id = data.measurement_id;
+          if ('api_secret' in data && data.api_secret) body.api_secret = data.api_secret;
+        }
+        if (stepKey === 'step_launch' && 'launch_public_id' in data && data.launch_public_id)
+          body.launch_public_id = data.launch_public_id;
+        if (stepKey === 'step_page') {
+          if ('page_public_id' in data && data.page_public_id)
+            body.page_public_id = data.page_public_id;
+          if ('page_token' in data && data.page_token)
+            body.page_token = data.page_token;
+        }
+        if (stepKey === 'step_install' && 'first_ping_at' in data && data.first_ping_at)
+          body.first_ping_at = data.first_ping_at;
+      }
 
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787'}/v1/onboarding/state`,

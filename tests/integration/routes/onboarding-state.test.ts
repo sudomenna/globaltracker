@@ -137,6 +137,35 @@ describe('buildMergeFragment', () => {
     expect(typeof fragment.started_at).toBe('string');
   });
 
+  it('builds step_meta fragment with capi_token', () => {
+    const body = {
+      step: 'meta' as const,
+      completed_at: '2024-01-15T10:00:00.000Z',
+      pixel_id: '123456789012345',
+      capi_token: 'EAAxxxxxx',
+      validated: true,
+    };
+    const fragment = buildMergeFragment(body, '2024-01-10T00:00:00.000Z');
+    const stepMeta = fragment.step_meta as Record<string, unknown>;
+    expect(stepMeta.pixel_id).toBe('123456789012345');
+    expect(stepMeta.capi_token).toBe('EAAxxxxxx');
+    expect(stepMeta.validated).toBe(true);
+  });
+
+  it('builds step_ga4 fragment with api_secret', () => {
+    const body = {
+      step: 'ga4' as const,
+      measurement_id: 'G-XXXXXXXXXX',
+      api_secret: 'supersecret',
+      validated: true,
+    };
+    const fragment = buildMergeFragment(body, '2024-01-14T00:00:00.000Z');
+    const stepGa4 = fragment.step_ga4 as Record<string, unknown>;
+    expect(stepGa4.measurement_id).toBe('G-XXXXXXXXXX');
+    expect(stepGa4.api_secret).toBe('supersecret');
+    expect(stepGa4.validated).toBe(true);
+  });
+
   it('builds step_ga4 fragment', () => {
     const body = { step: 'ga4' as const, validated: false };
     const fragment = buildMergeFragment(body, '2024-01-14T00:00:00.000Z');
@@ -145,26 +174,26 @@ describe('buildMergeFragment', () => {
     expect(fragment.started_at).toBeUndefined();
   });
 
-  it('builds step_launch fragment with launch_id', () => {
-    const launchId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+  it('builds step_launch fragment with launch_public_id', () => {
+    const launchPublicId = 'wkshop-cs-jun26';
     const body = {
       step: 'launch' as const,
       completed_at: '2024-01-15T10:00:00.000Z',
-      launch_id: launchId,
+      launch_public_id: launchPublicId,
     };
     const fragment = buildMergeFragment(body, null);
     expect(fragment.step_launch).toEqual({
       completed_at: '2024-01-15T10:00:00.000Z',
-      launch_id: launchId,
+      launch_public_id: launchPublicId,
     });
     expect(typeof fragment.started_at).toBe('string');
   });
 
-  it('builds step_page fragment with page_id', () => {
-    const pageId = 'b2c3d4e5-f6a7-8901-bcde-f12345678901';
-    const body = { step: 'page' as const, page_id: pageId };
+  it('builds step_page fragment with page_public_id', () => {
+    const pagePublicId = 'minha-lp-inscricao';
+    const body = { step: 'page' as const, page_public_id: pagePublicId };
     const fragment = buildMergeFragment(body, null);
-    expect(fragment.step_page).toEqual({ page_id: pageId });
+    expect(fragment.step_page).toEqual({ page_public_id: pagePublicId });
   });
 
   it('builds step_install fragment with first_ping_at', () => {
@@ -553,14 +582,14 @@ describe('PATCH /v1/onboarding/state', () => {
   // Happy path — step='launch'
   // -------------------------------------------------------------------------
 
-  it('step=launch merges step_launch with launch_id', async () => {
-    const launchId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+  it('step=launch merges step_launch with launch_public_id', async () => {
+    const launchPublicId = 'wkshop-cs-jun26';
     const initialState: OnboardingState = {
       started_at: '2024-01-15T00:00:00.000Z',
     };
     const updatedState: OnboardingState = {
       ...initialState,
-      step_launch: { launch_id: launchId },
+      step_launch: { launch_public_id: launchPublicId },
     };
 
     const mergeState = vi.fn<MergeOnboardingStateFn>(async () => updatedState);
@@ -575,20 +604,20 @@ describe('PATCH /v1/onboarding/state', () => {
     const res = await patch(
       app,
       '/v1/onboarding/state',
-      { step: 'launch', launch_id: launchId },
+      { step: 'launch', launch_public_id: launchPublicId },
       { auth: 'Bearer some-jwt' },
     );
 
     expect(res.status).toBe(200);
     const body = await res.json<{ onboarding_state: OnboardingState }>();
-    expect(body.onboarding_state.step_launch?.launch_id).toBe(launchId);
+    expect(body.onboarding_state.step_launch?.launch_public_id).toBe(launchPublicId);
 
     const [, fragment] = mergeState.mock.calls[0] as [
       string,
       Record<string, unknown>,
     ];
     const stepLaunch = fragment.step_launch as Record<string, unknown>;
-    expect(stepLaunch.launch_id).toBe(launchId);
+    expect(stepLaunch.launch_public_id).toBe(launchPublicId);
     // started_at NOT injected since already set
     expect(fragment.started_at).toBeUndefined();
   });

@@ -29,7 +29,7 @@ import type {
   ScheduledEvent,
 } from '@cloudflare/workers-types';
 import type { Db } from '@globaltracker/db';
-import { events, createDb, launches, leads } from '@globaltracker/db';
+import { events, createDb, launches, leads, workspaces } from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
@@ -458,12 +458,23 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       { testEventCode: resolvedTestEventCode },
     );
 
-    // 6. Send to Meta CAPI — injectable fetch.
+    // 6. Resolve capi_token: prefer workspaces.config (set by onboarding wizard), fallback to env var.
+    let capiToken = env.META_CAPI_TOKEN;
+    const [ws] = await db
+      .select({ config: workspaces.config })
+      .from(workspaces)
+      .where(eq(workspaces.id, event.workspaceId));
+    const wsCapiToken = (ws?.config as Record<string, unknown> | undefined)
+      ?.integrations as Record<string, unknown> | undefined;
+    const wsMetaToken = wsCapiToken?.meta as Record<string, unknown> | undefined;
+    if (wsMetaToken?.capi_token) capiToken = wsMetaToken.capi_token as string;
+
+    // 7. Send to Meta CAPI — injectable fetch.
     const capiResult = await sendToMetaCapi(
       payload,
       {
         pixelId: job.destinationResourceId,
-        accessToken: env.META_CAPI_TOKEN,
+        accessToken: capiToken,
         testEventCode: resolvedTestEventCode,
       },
       fetch,
@@ -520,12 +531,19 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
       lead = rows[0];
     }
 
-    // 3. Check eligibility — pure function, no I/O.
+    // 3. Resolve GA4 credentials: prefer workspaces.config, fallback to env vars.
     // BR-CONSENT-003: analytics consent required for GA4 MP.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
+    const [wsGa4] = await db
+      .select({ config: workspaces.config })
+      .from(workspaces)
+      .where(eq(workspaces.id, event.workspaceId));
+    const wsIntegrations = (wsGa4?.config as Record<string, unknown> | undefined)
+      ?.integrations as Record<string, unknown> | undefined;
+    const wsGa4Config = wsIntegrations?.ga4 as Record<string, unknown> | undefined;
     const ga4Config = {
-      measurementId: env.GA4_MEASUREMENT_ID || null,
-      apiSecret: env.GA4_API_SECRET || null,
+      measurementId: (wsGa4Config?.measurement_id as string | undefined) || env.GA4_MEASUREMENT_ID || null,
+      apiSecret: (wsGa4Config?.api_secret as string | undefined) || env.GA4_API_SECRET || null,
     };
 
     const eligibility = checkGa4Eligibility(
@@ -580,8 +598,8 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
     const ga4Result = await sendToGa4(
       payload,
       {
-        measurementId: env.GA4_MEASUREMENT_ID,
-        apiSecret: env.GA4_API_SECRET,
+        measurementId: ga4Config.measurementId ?? env.GA4_MEASUREMENT_ID,
+        apiSecret: ga4Config.apiSecret ?? env.GA4_API_SECRET,
         // T-8-005: use debug endpoint when is_test=true OR DEBUG_GA4 env var set
         debugMode: event.isTest || env.DEBUG_GA4 === 'true',
       },

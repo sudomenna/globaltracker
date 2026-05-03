@@ -35,8 +35,8 @@
  * INV-WORKSPACE-003: onboarding_state structure validated by Zod before persisting.
  */
 
-import { createDb, workspaces } from '@globaltracker/db';
-import { eq } from 'drizzle-orm';
+import { createDb, launches, workspaces } from '@globaltracker/db';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import {
@@ -85,9 +85,21 @@ export const PatchOnboardingSchema = z
     ]),
     completed_at: z.string().datetime().optional(),
     validated: z.boolean().optional(),
-    launch_id: z.string().uuid().optional(),
-    page_id: z.string().uuid().optional(),
+    skipped: z.boolean().optional(),
+    // meta
+    pixel_id: z.string().optional(),
+    capi_token: z.string().optional(),
+    // ga4
+    measurement_id: z.string().optional(),
+    api_secret: z.string().optional(),
+    // launch
+    launch_public_id: z.string().optional(),
+    // page
+    page_public_id: z.string().optional(),
+    page_token: z.string().optional(),
+    // install
     first_ping_at: z.string().datetime().optional(),
+    // skip_all
     skipped_at: z.string().datetime().optional(),
   })
   .strict();
@@ -177,42 +189,46 @@ export function buildMergeFragment(
   switch (body.step) {
     case 'meta': {
       const stepData: Record<string, unknown> = {};
-      if (body.completed_at !== undefined)
-        stepData.completed_at = body.completed_at;
+      if (body.completed_at !== undefined) stepData.completed_at = body.completed_at;
       if (body.validated !== undefined) stepData.validated = body.validated;
+      if (body.pixel_id !== undefined) stepData.pixel_id = body.pixel_id;
+      if (body.capi_token !== undefined) stepData.capi_token = body.capi_token;
+      if (body.skipped !== undefined) stepData.skipped = body.skipped;
       return { ...base, step_meta: stepData };
     }
 
     case 'ga4': {
       const stepData: Record<string, unknown> = {};
-      if (body.completed_at !== undefined)
-        stepData.completed_at = body.completed_at;
+      if (body.completed_at !== undefined) stepData.completed_at = body.completed_at;
       if (body.validated !== undefined) stepData.validated = body.validated;
+      if (body.measurement_id !== undefined) stepData.measurement_id = body.measurement_id;
+      if (body.api_secret !== undefined) stepData.api_secret = body.api_secret;
+      if (body.skipped !== undefined) stepData.skipped = body.skipped;
       return { ...base, step_ga4: stepData };
     }
 
     case 'launch': {
       const stepData: Record<string, unknown> = {};
-      if (body.completed_at !== undefined)
-        stepData.completed_at = body.completed_at;
-      if (body.launch_id !== undefined) stepData.launch_id = body.launch_id;
+      if (body.completed_at !== undefined) stepData.completed_at = body.completed_at;
+      if (body.launch_public_id !== undefined) stepData.launch_public_id = body.launch_public_id;
+      if (body.skipped !== undefined) stepData.skipped = body.skipped;
       return { ...base, step_launch: stepData };
     }
 
     case 'page': {
       const stepData: Record<string, unknown> = {};
-      if (body.completed_at !== undefined)
-        stepData.completed_at = body.completed_at;
-      if (body.page_id !== undefined) stepData.page_id = body.page_id;
+      if (body.completed_at !== undefined) stepData.completed_at = body.completed_at;
+      if (body.page_public_id !== undefined) stepData.page_public_id = body.page_public_id;
+      if (body.page_token !== undefined) stepData.page_token = body.page_token;
+      if (body.skipped !== undefined) stepData.skipped = body.skipped;
       return { ...base, step_page: stepData };
     }
 
     case 'install': {
       const stepData: Record<string, unknown> = {};
-      if (body.completed_at !== undefined)
-        stepData.completed_at = body.completed_at;
-      if (body.first_ping_at !== undefined)
-        stepData.first_ping_at = body.first_ping_at;
+      if (body.completed_at !== undefined) stepData.completed_at = body.completed_at;
+      if (body.first_ping_at !== undefined) stepData.first_ping_at = body.first_ping_at;
+      if (body.skipped !== undefined) stepData.skipped = body.skipped;
       return { ...base, step_install: stepData };
     }
 
@@ -550,6 +566,63 @@ export function createOnboardingStateRoute(deps?: {
           .where(eq(workspaces.id, workspaceId));
         const stateParseResult = OnboardingStateSchema.safeParse(merged);
         updatedState = stateParseResult.success ? stateParseResult.data : (merged as OnboardingState);
+
+        // When wizard completes, propagate integration credentials to workspaces.config
+        // and launches.config so dispatchers can read them without env vars.
+        if (patchBody.step === 'complete') {
+          const stepMeta = merged.step_meta as Record<string, unknown> | undefined;
+          const stepGa4 = merged.step_ga4 as Record<string, unknown> | undefined;
+          const stepLaunch = merged.step_launch as Record<string, unknown> | undefined;
+          const metaPixelId = stepMeta?.pixel_id as string | undefined;
+          const metaCapiToken = stepMeta?.capi_token as string | undefined;
+          const ga4MeasurementId = stepGa4?.measurement_id as string | undefined;
+          const ga4ApiSecret = stepGa4?.api_secret as string | undefined;
+          const launchPublicId = stepLaunch?.launch_public_id as string | undefined;
+
+          if (metaCapiToken || ga4MeasurementId) {
+            const wsRows = await db
+              .select({ config: workspaces.config })
+              .from(workspaces)
+              .where(eq(workspaces.id, workspaceId))
+              .limit(1);
+            const currentWsConfig = (wsRows[0]?.config as Record<string, unknown>) ?? {};
+            const currentIntegrations = (currentWsConfig.integrations as Record<string, unknown>) ?? {};
+            const newIntegrations: Record<string, unknown> = { ...currentIntegrations };
+            if (metaPixelId || metaCapiToken) {
+              newIntegrations.meta = { pixel_id: metaPixelId, capi_token: metaCapiToken };
+            }
+            if (ga4MeasurementId || ga4ApiSecret) {
+              newIntegrations.ga4 = { measurement_id: ga4MeasurementId, api_secret: ga4ApiSecret };
+            }
+            await db
+              .update(workspaces)
+              .set({ config: { ...currentWsConfig, integrations: newIntegrations }, updatedAt: new Date() })
+              .where(eq(workspaces.id, workspaceId));
+            safeLog('info', { event: 'workspace_config_integrations_saved', workspace_id: workspaceId });
+          }
+
+          if (launchPublicId && metaPixelId) {
+            const launchRows = await db
+              .select({ id: launches.id, config: launches.config })
+              .from(launches)
+              .where(and(eq(launches.publicId, launchPublicId), eq(launches.workspaceId, workspaceId)))
+              .limit(1);
+            if (launchRows[0]) {
+              const currentLaunchConfig = (launchRows[0].config as Record<string, unknown>) ?? {};
+              const currentTracking = (currentLaunchConfig.tracking as Record<string, unknown>) ?? {};
+              const currentTrackingMeta = (currentTracking.meta as Record<string, unknown>) ?? {};
+              const newTracking = {
+                ...currentTracking,
+                meta: { ...currentTrackingMeta, pixel_id: metaPixelId },
+              };
+              await db
+                .update(launches)
+                .set({ config: { ...currentLaunchConfig, tracking: newTracking }, updatedAt: new Date() })
+                .where(eq(launches.id, launchRows[0].id));
+              safeLog('info', { event: 'launch_config_tracking_meta_saved', workspace_id: workspaceId });
+            }
+          }
+        }
       } catch (err) {
         safeLog('error', {
           event: 'onboarding_state_patch_merge_error',

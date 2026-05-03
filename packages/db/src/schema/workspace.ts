@@ -28,6 +28,10 @@ export const workspaces = pgTable('workspaces', {
   // Sprint 6: stores wizard progress; nullable inner fields — workspace starts with empty object
   onboardingState: jsonb('onboarding_state').notNull().default({}),
 
+  // Workspace-level integration configuration: { integrations: { meta: { pixel_id, capi_token }, ga4: { measurement_id, api_secret } } }
+  // Populated by onboarding wizard on step='complete'. Dispatchers read from here with env var fallback.
+  config: jsonb('config').notNull().default({}),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

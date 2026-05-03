@@ -1,16 +1,18 @@
 // Shared types for the onboarding wizard — T-6-011
-// Matches packages/shared/src/schemas/onboarding-state.ts
+// Mirrors packages/shared/src/schemas/onboarding-state.ts
 
 export interface OnboardingState {
   step_meta?: {
     completed_at?: string;
     pixel_id?: string;
+    capi_token?: string;
     skipped?: boolean;
     validated?: boolean;
   };
   step_ga4?: {
     completed_at?: string;
     measurement_id?: string;
+    api_secret?: string;
     skipped?: boolean;
     validated?: boolean;
   };
@@ -32,6 +34,7 @@ export interface OnboardingState {
   };
   completed_at?: string;
   skipped_at?: string;
+  started_at?: string;
 }
 
 export type StepKey =
