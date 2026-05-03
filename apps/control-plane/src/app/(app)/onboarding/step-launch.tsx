@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Loader2 } from 'lucide-react';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -21,6 +21,12 @@ const launchSchema = z.object({
 
 type LaunchFormValues = z.infer<typeof launchSchema>;
 
+type ExistingLaunch = {
+  public_id: string;
+  name: string;
+  status: string;
+};
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -32,6 +38,9 @@ function slugify(name: string): string {
     .replace(/-+/g, '-')
     .slice(0, 60);
 }
+
+const BASE_URL =
+  process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
 
 interface StepLaunchProps {
   state: OnboardingState['step_launch'];
@@ -46,14 +55,14 @@ export function StepLaunch({
   onComplete,
   onSkip,
 }: StepLaunchProps) {
-  // TODO T-6-0XX: trocar por POST /v1/launches quando endpoint estiver disponivel
+  const [mode, setMode] = useState<'choose' | 'select' | 'create'>('choose');
+  const [existingLaunches, setExistingLaunches] = useState<ExistingLaunch[]>([]);
+  const [loadingList, setLoadingList] = useState(false);
+  const [selectedPublicId, setSelectedPublicId] = useState<string>('');
+
   const form = useForm<LaunchFormValues>({
     resolver: zodResolver(launchSchema),
-    defaultValues: {
-      name: '',
-      public_id: '',
-      status: 'draft',
-    },
+    defaultValues: { name: '', public_id: '', status: 'configuring' },
     mode: 'onBlur',
   });
 
@@ -66,26 +75,54 @@ export function StepLaunch({
     }
   }, [nameValue, publicIdTouched, form]);
 
-  const isSubmitting = form.formState.isSubmitting;
+  async function loadExistingLaunches() {
+    setLoadingList(true);
+    try {
+      const res = await fetch(`${BASE_URL}/v1/launches`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.ok) {
+        const body = (await res.json()) as { launches?: ExistingLaunch[] };
+        setExistingLaunches(body.launches ?? []);
+      } else {
+        toast.error('Nao foi possivel carregar lançamentos existentes.');
+      }
+    } catch {
+      toast.error('Erro ao conectar com o servidor.');
+    } finally {
+      setLoadingList(false);
+    }
+  }
+
+  function handleSelectMode() {
+    setMode('select');
+    void loadExistingLaunches();
+  }
+
+  function handleUseSelected() {
+    if (!selectedPublicId) return;
+    const launch = existingLaunches.find((l) => l.public_id === selectedPublicId);
+    toast.success(`Lancamento "${launch?.name ?? selectedPublicId}" associado.`);
+    onComplete({
+      completed_at: new Date().toISOString(),
+      launch_public_id: selectedPublicId,
+    });
+  }
 
   async function onSubmit(values: LaunchFormValues) {
     try {
-      // TODO T-6-0XX: POST /v1/launches
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787'}/v1/launches`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            name: values.name,
-            public_id: values.public_id,
-            status: values.status,
-          }),
+      const res = await fetch(`${BASE_URL}/v1/launches`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
         },
-      );
+        body: JSON.stringify({
+          name: values.name,
+          public_id: values.public_id,
+          status: values.status,
+        }),
+      });
 
       if (res.ok) {
         const body = (await res.json()) as {
@@ -99,11 +136,13 @@ export function StepLaunch({
           completed_at: new Date().toISOString(),
           launch_public_id: launchPublicId,
         });
+      } else if (res.status === 409) {
+        toast.error(
+          `Public ID "${values.public_id}" ja existe. Use "Selecionar existente" ou escolha outro ID.`,
+        );
       } else {
         const body = (await res.json()) as { message?: string };
-        toast.error(
-          body.message ?? 'Erro ao criar lancamento. Tente novamente.',
-        );
+        toast.error(body.message ?? 'Erro ao criar lancamento. Tente novamente.');
       }
     } catch {
       toast.error('Erro ao conectar com o servidor. Tente novamente.');
@@ -116,130 +155,223 @@ export function StepLaunch({
         <h2 className="text-lg font-semibold">Crie seu primeiro Lancamento</h2>
         <div className="rounded-md border border-green-200 bg-green-50 p-4">
           <p className="text-sm text-green-800">
-            Lancamento <strong>{state.launch_public_id}</strong> ja criado.
+            Lancamento <strong>{state.launch_public_id}</strong> associado.
           </p>
         </div>
       </div>
     );
   }
 
+  const isSubmitting = form.formState.isSubmitting;
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Crie seu primeiro Lancamento</h2>
+        <h2 className="text-lg font-semibold">Configure seu Lancamento</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Um Lancamento agrupa landing pages, links e audiencias de uma
-          campanha.
+          Um Lancamento agrupa landing pages, links e audiencias de uma campanha.
         </p>
       </div>
 
-      <form
-        onSubmit={form.handleSubmit(onSubmit)}
-        noValidate
-        className="space-y-4"
-      >
-        <div className="space-y-1">
-          <label htmlFor="launch_name" className="text-sm font-medium">
-            Nome
-          </label>
-          <input
-            id="launch_name"
-            type="text"
-            placeholder="Lancamento Maio 2026"
-            aria-describedby={
-              form.formState.errors.name ? 'launch_name_error' : undefined
-            }
-            aria-invalid={!!form.formState.errors.name}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive"
-            {...form.register('name')}
-          />
-          {form.formState.errors.name && (
-            <p
-              id="launch_name_error"
-              className="text-xs text-destructive"
-              role="alert"
-            >
-              {form.formState.errors.name.message}
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-1">
-          <label htmlFor="launch_public_id" className="text-sm font-medium">
-            Public ID{' '}
-            <span className="text-xs text-muted-foreground font-normal">
-              (gerado automaticamente; editavel)
-            </span>
-          </label>
-          <input
-            id="launch_public_id"
-            type="text"
-            placeholder="lcm-maio-2026"
-            autoComplete="off"
-            aria-describedby={
-              form.formState.errors.public_id
-                ? 'launch_public_id_error'
-                : undefined
-            }
-            aria-invalid={!!form.formState.errors.public_id}
-            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive"
-            {...form.register('public_id')}
-          />
-          {form.formState.errors.public_id && (
-            <p
-              id="launch_public_id_error"
-              className="text-xs text-destructive"
-              role="alert"
-            >
-              {form.formState.errors.public_id.message}
-            </p>
-          )}
-        </div>
-
-        <fieldset className="space-y-1">
-          <legend className="text-sm font-medium">Status</legend>
-          <div className="flex gap-4">
-            {(['draft', 'configuring', 'live'] as const).map((s) => (
-              <label
-                key={s}
-                className="flex items-center gap-1.5 cursor-pointer text-sm capitalize"
-              >
-                <input
-                  type="radio"
-                  value={s}
-                  className="h-4 w-4"
-                  {...form.register('status')}
-                />
-                {s}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <div className="flex gap-2 pt-2">
-          <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? (
-              <>
-                <Loader2
-                  className="mr-2 h-4 w-4 animate-spin"
-                  aria-hidden="true"
-                />
-                Criando...
-              </>
-            ) : (
-              'Criar lancamento'
-            )}
-          </Button>
-          <Button
+      {/* Mode chooser */}
+      {mode === 'choose' && (
+        <div className="grid grid-cols-2 gap-3">
+          <button
             type="button"
-            variant="ghost"
-            onClick={onSkip}
-            disabled={isSubmitting}
+            onClick={handleSelectMode}
+            className="rounded-lg border-2 border-input p-4 text-left hover:border-ring hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            Pular
+            <p className="text-sm font-medium">Selecionar existente</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Associar um lancamento ja criado
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('create')}
+            className="rounded-lg border-2 border-input p-4 text-left hover:border-ring hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <p className="text-sm font-medium">Criar novo</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Configurar um lancamento do zero
+            </p>
+          </button>
+        </div>
+      )}
+
+      {/* Select existing */}
+      {mode === 'select' && (
+        <div className="space-y-4">
+          {loadingList ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Carregando lancamentos...
+            </div>
+          ) : existingLaunches.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nenhum lancamento encontrado.{' '}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setMode('create')}
+              >
+                Criar novo
+              </button>
+            </p>
+          ) : (
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">Lancamentos disponiveis</legend>
+              {existingLaunches.map((l) => (
+                <label
+                  key={l.public_id}
+                  className="flex items-center gap-3 rounded-md border border-input p-3 cursor-pointer hover:bg-accent transition-colors has-[:checked]:border-ring has-[:checked]:bg-accent"
+                >
+                  <input
+                    type="radio"
+                    name="existing_launch"
+                    value={l.public_id}
+                    checked={selectedPublicId === l.public_id}
+                    onChange={() => setSelectedPublicId(l.public_id)}
+                    className="h-4 w-4 shrink-0"
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium truncate">{l.name}</span>
+                    <span className="block text-xs text-muted-foreground font-mono">{l.public_id}</span>
+                  </span>
+                  <span className="ml-auto text-xs text-muted-foreground capitalize shrink-0">
+                    {l.status}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <Button
+              type="button"
+              onClick={handleUseSelected}
+              disabled={!selectedPublicId}
+            >
+              Usar este lancamento
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setMode('choose')}>
+              Voltar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Create new */}
+      {mode === 'create' && (
+        <form
+          onSubmit={form.handleSubmit(onSubmit)}
+          noValidate
+          className="space-y-4"
+        >
+          <div className="space-y-1">
+            <label htmlFor="launch_name" className="text-sm font-medium">
+              Nome
+            </label>
+            <input
+              id="launch_name"
+              type="text"
+              placeholder="Lancamento Maio 2026"
+              aria-describedby={
+                form.formState.errors.name ? 'launch_name_error' : undefined
+              }
+              aria-invalid={!!form.formState.errors.name}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive"
+              {...form.register('name')}
+            />
+            {form.formState.errors.name && (
+              <p id="launch_name_error" className="text-xs text-destructive" role="alert">
+                {form.formState.errors.name.message}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="launch_public_id" className="text-sm font-medium">
+              Public ID{' '}
+              <span className="text-xs text-muted-foreground font-normal">
+                (gerado automaticamente; editavel)
+              </span>
+            </label>
+            <input
+              id="launch_public_id"
+              type="text"
+              placeholder="lcm-maio-2026"
+              autoComplete="off"
+              aria-describedby={
+                form.formState.errors.public_id
+                  ? 'launch_public_id_error'
+                  : undefined
+              }
+              aria-invalid={!!form.formState.errors.public_id}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive"
+              {...form.register('public_id')}
+            />
+            {form.formState.errors.public_id && (
+              <p
+                id="launch_public_id_error"
+                className="text-xs text-destructive"
+                role="alert"
+              >
+                {form.formState.errors.public_id.message}
+              </p>
+            )}
+          </div>
+
+          <fieldset className="space-y-1">
+            <legend className="text-sm font-medium">Status</legend>
+            <div className="flex gap-4">
+              {(['draft', 'configuring', 'live'] as const).map((s) => (
+                <label
+                  key={s}
+                  className="flex items-center gap-1.5 cursor-pointer text-sm capitalize"
+                >
+                  <input
+                    type="radio"
+                    value={s}
+                    className="h-4 w-4"
+                    {...form.register('status')}
+                  />
+                  {s}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="flex gap-2 pt-2">
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+                  Criando...
+                </>
+              ) : (
+                'Criar lancamento'
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setMode('choose')}
+              disabled={isSubmitting}
+            >
+              Voltar
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {mode !== 'select' && (
+        <div className="pt-2">
+          <Button type="button" variant="ghost" size="sm" onClick={onSkip}>
+            Pular este passo
           </Button>
         </div>
-      </form>
+      )}
     </div>
   );
 }

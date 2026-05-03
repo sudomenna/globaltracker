@@ -39,11 +39,11 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 8 COMPLETO + persistência CP wired (2026-05-03)
-Último commit: 0a6c3ca (branch main) — feat(sprint8+cp): CP onboarding wizard completo + persistência DB
-Branch:        main (~20 commits à frente de origin/main — não pushado)
-Verificação:   typecheck ✓  lint ✓  1351 testes passando (82 test files) [base sprint 8]
-DB Supabase:   migrations 0000–0026 aplicadas ✓
+Estado:        SPRINT 8 COMPLETO + persistência creds wizard (2026-05-03)
+Último commit: 3cb3c0a (branch main) — feat(creds): wizard persiste capi_token/api_secret
+Branch:        main (~26 commits à frente de origin/main — não pushado)
+Verificação:   typecheck ✓ (db/shared/edge)  1352 testes passando [+2 novos] (1 falha pré-existente em integrations-test .strict())
+DB Supabase:   migrations 0000–0027 aplicadas ✓ (0027: workspaces.config jsonb)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md
 ```
@@ -60,6 +60,7 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 | Bugs corrigidos em sessão — COMMITADOS | ✅ **commit 0a6c3ca (2026-05-03)** | Tudo commitado. |
 | `.dev.vars` — `DATABASE_URL` correto | ✅ **corrigido (2026-05-03)** | Senha `//` → `%2F%2F` (URL-encode); scheme `postgresql://` → `postgres://`. Necessário porque `postgres.js` CF bundle usa `new URL()` para parse — falha com `//` literal em senha. Nota: `.dev.vars` não entra no git (gitignored). |
 | `docs/30-contracts/05-api-server-actions.md` | ✅ **atualizado (2026-05-03)** | Adicionado `POST /v1/launches`, `GET /v1/launches`, `POST /v1/pages` (eram contratos não documentados). |
+| Persistência creds wizard → dispatchers | ✅ **commit 3cb3c0a (2026-05-03)** | `workspaces.config.integrations.{meta,ga4}` alimentado pelo wizard step='complete'. Dispatchers leem com fallback env vars. migration 0027 aplicada. |
 
 ### Pendências operacionais antes de produção
 

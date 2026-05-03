@@ -187,3 +187,97 @@ pagesRoute.post('/', async (c) => {
     201,
   );
 });
+
+// GET /v1/pages?launch_public_id=xxx
+pagesRoute.get('/', async (c) => {
+  const requestId =
+    (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+  const workspaceId =
+    (c.get('workspace_id') as string | undefined) ??
+    c.env.DEV_WORKSPACE_ID ??
+    'placeholder-workspace-id';
+
+  const launchPublicId = c.req.query('launch_public_id');
+  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+
+  let rows: { publicId: string; name: string; status: string; createdAt: Date }[];
+
+  if (launchPublicId) {
+    const launchRows = await db
+      .select({ id: launches.id })
+      .from(launches)
+      .where(and(eq(launches.workspaceId, workspaceId), eq(launches.publicId, launchPublicId)))
+      .limit(1);
+    if (!launchRows[0]) {
+      return c.json({ pages: [], request_id: requestId }, 200);
+    }
+    rows = await db
+      .select({ publicId: pages.publicId, name: pages.publicId, status: pages.status, createdAt: pages.createdAt })
+      .from(pages)
+      .where(and(eq(pages.workspaceId, workspaceId), eq(pages.launchId, launchRows[0].id)))
+      .orderBy(pages.createdAt);
+  } else {
+    rows = await db
+      .select({ publicId: pages.publicId, name: pages.publicId, status: pages.status, createdAt: pages.createdAt })
+      .from(pages)
+      .where(eq(pages.workspaceId, workspaceId))
+      .orderBy(pages.createdAt);
+  }
+
+  return c.json({
+    pages: rows.map((r) => ({
+      public_id: r.publicId,
+      name: r.publicId,
+      status: r.status,
+      created_at: r.createdAt.toISOString(),
+    })),
+    request_id: requestId,
+  }, 200);
+});
+
+// POST /v1/pages/:page_public_id/tokens — generate a new token for an existing page
+pagesRoute.post('/:page_public_id/tokens', async (c) => {
+  const requestId =
+    (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+  const workspaceId =
+    (c.get('workspace_id') as string | undefined) ??
+    c.env.DEV_WORKSPACE_ID ??
+    'placeholder-workspace-id';
+
+  const pagePublicId = c.req.param('page_public_id');
+  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+
+  const pageRows = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(and(eq(pages.workspaceId, workspaceId), eq(pages.publicId, pagePublicId)))
+    .limit(1);
+
+  if (!pageRows[0]) {
+    return c.json({ code: 'not_found', message: 'Page not found', request_id: requestId }, 404);
+  }
+
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const tokenRaw = Array.from(tokenBytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', tokenBytes);
+  const tokenHash = Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  try {
+    await db.insert(pageTokens).values({
+      workspaceId,
+      pageId: pageRows[0].id,
+      tokenHash,
+      label: 'wizard — reissued',
+      status: 'active',
+    });
+  } catch (err) {
+    safeLog('error', { event: 'page_token_reissue_error', request_id: requestId, error_type: err instanceof Error ? err.constructor.name : typeof err });
+    return c.json({ code: 'internal_error', message: 'Failed to generate token', request_id: requestId }, 500);
+  }
+
+  return c.json({ page_token: tokenRaw, page_public_id: pagePublicId, request_id: requestId }, 201);
+});

@@ -130,27 +130,27 @@ describe('buildMergeFragment > step ga4', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildMergeFragment > step launch', () => {
-  it('returns object with step_launch key containing launch_id', () => {
-    const launchId = '00000000-0000-0000-0000-000000000001';
+  it('returns object with step_launch key containing launch_public_id', () => {
+    const launchPublicId = 'wkshop-cs-jun26';
     const fragment = buildMergeFragment(
       {
         step: 'launch',
         completed_at: '2025-01-15T10:00:00.000Z',
-        launch_id: launchId,
+        launch_public_id: launchPublicId,
       },
       'already-started',
     );
     const stepLaunch = fragment.step_launch as Record<string, unknown>;
-    expect(stepLaunch.launch_id).toBe(launchId);
+    expect(stepLaunch.launch_public_id).toBe(launchPublicId);
   });
 
-  it('step_launch does not include launch_id when not provided', () => {
+  it('step_launch does not include launch_public_id when not provided', () => {
     const fragment = buildMergeFragment(
       { step: 'launch', completed_at: '2025-01-15T10:00:00.000Z' },
       'already-started',
     );
     const stepLaunch = fragment.step_launch as Record<string, unknown>;
-    expect(stepLaunch).not.toHaveProperty('launch_id');
+    expect(stepLaunch).not.toHaveProperty('launch_public_id');
   });
 });
 
@@ -159,18 +159,18 @@ describe('buildMergeFragment > step launch', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildMergeFragment > step page', () => {
-  it('returns object with step_page key containing page_id', () => {
-    const pageId = '00000000-0000-0000-0000-000000000002';
+  it('returns object with step_page key containing page_public_id', () => {
+    const pagePublicId = 'minha-lp-inscricao';
     const fragment = buildMergeFragment(
       {
         step: 'page',
         completed_at: '2025-01-15T10:00:00.000Z',
-        page_id: pageId,
+        page_public_id: pagePublicId,
       },
       'already-started',
     );
     const stepPage = fragment.step_page as Record<string, unknown>;
-    expect(stepPage.page_id).toBe(pageId);
+    expect(stepPage.page_public_id).toBe(pagePublicId);
   });
 });
 
