@@ -40,7 +40,7 @@
 
 ```
 Estado:        UX/RLS HARDENING (2026-05-03 sessão 2) — pronto para Sprint 9
-Último commit: ec320fb (branch main) — antes desta sessão
+Último commit: 0ff85ab (branch main)
 Branch:        main (não pushado)
 Verificação:   typecheck ✓ (edge/control-plane nas mudanças)
 DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id)
@@ -171,7 +171,7 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit antes da sessão | `ec320fb` |
+| Último commit | `0ff85ab` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
