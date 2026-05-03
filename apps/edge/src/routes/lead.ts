@@ -95,6 +95,14 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
   router.post('/', async (c) => {
     const requestId = c.get('request_id');
     const workspaceId = c.get('workspace_id');
+    // Use injected db (tests) or create inline from env (production/dev).
+    // Falls back to undefined when neither DATABASE_URL nor HYPERDRIVE is present
+    // (unit test environments), preserving the no-db fallback path below.
+    const effectiveDb: Db | undefined =
+      db ??
+      (c.env.DATABASE_URL || c.env.HYPERDRIVE
+        ? createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString)
+        : undefined);
 
     // Defensive check: workspace_id must be set by auth-public-token middleware
     if (!workspaceId) {
@@ -253,7 +261,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     let leadToken: string;
     let expiresAt: string;
 
-    if (db) {
+    if (effectiveDb) {
       // -----------------------------------------------------------------------
       // T-2-008: DB path — real lead resolution + stateful token
       // -----------------------------------------------------------------------
@@ -265,7 +273,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
           phone: businessPayload.phone,
         },
         workspaceId,
-        db,
+        effectiveDb,
       );
 
       if (!resolveResult.ok) {
@@ -300,7 +308,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
         workspaceId,
         pageTokenHash,
         LEAD_TOKEN_TTL_DAYS,
-        db,
+        effectiveDb,
         hmacSecret,
       );
 
