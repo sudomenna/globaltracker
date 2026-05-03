@@ -30,6 +30,7 @@
  * testable without a real DB binding.
  */
 
+import { createDb, rawEvents } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
 import { Hono } from 'hono';
 import { clampEventTime } from '../lib/event-time-clamp.js';
@@ -50,6 +51,8 @@ type AppBindings = {
   QUEUE_DISPATCH: Queue;
   ENVIRONMENT: string;
   DB?: Fetcher;
+  HYPERDRIVE: Hyperdrive;
+  DATABASE_URL?: string;
   /** HMAC secret for lead_token verification. Injected as Worker secret. */
   LEAD_TOKEN_SECRET?: string;
 };
@@ -307,12 +310,27 @@ export function createEventsRoute(
         // Do NOT return 500 — enqueue still proceeds for durability
       }
     } else {
-      // BR-PRIVACY-001: log only safe fields; no DB available
-      safeLog('warn', {
-        event: 'raw_events_skipped_no_db',
-        request_id: requestId,
-        workspace_id: workspaceId,
-      });
+      // No external insertRawEvent injected — use inline DB (INV-EVENT-005).
+      try {
+        const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+        const db = createDb(connString);
+        await db.insert(rawEvents).values({
+          workspaceId,
+          pageId,
+          payload: rawPayload,
+          headersSanitized: {
+            origin: c.req.header('origin') ?? null,
+            cf_ray: c.req.header('cf-ray') ?? null,
+          },
+        });
+      } catch (err) {
+        safeLog('error', {
+          event: 'raw_events_insert_failed',
+          request_id: requestId,
+          workspace_id: workspaceId,
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+      }
     }
 
     // -----------------------------------------------------------------------
