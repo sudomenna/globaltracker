@@ -26,7 +26,7 @@ function buildSnippet(
   pagePublicId: string,
 ): string {
   return `<script
-  src="https://cdn.globaltracker.com/tracker.js"
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
   data-site-token="${pageToken}"
   data-launch-public-id="${launchPublicId}"
   data-page-public-id="${pagePublicId}">

@@ -76,11 +76,13 @@ import { eventsRoute } from './routes/events.js';
 import { healthCpRoute } from './routes/health-cp.js';
 import { helpRoute } from './routes/help.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
+import { launchesRoute } from './routes/launches.js';
 import { leadRoute } from './routes/lead.js';
 import { leadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
 import { orchestratorRoute } from './routes/orchestrator.js';
 import { pagesStatusRoute } from './routes/pages-status.js';
+import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
 
@@ -96,6 +98,8 @@ type Bindings = {
   HYPERDRIVE: Hyperdrive;
   META_CAPI_TOKEN: string;
   META_CAPI_TEST_EVENT_CODE?: string;
+  // Dev shortcut: workspace_id fixo para local dev (substituído por auth-cp.ts em prod)
+  DEV_WORKSPACE_ID?: string;
   // Cost ingestor credentials (T-4-001 / T-4-002)
   META_ADS_ACCOUNT_ID: string;
   META_ADS_ACCESS_TOKEN: string;
@@ -209,7 +213,25 @@ app.use(
   rateLimit({ routeGroup: 'config' }),
 );
 
-// OPTIONS preflight — must be before route mounts so CORS headers are set
+// Control Plane CORS — must be registered before route mounts (Hono middleware order)
+const cpCors = corsMiddleware({
+  mode: 'admin',
+  adminAllowedOrigins: [
+    'http://localhost:3000',
+    'https://control.globaltracker.io',
+  ],
+});
+app.use('/v1/health/*', cpCors);
+app.use('/v1/onboarding/*', cpCors);
+app.use('/v1/launches/*', cpCors);
+app.use('/v1/pages/*', cpCors);
+app.use('/v1/leads/*', cpCors);
+app.use('/v1/integrations/*', cpCors);
+app.use('/v1/dispatch-jobs/*', cpCors);
+app.use('/v1/help/*', cpCors);
+app.use('/v1/orchestrator/*', cpCors);
+
+// OPTIONS preflight — public tracker routes use public CORS; CP routes handled by cpCors above
 app.options(
   '/v1/*',
   corsMiddleware({ mode: 'public', getAllowedDomains }),
@@ -233,11 +255,13 @@ app.route('/v1/webhook/guru', createGuruWebhookRoute());
 
 // Control Plane endpoints (Sprint 6 — Wave 1: T-6-003, T-6-004, T-6-007)
 // Auth: Bearer token placeholder — JWT validation via auth-cp.ts in next pass.
+app.route('/v1/pages', pagesRoute);
 app.route('/v1/pages', pagesStatusRoute);
 app.route('/v1/health', healthCpRoute);
 app.route('/v1/integrations', integrationsTestRoute);
 
 // Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
+app.route('/v1/launches', launchesRoute);
 app.route('/v1/onboarding', onboardingStateRoute);
 app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);

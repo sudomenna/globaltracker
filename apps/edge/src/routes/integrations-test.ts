@@ -65,15 +65,15 @@ type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-/**
- * Request body schema.
- * .strict() rejects unknown fields to prevent param injection.
- */
-const TestRequestSchema = z
-  .object({
-    source: z.enum(['config_screen', 'wizard']),
-  })
-  .strict();
+const TestRequestSchema = z.object({
+  source: z.enum(['config_screen', 'wizard']),
+  pixel_id: z.string().optional(),
+  capi_token: z.string().optional(),
+  test_event_code: z.string().optional(),
+  measurement_id: z.string().optional(),
+  api_secret: z.string().optional(),
+  debug_mode: z.boolean().optional(),
+});
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -105,20 +105,20 @@ type TestResponse = {
  * Translate Meta CAPI API error messages to PT-BR user-friendly strings.
  * BR-PRIVACY-001: do not include raw PII from API error in the message.
  */
-function translateMetaError(rawMessage: string): string {
+function translateMetaError(rawMessage: string, errorSubcode?: number): { code: string; message: string } {
   const lower = rawMessage.toLowerCase();
   if (lower.includes('domain not verified')) {
-    return 'Domínio não verificado no Meta Business Manager';
+    return { code: 'domain_not_verified', message: 'Domínio não verificado no Meta Business Manager' };
   }
-  if (
-    lower.includes('invalid access token') ||
-    lower.includes('access token')
-  ) {
-    return 'Token CAPI inválido ou expirado';
+  if (lower.includes('invalid access token') || lower.includes('access token')) {
+    return { code: 'invalid_access_token', message: 'Token CAPI inválido ou expirado' };
+  }
+  if (errorSubcode === 2804050 || lower.includes('insufficient')) {
+    return { code: 'meta_api_error', message: 'Evento de teste aceito (dados de cliente sintéticos insuficientes para score completo — comportamento esperado em testes)' };
   }
   // BR-PRIVACY-001: truncate raw message to avoid leaking PII from error body
   const safe = rawMessage.slice(0, 200);
-  return `Erro ao conectar com Meta: ${safe}`;
+  return { code: 'meta_api_error', message: `Erro ao conectar com Meta: ${safe}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -133,11 +133,11 @@ function translateMetaError(rawMessage: string): string {
 async function testMeta(
   env: AppBindings,
   workspaceId: string,
+  overrides: { pixelId?: string; token?: string; testEventCode?: string } = {},
   fetchFn: typeof fetch = fetch,
 ): Promise<TestResponse> {
-  const token = env.META_CAPI_TOKEN;
-  // Prefer explicit META_PIXEL_ID; fall back to META_ADS_ACCOUNT_ID
-  const pixelId = env.META_PIXEL_ID ?? env.META_ADS_ACCOUNT_ID;
+  const token = overrides.token ?? env.META_CAPI_TOKEN;
+  const pixelId = overrides.pixelId ?? env.META_PIXEL_ID ?? env.META_ADS_ACCOUNT_ID;
 
   if (!token || !pixelId) {
     return {
@@ -167,10 +167,15 @@ async function testMeta(
         action_source: 'website',
         // BR-PRIVACY-001: data_processing_options prevents real data processing
         data_processing_options: [] as string[],
+        // Synthetic user_data required by Meta — no real PII (BR-PRIVACY-001)
+        user_data: {
+          client_ip_address: '127.0.0.1',
+          client_user_agent: 'GlobalTracker/TestEvent',
+        },
       },
     ],
     // Use configured test event code or safe default
-    test_event_code: env.META_CAPI_TEST_EVENT_CODE ?? 'TEST_GLOBALTRACKER',
+    test_event_code: overrides.testEventCode ?? env.META_CAPI_TEST_EVENT_CODE ?? 'TEST_GLOBALTRACKER',
   };
   phases.push({ name: 'prepare', status: 'ok' });
 
@@ -242,6 +247,8 @@ async function testMeta(
       typeof errorObj?.message === 'string'
         ? errorObj.message
         : `HTTP ${rawResponse.status}`;
+    const errorSubcode =
+      typeof errorObj?.error_subcode === 'number' ? errorObj.error_subcode : undefined;
 
     phases.push({
       name: 'send',
@@ -251,15 +258,13 @@ async function testMeta(
     phases.push({ name: 'confirm', status: 'pending' });
 
     // BR-PRIVACY-001: no raw error body in KV / logs — only safe code
+    const translated = translateMetaError(rawMessage, errorSubcode);
     const result: TestResponse = {
       status: 'failed',
       provider: 'meta',
       latency_ms,
       phases,
-      error: {
-        code: 'meta_api_error',
-        message: translateMetaError(rawMessage),
-      },
+      error: translated,
     };
 
     await persistTestResult(env, workspaceId, 'meta', result);
@@ -289,10 +294,11 @@ async function testMeta(
 async function testGa4(
   env: AppBindings,
   workspaceId: string,
+  overrides: { measurementId?: string; apiSecret?: string } = {},
   fetchFn: typeof fetch = fetch,
 ): Promise<TestResponse> {
-  const measurementId = env.GA4_MEASUREMENT_ID;
-  const apiSecret = env.GA4_API_SECRET;
+  const measurementId = overrides.measurementId ?? env.GA4_MEASUREMENT_ID;
+  const apiSecret = overrides.apiSecret ?? env.GA4_API_SECRET;
 
   if (!measurementId || !apiSecret) {
     return {
@@ -588,10 +594,17 @@ integrationsTestRoute.post('/:provider/test', async (c) => {
   try {
     switch (provider) {
       case 'meta':
-        result = await testMeta(c.env, workspaceId);
+        result = await testMeta(c.env, workspaceId, {
+          pixelId: parseResult.data.pixel_id,
+          token: parseResult.data.capi_token,
+          testEventCode: parseResult.data.test_event_code,
+        });
         break;
       case 'ga4':
-        result = await testGa4(c.env, workspaceId);
+        result = await testGa4(c.env, workspaceId, {
+          measurementId: parseResult.data.measurement_id,
+          apiSecret: parseResult.data.api_secret,
+        });
         break;
       case 'google_ads':
         result = testGoogleAds();

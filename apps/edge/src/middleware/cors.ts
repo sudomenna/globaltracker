@@ -11,7 +11,7 @@
  *
  * Contract (05-api-server-actions.md §CORS):
  *   Access-Control-Allow-Origin: echoes Origin if allowed, omitted otherwise.
- *   Access-Control-Allow-Methods: GET, POST, OPTIONS
+ *   Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS
  *   Access-Control-Allow-Headers: Content-Type, X-Funil-Site, X-Request-Id
  *   Access-Control-Max-Age: 86400
  *
@@ -25,8 +25,9 @@ import { createMiddleware } from 'hono/factory';
 // Constants
 // ---------------------------------------------------------------------------
 
-const ALLOWED_METHODS = 'GET, POST, OPTIONS';
+const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
 const ALLOWED_HEADERS = 'Content-Type, X-Funil-Site, X-Request-Id';
+const ALLOWED_HEADERS_ADMIN = 'Content-Type, Authorization, X-Request-Id';
 const MAX_AGE = '86400';
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,8 @@ export interface CorsOptions {
    * Required when mode === 'public'.
    */
   getAllowedDomains?: GetAllowedDomainsFn;
+  /** Override the default allowed headers (defaults to public or admin set). */
+  allowedHeaders?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,12 +87,13 @@ export function originMatchesDomains(
 function setCorsHeaders(
   headers: Record<string, string>,
   origin: string,
+  allowedHeaders: string,
 ): Record<string, string> {
   return {
     ...headers,
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
-    'Access-Control-Allow-Headers': ALLOWED_HEADERS,
+    'Access-Control-Allow-Headers': allowedHeaders,
     'Access-Control-Max-Age': MAX_AGE,
     Vary: 'Origin',
   };
@@ -116,6 +120,10 @@ function setCorsHeaders(
  * ```
  */
 export function corsMiddleware(options: CorsOptions): MiddlewareHandler {
+  const resolvedHeaders =
+    options.allowedHeaders ??
+    (options.mode === 'admin' ? ALLOWED_HEADERS_ADMIN : ALLOWED_HEADERS);
+
   return createMiddleware(async (c, next) => {
     const origin = c.req.header('Origin');
     const requestId: string =
@@ -157,7 +165,7 @@ export function corsMiddleware(options: CorsOptions): MiddlewareHandler {
       if (isAllowed) {
         return new Response(null, {
           status: 204,
-          headers: setCorsHeaders({}, origin),
+          headers: setCorsHeaders({}, origin, resolvedHeaders),
         });
       }
       // Origin not allowed — return 403 with no CORS headers (browser blocks)
@@ -177,7 +185,7 @@ export function corsMiddleware(options: CorsOptions): MiddlewareHandler {
     if (isAllowed) {
       c.res.headers.set('Access-Control-Allow-Origin', origin);
       c.res.headers.set('Access-Control-Allow-Methods', ALLOWED_METHODS);
-      c.res.headers.set('Access-Control-Allow-Headers', ALLOWED_HEADERS);
+      c.res.headers.set('Access-Control-Allow-Headers', resolvedHeaders);
       c.res.headers.set('Vary', 'Origin');
     }
     // If not allowed, no CORS headers → browser blocks cross-origin response

@@ -39,12 +39,29 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 8 COMPLETO — pronto para iniciar SPRINT 9
+Estado:        SPRINT 8 COMPLETO + sessão de debug CP (2026-05-03)
+               Persistência DB wired para launches/pages/onboarding-state
+               ~28 arquivos modificados/untracked NÃO COMMITADOS
 Último commit: a616726 (branch main) — chore: .gitignore tsbuildinfo
-Branch:        main (19 commits à frente de origin/main — não pushado)
-Verificação:   typecheck ✓  lint ✓  1351 testes passando (82 test files)
+Branch:        main (~19 commits à frente de origin/main — não pushado)
+Verificação:   typecheck ✓  lint ✓  1351 testes passando (82 test files) [pré-sessão]
 DB Supabase:   migrations 0000–0026 aplicadas ✓
+DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
+Próxima ação:  COMMIT toda a sessão → depois iniciar SPRINT 9
 ```
+
+### Pendências técnicas identificadas em sessão de teste (2026-05-03)
+
+| Item | Status | Detalhe |
+|---|---|---|
+| `tracker.js` CDN — Cloudflare Worker dedicado | **pendente** | Servir `apps/tracker/dist/tracker.js` via CF Worker com cache headers corretos. URL atual no snippet usa R2 público. Solução elegante: Worker próprio. |
+| `POST /v1/pages` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/pages.ts` persiste em `pages` + `page_tokens` via Drizzle + `DATABASE_URL`. |
+| `POST /v1/launches` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/launches.ts` persiste em `launches` via Drizzle + `DATABASE_URL`. |
+| `GET/PATCH /v1/onboarding/state` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/onboarding-state.ts` persiste em `workspaces.onboarding_state` via Drizzle + `DATABASE_URL`. Merge feito em JS (não SQL). |
+| auth-cp.ts — middleware JWT Supabase | **pendente produção** | Opção B ativa: `DEV_WORKSPACE_ID` hardcoded em `wrangler.toml` (local dev). Opção A para prod: criar `auth-cp.ts` que valida JWT Supabase → extrai `sub` → `SELECT workspace_id FROM workspace_members WHERE user_id = $sub`. Remover fallback `DEV_WORKSPACE_ID` nas rotas. |
+| Bugs corrigidos em sessão (não commitados) | **pendente commit** | `integrations-test.ts`, `step-meta.tsx`, `step-ga4.tsx`, `routes/pages.ts`, `routes/launches.ts`, `routes/onboarding-state.ts`, `wrangler.toml`, `.dev.vars`. Sprint 8 CP files (Live Console, Test Mode UI, etc.) também não commitados. ~28 arquivos. |
+| `.dev.vars` — `DATABASE_URL` correto | ✅ **corrigido (2026-05-03)** | Senha `//` → `%2F%2F` (URL-encode); scheme `postgresql://` → `postgres://`. Necessário porque `postgres.js` CF bundle usa `new URL()` para parse — falha com `//` literal em senha. |
+| `docs/30-contracts/05-api-server-actions.md` | ✅ **atualizado (2026-05-03)** | Adicionado `POST /v1/launches`, `GET /v1/launches`, `POST /v1/pages` (eram contratos não documentados). |
 
 ### Pendências operacionais antes de produção
 
@@ -110,6 +127,13 @@ DB Supabase:   migrations 0000–0026 aplicadas ✓
 
 **`*.tsbuildinfo`**
 - Adicionado ao `.gitignore` raiz em a616726 — não commitar
+
+### Notas técnicas — DB no CF Worker (local dev)
+
+- `c.env.HYPERDRIVE.connectionString` em `wrangler dev` local retorna URL proxy inválida para `postgres.js` (não é PostgreSQL real)
+- Usar `c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString` em todas as rotas CP
+- `DATABASE_URL` em `.dev.vars`: esquema `postgres://` (não `postgresql://`), senha com `%2F%2F` em vez de `//`
+- JSONB merge via SQL `||` com Drizzle sql template tem bug de encoding (parâmetro vira string scalar → array no DB). Fix: SELECT → merge JS → UPDATE com objeto plano.
 
 ### Como retomar em nova sessão
 

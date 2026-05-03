@@ -116,7 +116,7 @@ function IncidentsPanel({
   );
 }
 
-export function AppHeader() {
+export function AppHeader({ workspaceName }: { workspaceName: string | null }) {
   const [panelOpen, setPanelOpen] = React.useState(false);
   const { state, incidents, incidentCount } = useWorkspaceHealth();
   const { showIncompleteBanner } = useOnboardingState();
@@ -141,7 +141,9 @@ export function AppHeader() {
 
       <header className="flex h-16 items-center gap-4 border-b bg-card px-6">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-sm">Workspace</span>
+          <span className="font-medium text-sm">
+            {workspaceName ?? 'Workspace'}
+          </span>
           {/* docs/70-ux/07-component-health-badges.md §5 — B.4 workspace header badge */}
           <HealthBadge
             state={state}

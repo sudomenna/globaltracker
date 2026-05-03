@@ -35,6 +35,8 @@
  * INV-WORKSPACE-003: onboarding_state structure validated by Zod before persisting.
  */
 
+import { createDb, workspaces } from '@globaltracker/db';
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import {
@@ -50,6 +52,8 @@ import { safeLog } from '../middleware/sanitize-logs.js';
 type AppBindings = {
   HYPERDRIVE: Hyperdrive;
   ENVIRONMENT: string;
+  DEV_WORKSPACE_ID?: string;
+  DATABASE_URL?: string;
 };
 
 type AppVariables = {
@@ -284,11 +288,12 @@ export function createOnboardingStateRoute(deps?: {
     const requestId: string =
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
 
-    // BR-RBAC-002: workspace_id from context (set by auth middleware)
-    // TODO Sprint 6: workspace_id must come from validated JWT claim.
+    // BR-RBAC-002: workspace_id from context (auth middleware) or DEV_WORKSPACE_ID fallback (local dev).
+    // TODO prod: remove DEV_WORKSPACE_ID fallback — auth-cp.ts sets workspace_id from JWT.
     const workspaceId =
       (c.get('workspace_id') as string | undefined) ??
-      'placeholder-workspace-id'; // TODO Sprint 6: validate JWT Supabase via auth-cp.ts
+      c.env.DEV_WORKSPACE_ID ??
+      'placeholder-workspace-id';
 
     safeLog('info', {
       event: 'onboarding_state_get',
@@ -297,11 +302,23 @@ export function createOnboardingStateRoute(deps?: {
     });
 
     if (!deps?.getState) {
-      // No DB wired — return empty state (test/dev stub)
-      const emptyState: OnboardingState = {};
-      return c.json({ onboarding_state: emptyState }, 200, {
-        'X-Request-Id': requestId,
-      });
+      // Inline DB path (dev shortcut — auth-cp.ts + injected deps in prod)
+      const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+      const rows = await db
+        .select({ onboardingState: workspaces.onboardingState })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+      if (!rows[0]) {
+        return c.json(
+          { code: 'workspace_not_found', message: 'Workspace not found', request_id: requestId },
+          404,
+          { 'X-Request-Id': requestId },
+        );
+      }
+      const parseResult = OnboardingStateSchema.safeParse(rows[0].onboardingState);
+      const state: OnboardingState = parseResult.success ? parseResult.data : {};
+      return c.json({ onboarding_state: state }, 200, { 'X-Request-Id': requestId });
     }
 
     let rawState: OnboardingState | null;
@@ -373,11 +390,12 @@ export function createOnboardingStateRoute(deps?: {
     const requestId: string =
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
 
-    // BR-RBAC-002: workspace_id from context (set by auth middleware)
-    // TODO Sprint 6: workspace_id must come from validated JWT claim.
+    // BR-RBAC-002: workspace_id from context (auth middleware) or DEV_WORKSPACE_ID fallback (local dev).
+    // TODO prod: remove DEV_WORKSPACE_ID fallback — auth-cp.ts sets workspace_id from JWT.
     const workspaceId =
       (c.get('workspace_id') as string | undefined) ??
-      'placeholder-workspace-id'; // TODO Sprint 6: validate JWT Supabase via auth-cp.ts
+      c.env.DEV_WORKSPACE_ID ??
+      'placeholder-workspace-id';
 
     // Extract actor from Bearer token for audit log
     // BR-PRIVACY-001: Bearer token is opaque reference, not PII
@@ -464,6 +482,37 @@ export function createOnboardingStateRoute(deps?: {
           { 'X-Request-Id': requestId },
         );
       }
+    } else {
+      // Inline DB path: fetch started_at from workspaces table
+      // _inlineDb is intentionally undefined here — set below if no deps on mergeState too
+      try {
+        const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+        const rows = await db
+          .select({ onboardingState: workspaces.onboardingState })
+          .from(workspaces)
+          .where(eq(workspaces.id, workspaceId))
+          .limit(1);
+        if (!rows[0]) {
+          return c.json(
+            { code: 'workspace_not_found', message: 'Workspace not found', request_id: requestId },
+            404,
+            { 'X-Request-Id': requestId },
+          );
+        }
+        currentStartedAt = (rows[0].onboardingState as OnboardingState)?.started_at ?? null;
+      } catch (err) {
+        safeLog('error', {
+          event: 'onboarding_state_patch_get_error',
+          request_id: requestId,
+          workspace_id: workspaceId,
+          error_type: err instanceof Error ? err.constructor.name : typeof err,
+        });
+        return c.json(
+          { code: 'internal_error', message: 'Failed to read onboarding state', request_id: requestId },
+          500,
+          { 'X-Request-Id': requestId },
+        );
+      }
     }
 
     // -----------------------------------------------------------------------
@@ -478,15 +527,42 @@ export function createOnboardingStateRoute(deps?: {
     let updatedState: OnboardingState;
 
     if (!deps?.mergeState) {
-      // No DB wired — return the fragment as mock state (test/dev stub)
-      const mockState = OnboardingStateSchema.parse(
-        Object.fromEntries(
-          Object.entries(fragment).filter(
-            ([k]) => k in OnboardingStateSchema.shape,
-          ),
-        ),
-      );
-      updatedState = mockState;
+      // Inline DB path: fetch current state, merge in JS, update
+      // (avoids JSONB || SQL parameter encoding issues in CF Workers local dev)
+      try {
+        const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+        const rows = await db
+          .select({ onboardingState: workspaces.onboardingState })
+          .from(workspaces)
+          .where(eq(workspaces.id, workspaceId))
+          .limit(1);
+        if (!rows[0]) {
+          return c.json(
+            { code: 'workspace_not_found', message: 'Workspace not found', request_id: requestId },
+            404,
+            { 'X-Request-Id': requestId },
+          );
+        }
+        const currentState = (rows[0].onboardingState as Record<string, unknown>) ?? {};
+        const merged = { ...currentState, ...fragment };
+        await db.update(workspaces)
+          .set({ onboardingState: merged, updatedAt: new Date() })
+          .where(eq(workspaces.id, workspaceId));
+        const stateParseResult = OnboardingStateSchema.safeParse(merged);
+        updatedState = stateParseResult.success ? stateParseResult.data : (merged as OnboardingState);
+      } catch (err) {
+        safeLog('error', {
+          event: 'onboarding_state_patch_merge_error',
+          request_id: requestId,
+          workspace_id: workspaceId,
+          error_type: err instanceof Error ? err.constructor.name : typeof err,
+        });
+        return c.json(
+          { code: 'internal_error', message: 'Failed to update onboarding state', request_id: requestId },
+          500,
+          { 'X-Request-Id': requestId },
+        );
+      }
     } else {
       let mergeResult: OnboardingState | null;
 

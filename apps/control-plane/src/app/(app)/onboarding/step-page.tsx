@@ -196,6 +196,7 @@ export function StepPage({
             id="page_public_id"
             type="text"
             placeholder="captura-v1"
+            autoComplete="off"
             aria-describedby={
               form.formState.errors.public_id
                 ? 'page_public_id_error'

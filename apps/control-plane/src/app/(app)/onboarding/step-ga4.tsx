@@ -77,7 +77,13 @@ export function StepGa4({
         },
       );
 
-      if (res.ok) {
+      const body = (await res.json()) as {
+        status?: string;
+        error?: { code?: string; message?: string };
+        code?: string;
+      };
+
+      if (res.ok && body.status === 'success') {
         setValidationResult({
           success: true,
           message: 'GA4 conectado com sucesso.',
@@ -89,8 +95,8 @@ export function StepGa4({
           validated: true,
         });
       } else {
-        const body = (await res.json()) as { error_code?: string };
-        const msg = getGa4ErrorMessage(body.error_code);
+        const errorCode = body.error?.code ?? body.code;
+        const msg = getGa4ErrorMessage(errorCode);
         setValidationResult({ success: false, message: msg });
       }
     } catch {
@@ -137,6 +143,7 @@ export function StepGa4({
             id="measurement_id"
             type="text"
             placeholder="G-XXXXXXXXXX"
+            autoComplete="off"
             aria-describedby={
               form.formState.errors.measurement_id
                 ? 'measurement_id_error'
@@ -184,6 +191,7 @@ export function StepGa4({
             id="ga4_api_secret"
             type="password"
             placeholder="xxxxxxxxxxxxxxxxxxxxxx"
+            autoComplete="new-password"
             aria-describedby={
               form.formState.errors.api_secret
                 ? 'ga4_api_secret_error'

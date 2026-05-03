@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { Check, ChevronLeft } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { SkipAllDialog } from './skip-all-dialog';
@@ -41,6 +42,7 @@ export function OnboardingWizard({
   initialState,
   accessToken,
 }: OnboardingWizardProps) {
+  const router = useRouter();
   const [state, setState] = useState<OnboardingState>(initialState);
   const [currentStep, setCurrentStep] = useState(() =>
     firstPendingStep(initialState),
@@ -51,9 +53,26 @@ export function OnboardingWizard({
   const isCompleted = !!state.completed_at;
   const isSkippedAll = !!state.skipped_at;
 
+  const STEP_KEY_MAP = {
+    step_meta: 'meta',
+    step_ga4: 'ga4',
+    step_launch: 'launch',
+    step_page: 'page',
+    step_install: 'install',
+  } as const;
+
   async function persistStep(stepKey: StepKey, data: OnboardingState[StepKey]) {
     setIsSaving(true);
     try {
+      const step = STEP_KEY_MAP[stepKey];
+      const body: Record<string, unknown> = { step };
+      if (data && 'completed_at' in data && data.completed_at)
+        body.completed_at = data.completed_at;
+      if (data && 'validated' in data && data.validated !== undefined)
+        body.validated = data.validated;
+      if (data && 'first_ping_at' in data && data.first_ping_at)
+        body.first_ping_at = data.first_ping_at;
+
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787'}/v1/onboarding/state`,
         {
@@ -62,7 +81,7 @@ export function OnboardingWizard({
             'Content-Type': 'application/json',
             Authorization: `Bearer ${accessToken}`,
           },
-          body: JSON.stringify({ step: stepKey, data }),
+          body: JSON.stringify(body),
         },
       );
       if (!res.ok) {
@@ -86,8 +105,8 @@ export function OnboardingWizard({
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
-            step: 'completed',
-            data: { completed_at: new Date().toISOString() },
+            step: 'complete',
+            completed_at: new Date().toISOString(),
           }),
         },
       );
@@ -107,8 +126,8 @@ export function OnboardingWizard({
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
-            step: 'skipped_all',
-            data: { skipped_at: new Date().toISOString() },
+            step: 'skip_all',
+            skipped_at: new Date().toISOString(),
           }),
         },
       );
@@ -164,6 +183,7 @@ export function OnboardingWizard({
     await persistSkippedAll();
     setSkipAllOpen(false);
     toast.info('Configuracao pulada. Voce pode retomar em Configuracoes.');
+    router.push('/');
   }
 
   if (isCompleted) {

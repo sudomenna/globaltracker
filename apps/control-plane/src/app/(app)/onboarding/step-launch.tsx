@@ -175,6 +175,7 @@ export function StepLaunch({
             id="launch_public_id"
             type="text"
             placeholder="lcm-maio-2026"
+            autoComplete="off"
             aria-describedby={
               form.formState.errors.public_id
                 ? 'launch_public_id_error'

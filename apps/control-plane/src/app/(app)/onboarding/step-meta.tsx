@@ -79,7 +79,13 @@ export function StepMeta({
         },
       );
 
-      if (res.ok) {
+      const body = (await res.json()) as {
+        status?: string;
+        error?: { code?: string; message?: string };
+        code?: string;
+      };
+
+      if (res.ok && body.status === 'success') {
         setValidationResult({
           success: true,
           message:
@@ -92,11 +98,8 @@ export function StepMeta({
           validated: true,
         });
       } else {
-        const body = (await res.json()) as {
-          error_code?: string;
-          message?: string;
-        };
-        const msg = getMetaErrorMessage(body.error_code);
+        const errorCode = body.error?.code ?? body.code;
+        const msg = getMetaErrorMessage(errorCode);
         setValidationResult({ success: false, message: msg });
       }
     } catch {
@@ -182,6 +185,7 @@ export function StepMeta({
             type="text"
             inputMode="numeric"
             placeholder="123456789012345"
+            autoComplete="off"
             aria-describedby={
               form.formState.errors.pixel_id ? 'pixel_id_error' : undefined
             }
@@ -219,6 +223,7 @@ export function StepMeta({
             id="capi_token"
             type="password"
             placeholder="EAAxxxxxx..."
+            autoComplete="new-password"
             aria-describedby={
               form.formState.errors.capi_token ? 'capi_token_error' : undefined
             }
@@ -248,6 +253,7 @@ export function StepMeta({
             id="test_event_code"
             type="text"
             placeholder="TEST12345"
+            autoComplete="off"
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             {...form.register('test_event_code')}
           />
@@ -372,6 +378,14 @@ function getMetaErrorMessage(errorCode?: string): string {
       'Meta descartou o evento (iOS 14+ AEM). Verifique priorizacao de eventos.',
     rate_limited:
       'Limite de requests do Meta atingido. Sistema vai retentar automaticamente.',
+    meta_api_error:
+      'Token CAPI invalido ou sem permissao para este Pixel. Verifique o token no Meta Events Manager.',
+    integration_not_configured:
+      'Pixel ID e Token CAPI sao obrigatorios para validar.',
+    fetch_error:
+      'Erro de rede ao conectar com o Meta. Verifique sua conexao.',
+    validation_error:
+      'Dados invalidos. Verifique o Pixel ID e o Token CAPI.',
   };
   return (
     messages[errorCode ?? ''] ?? 'Erro inesperado do Meta. Tente novamente.'

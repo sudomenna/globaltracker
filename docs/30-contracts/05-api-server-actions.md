@@ -88,6 +88,44 @@ Atualiza step específico. Idempotente.
 | **Body** | `{ step: 'meta' | 'ga4' | 'launch' | 'page' | 'install', completed_at?, validated?, ... }` |
 | **Response 200** | `{ onboarding_state }` |
 
+### `POST /v1/launches`
+
+Cria um launch novo para o workspace autenticado. Consumido pelo wizard (step 3) e pelo painel de launches.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launches-create-v1` |
+| **Auth** | session OWNER/ADMIN/MARKETER (`Authorization: Bearer <supabase_jwt>`) |
+| **Body** | `{ name: string (1–100), public_id: string (3–60, /^[a-z0-9-]+$/), status?: 'draft' \| 'configuring' \| 'live' (default 'draft') }` |
+| **Side effects** | INSERT em `launches` com `workspace_id` do JWT; `timezone` default `'America/Sao_Paulo'`; `config: {}` |
+| **Response 201** | `{ id, launch_public_id, public_id, name, status, created_at, request_id }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id já existe no workspace) |
+
+### `GET /v1/launches`
+
+Lista todos os launches do workspace autenticado, ordenados por `created_at` ASC.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | session MARKETER+ |
+| **Response 200** | `{ launches: [{ id, public_id, name, status, created_at }], request_id }` |
+| **Errors** | `401 unauthorized` |
+
+### `POST /v1/pages`
+
+Cria uma page vinculada a um launch. Consumido pelo wizard (step 4).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-pages-create-v1` |
+| **Auth** | session OWNER/ADMIN/MARKETER |
+| **Body** | `{ name, public_id (3–60, /^[a-z0-9-]+$/), launch_public_id, domains: string[] (min 1), mode: 'b_snippet' \| 'server', capture_pageview?: boolean, capture_lead?: boolean }` |
+| **Side effects** | INSERT em `pages` (`role='capture'`, `status='active'`); gera token SHA-256 e INSERT em `page_tokens`; `mode='server'` → `integration_mode='c_webhook'` |
+| **Response 201** | `{ page_public_id, public_id, name, launch_public_id, page_token (raw — exibir uma vez), mode, created_at, request_id }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id já existe no launch), `422 launch_not_found` |
+
+> **Segurança (INV-PAGE-003):** `page_token` retornado é o token bruto (64-char hex). Somente o hash SHA-256 é armazenado em `page_tokens.token_hash`. O token não pode ser recuperado posteriormente.
+
 ### `GET /v1/pages/:public_id/status`
 
 Status vivo de uma page para polling. Implementa A.3 ([70-ux/04-screen-page-registration.md](../70-ux/04-screen-page-registration.md)).
