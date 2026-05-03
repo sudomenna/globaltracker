@@ -33,7 +33,7 @@
 | Zod | Em todas fronteiras HTTP, webhooks, queues, jsonb columns lidos | Endpoint sem schema Zod é PR rejeitado |
 | `any` | Permitido apenas com `// eslint-disable` + comentário com motivo | CI falha sem justificativa |
 | Drizzle migrations | Versionadas em `packages/db/migrations/` | PR sem migration para schema change rejeitado |
-| Hyperdrive | Toda query Postgres do Worker passa por Hyperdrive binding | Direct connection sem Hyperdrive não é permitida em Worker |
+| Hyperdrive | Em produção, toda query Postgres do Worker passa por Hyperdrive binding (`HYPERDRIVE`). Em dev local, aceita-se `DATABASE_URL` diretamente como escape hatch (definida em `.dev.vars`, nunca commitada com senha). | Direct connection sem Hyperdrive em produção é vetada; usar `DATABASE_URL` fora de dev local dispara `[STACK-BLOQUEIO]` em MEMORY.md |
 | pnpm | npm/yarn proibidos para evitar lockfile drift | CI valida `pnpm-lock.yaml` único |
 
 ## Atualização de versão major

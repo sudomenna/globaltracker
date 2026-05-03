@@ -32,7 +32,7 @@ export const leads = pgTable('leads', {
 
 ## Hyperdrive
 
-CF Worker conecta via Hyperdrive binding (`HYPERDRIVE_BINDING` env). Pool gerenciado pela Cloudflare.
+CF Worker conecta via Hyperdrive binding (`HYPERDRIVE` env). Pool gerenciado pela Cloudflare.
 
 ```ts
 // apps/edge/src/lib/db.ts
@@ -41,7 +41,7 @@ import postgres from 'postgres';
 import * as schema from '@globaltracker/db/schema';
 
 export function getDb(env: Env) {
-  const sql = postgres(env.HYPERDRIVE_BINDING.connectionString);
+  const sql = postgres(env.HYPERDRIVE.connectionString);
   return drizzle(sql, { schema });
 }
 ```

@@ -37,7 +37,7 @@
 - `id`
 - `workspace_id`
 - `page_id`
-- `token_hash` (SHA-256 do segredo emitido)
+- `token_hash` (SHA-256 do segredo emitido — input exato: `TextEncoder('utf-8').encode(tokenHexString)`, onde `tokenHexString` é a representação hex-string dos 32 bytes aleatórios gerados; hash e validação usam o mesmo input)
 - `label` (humano, ex.: "v1 — produção")
 - `status` (`active` / `rotating` / `revoked`)
 - `created_at`, `rotated_at`, `revoked_at`

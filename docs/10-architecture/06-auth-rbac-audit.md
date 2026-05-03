@@ -13,6 +13,7 @@
 
 - Emitido por `MOD-PAGE.rotatePageToken()` apenas a OPERATOR/ADMIN.
 - Hash SHA-256 armazenado em `page_tokens.token_hash`. Token claro mostrado uma vez.
+- Algoritmo de hash: `SHA-256(TextEncoder('utf-8').encode(tokenHexString))`, onde `tokenHexString` é a representação hex-string dos 32 bytes aleatórios do token. Geração e validação usam o mesmo input — o middleware recebe o token hex-string via header e recomputa o hash antes de comparar com `page_tokens.token_hash`.
 - Status `active`/`rotating`/`revoked` com janela de overlap (ADR-023).
 - Não dá acesso a operações administrativas — escopo é estrito a `/v1/config`, `/v1/events`, `/v1/lead`.
 

@@ -15,7 +15,8 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-(vazio — sprint 8 encerrado sem pendências de sync)
+- [SYNC-PENDING-CONTRACT] `docs/30-contracts/05-api-server-actions.md` — seção `POST /v1/pages` deve especificar que `token_hash = SHA-256(TextEncoder(tokenHexString))`, não SHA-256 dos bytes crus. Requer T-ID `contract-change` serial (não editar em paralelo com outras T-IDs).
+- [SYNC-PENDING-BUG-P1] `insertRawEvent` não conectado em `index.ts`: eventos POST /v1/events são aceitos (202) mas descartados (`raw_events_skipped_no_db`). Fila e dispatch Meta/GA4 nunca são acionados. Bloqueia teste E2E de lead.
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
