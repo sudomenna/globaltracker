@@ -64,7 +64,11 @@ Se qualquer camada falha, request é rejeitada. Bug em uma camada não vaza dado
 
 ## RLS (Row-Level Security)
 
-Política padrão (ver [`03-data-layer.md`](03-data-layer.md)). Setting `app.current_workspace_id` setado no middleware antes de qualquer query.
+Política **dual-mode** desde a migration `0028_rls_auth_workspace_id.sql` — detalhe completo em [`03-data-layer.md`](03-data-layer.md#rls-row-level-security). Resumo dos dois caminhos:
+
+### 1) Edge Worker — GUC explícito
+
+Edge Worker conecta como `postgres` via Hyperdrive (bypassa RLS), mas continua setando `app.current_workspace_id` por defesa em profundidade:
 
 ```ts
 // apps/edge/src/middleware/workspace-context.ts
@@ -74,6 +78,14 @@ app.use(async (c, next) => {
   await next();
 });
 ```
+
+### 2) Control Plane — JWT-derivado
+
+Server Components do Next.js conectam via supabase-js como role `authenticated` (RLS aplicada). A função `public.auth_workspace_id()` (`SECURITY DEFINER STABLE`) resolve o workspace do usuário a partir de `auth.uid() → workspace_members` e é usada na cláusula `OR` de toda policy `*_workspace_isolation`. Não é preciso setar GUC — o JWT do Supabase já carrega `auth.uid()`.
+
+> **Histórico:** antes da `0028`, todas as 30 policies dependiam exclusivamente da GUC. Como o control-plane nunca a setava, queries autenticadas retornavam zero rows. A função `auth_workspace_id()` foi adicionada e as policies reescritas via `DO $$` loop sobre `pg_policies` para aceitar **OR** entre as duas fontes.
+
+A policy `workspace_members_workspace_isolation` ganhou também `OR user_id = auth.uid()` para garantir que o usuário sempre consegue ler a própria membership (pré-requisito para `auth_workspace_id()` funcionar).
 
 ## 2FA (Fase 4)
 

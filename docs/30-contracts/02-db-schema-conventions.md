@@ -151,16 +151,31 @@ create table events_2026_05 partition of events
 
 Cron mensal cria partição do mês seguinte. Retenção de 13 meses purga partições antigas.
 
-## RLS — política padrão
+## RLS — política padrão (dual-mode desde migration `0028`)
 
 ```sql
 alter table <tabela> enable row level security;
 
 create policy <tabela>_workspace_isolation on <tabela>
-  using (workspace_id = current_setting('app.current_workspace_id', true)::uuid);
+  for all
+  using (
+    workspace_id = NULLIF(current_setting('app.current_workspace_id', true), '')::uuid
+    OR workspace_id = public.auth_workspace_id()
+  )
+  with check (
+    workspace_id = NULLIF(current_setting('app.current_workspace_id', true), '')::uuid
+    OR workspace_id = public.auth_workspace_id()
+  );
 ```
 
-Application seta `app.current_workspace_id` via `set local` no início de cada request transaction. Acesso sem workspace_id setado retorna zero linhas.
+Dois caminhos válidos:
+
+1. **GUC explícita** — application seta `set local app.current_workspace_id = '<uuid>'` no início da transaction (usado pelo Edge Worker e jobs).
+2. **JWT-derivado** — função `public.auth_workspace_id()` (`SECURITY DEFINER STABLE`) faz `SELECT workspace_id FROM workspace_members WHERE user_id = auth.uid() LIMIT 1`. Usado pelos Server Components do control-plane via role `authenticated` do Supabase.
+
+Caller sem GUC setada **e** sem JWT válido retorna zero linhas (default-deny preservado).
+
+`workspace_members_workspace_isolation` tem cláusula adicional `OR user_id = auth.uid()` (necessária para o lookup de `auth_workspace_id()` não cair em loop de RLS). Detalhe operacional em [`10-architecture/03-data-layer.md`](../10-architecture/03-data-layer.md#rls-row-level-security) e [`10-architecture/06-auth-rbac-audit.md`](../10-architecture/06-auth-rbac-audit.md#rls-row-level-security).
 
 ## Convenção de testes
 

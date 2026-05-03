@@ -9,7 +9,8 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Loader2, Plus, Rocket, X } from 'lucide-react';
+import { ChevronRight, Loader2, Plus, Rocket, X } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -230,6 +231,31 @@ const STATUS_COLORS: Record<string, string> = {
 export default function LaunchesPage() {
   const [showForm, setShowForm] = useState(false);
   const [launches, setLaunches] = useState<Launch[]>([]);
+  const [loading, setLoading] = useState(true);
+  const accessToken = useAccessToken();
+
+  useEffect(() => {
+    if (!accessToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787'}/v1/launches`,
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        );
+        if (!res.ok) return;
+        const body = (await res.json()) as { launches?: Launch[] };
+        if (!cancelled) setLaunches(body.launches ?? []);
+      } catch {
+        // silent
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
 
   function handleSuccess(launch: Launch) {
     setLaunches((prev) => [launch, ...prev]);
@@ -256,7 +282,12 @@ export default function LaunchesPage() {
           <CardTitle>Lista de Lançamentos</CardTitle>
         </CardHeader>
         <CardContent>
-          {launches.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Carregando...
+            </div>
+          ) : launches.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-8 text-center">
               <Rocket className="h-8 w-8 text-muted-foreground/50" aria-hidden="true" />
               <p className="text-sm text-muted-foreground">
@@ -270,16 +301,24 @@ export default function LaunchesPage() {
           ) : (
             <ul className="divide-y">
               {launches.map((l) => (
-                <li key={l.public_id} className="flex items-center justify-between py-3">
-                  <div>
-                    <p className="text-sm font-medium">{l.name}</p>
-                    <p className="text-xs text-muted-foreground font-mono">{l.public_id}</p>
-                  </div>
-                  <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[l.status] ?? ''}`}
+                <li key={l.public_id}>
+                  <Link
+                    href={`/launches/${l.public_id}`}
+                    className="flex items-center justify-between py-3 -mx-2 px-2 rounded-md hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {STATUS_LABELS[l.status] ?? l.status}
-                  </span>
+                    <div>
+                      <p className="text-sm font-medium">{l.name}</p>
+                      <p className="text-xs text-muted-foreground font-mono">{l.public_id}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_COLORS[l.status] ?? ''}`}
+                      >
+                        {STATUS_LABELS[l.status] ?? l.status}
+                      </span>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                    </div>
+                  </Link>
                 </li>
               ))}
             </ul>

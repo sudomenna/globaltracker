@@ -21,7 +21,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Check, Clipboard, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import { Check, Clipboard, Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { DiagnosticsPanel } from './diagnostics-panel';
@@ -49,7 +49,7 @@ interface Props {
   initialStatus: PageStatus | null;
 }
 
-function buildSnippet(
+function buildHeadSnippet(
   pageToken: string,
   pagePublicId: string,
   launchPublicId: string,
@@ -62,6 +62,28 @@ function buildSnippet(
 </script>`;
 }
 
+function buildBodySnippet(formSelector: string) {
+  return `<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var form = document.querySelector('${formSelector}');
+  if (!form) return;
+  form.addEventListener('submit', function () {
+    function val(sels) {
+      for (var i = 0; i < sels.length; i++) {
+        var el = form.querySelector(sels[i]);
+        if (el && el.value) return el.value;
+      }
+    }
+    window.Funil.identify({
+      email: val(['[name="email"]', '[type="email"]', '[name="e-mail"]']),
+      name: val(['[name="nome"]', '[name="name"]', '[name="primeiro_nome"]']),
+      phone: val(['[name="telefone"]', '[name="celular"]', '[name="whatsapp"]', '[name="phone"]', '[name="fone"]']),
+    });
+  });
+});
+<\/script>`;
+}
+
 const MASKED_TOKEN = '••••••••••••••••••••••';
 
 export function PageDetailClient({
@@ -71,10 +93,14 @@ export function PageDetailClient({
   initialStatus,
 }: Props) {
   const [tokenVisible, setTokenVisible] = useState(false);
-  // pageToken is only available right after creation or rotation — it is not
-  // returned by the status endpoint (shown masked after first ping per spec §3).
-  const [pageToken, setPageToken] = useState<string | null>(null);
+  // pageToken: loaded from localStorage (saved on creation/rotation) or set after rotation.
+  const [pageToken, setPageToken] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(`gt:token:${pagePublicId}`);
+  });
   const [copied, setCopied] = useState(false);
+  const [bodyCopied, setBodyCopied] = useState(false);
+  const [formSelector, setFormSelector] = useState('form');
   const [rotateDialogOpen, setRotateDialogOpen] = useState(false);
   const [rotateConfirmInput, setRotateConfirmInput] = useState('');
   const [isRotating, setIsRotating] = useState(false);
@@ -127,7 +153,7 @@ export function PageDetailClient({
 
   async function handleCopySnippet() {
     const token = pageToken ?? MASKED_TOKEN;
-    const snippet = buildSnippet(token, pagePublicId, launchPublicId);
+    const snippet = buildHeadSnippet(token, pagePublicId, launchPublicId);
     await navigator.clipboard.writeText(snippet);
     setCopied(true);
     setTimeout(() => setCopied(false), 2_000);
@@ -158,6 +184,7 @@ export function PageDetailClient({
 
     const data = (await res.json()) as { page_token: string };
     setPageToken(data.page_token);
+    localStorage.setItem(`gt:token:${pagePublicId}`, data.page_token);
     setTokenVisible(true);
     setRotateDialogOpen(false);
     setRotateConfirmInput('');
@@ -179,7 +206,7 @@ export function PageDetailClient({
   }
 
   const displayToken = tokenVisible && pageToken ? pageToken : MASKED_TOKEN;
-  const snippet = buildSnippet(
+  const snippet = buildHeadSnippet(
     pageToken ?? MASKED_TOKEN,
     pagePublicId,
     launchPublicId,
@@ -317,7 +344,7 @@ export function PageDetailClient({
         <CardContent className="space-y-3">
           <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto">
             <pre className="whitespace-pre-wrap break-all">
-              {buildSnippet(displayToken, pagePublicId, launchPublicId)}
+              {buildHeadSnippet(displayToken, pagePublicId, launchPublicId)}
             </pre>
           </div>
 
@@ -376,10 +403,71 @@ export function PageDetailClient({
               Token atual: {MASKED_TOKEN}
             </p>
           )}
-          <p id="token-info" className="text-xs text-muted-foreground">
-            Para ver o token em claro, rotacione-o. O token antigo fica válido
-            por 14 dias.
-          </p>
+          {!pageToken && (
+            <p id="token-info" className="text-xs text-muted-foreground">
+              Para ver o token em claro, rotacione-o. O token antigo fica válido
+              por 14 dias.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Snippet do body — captura de leads do formulário */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Captura de leads do formulário</CardTitle>
+          <CardDescription>
+            Cole antes do{' '}
+            <code className="font-mono text-xs bg-muted px-1 rounded">
+              &lt;/body&gt;
+            </code>{' '}
+            da landing page. Ajuste o seletor se necessário.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1">
+            <label htmlFor="form-selector-detail" className="text-xs font-medium text-muted-foreground">
+              Seletor CSS do formulário
+            </label>
+            <input
+              id="form-selector-detail"
+              value={formSelector}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormSelector(e.target.value)}
+              placeholder="form, #meu-form, .form-captura"
+              className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+
+          <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto">
+            <pre className="whitespace-pre-wrap break-all">
+              {buildBodySnippet(formSelector)}
+            </pre>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              await navigator.clipboard.writeText(buildBodySnippet(formSelector));
+              setBodyCopied(true);
+              setTimeout(() => setBodyCopied(false), 2_000);
+            }}
+            aria-label="Copiar script de captura de formulário"
+            className="gap-1.5"
+          >
+            {bodyCopied ? (
+              <>
+                <Check className="h-4 w-4" aria-hidden="true" />
+                Copiado!
+              </>
+            ) : (
+              <>
+                <Copy className="h-4 w-4" aria-hidden="true" />
+                Copiar script
+              </>
+            )}
+          </Button>
         </CardContent>
       </Card>
 

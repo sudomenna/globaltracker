@@ -39,14 +39,27 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        PIPELINE E2E COMPLETO (2026-05-03) — pronto para Sprint 9
-Último commit: abbd77f (branch main)
-Branch:        main (~38 commits à frente de origin/main — não pushado)
-Verificação:   typecheck ✓ (edge/shared)  1352 testes passando (1 falha pré-existente em integrations-test .strict())
-DB Supabase:   migrations 0000–0027 aplicadas ✓
+Estado:        UX/RLS HARDENING (2026-05-03 sessão 2) — pronto para Sprint 9
+Último commit: ec320fb (branch main) — antes desta sessão
+Branch:        main (não pushado)
+Verificação:   typecheck ✓ (edge/control-plane nas mudanças)
+DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md
 ```
+
+### Mudanças entregues nesta sessão (2026-05-03 sessão 2)
+
+| Área | Entrega |
+|---|---|
+| **Wizard onboarding** | Step 6 "Capturar leads do formulário" — client-only, gera script `<body>` com inferência automática de campos email/name/phone |
+| **Page detail UI** | Card de snippet do body + persistência de `page_token` em `localStorage` (`gt:token:<page_public_id>`) — usuário acessa snippet com token real após onboarding sem rotacionar |
+| **Launch lifecycle** | Auto-promoção `draft→configuring` em `pages.ts` (POST page) e `configuring→live` em `events.ts` (via `c.executionCtx.waitUntil`) — idempotente |
+| **Launches list** | Agora faz GET real (era `useState([])`); itens clicáveis |
+| **Launch detail page** | Nova rota `/launches/[launch_public_id]/page.tsx` com header + status + botão "Eventos ao vivo" + lista de pages |
+| **RLS fix sistêmico** | Migration 0028 — função `public.auth_workspace_id()` SECURITY DEFINER + 30 policies reescritas (GUC OR auth-derived). Antes: `app.current_workspace_id` nunca era setado, supabase-js no control-plane via `authenticated` retornava 0 rows. Agora: control-plane Server Components funcionam com RLS real |
+| **Live Events Console acessível** | Página `/launches/:id/events/live` agora carrega (Realtime Supabase OK). Bug raiz era a RLS, não a página |
+| **Dependência faltando** | `@tanstack/react-virtual` instalado em `apps/control-plane` (era importado em EventConsole.tsx) |
 
 ### Pipeline E2E — status verificado em testes locais (2026-05-03)
 
@@ -81,8 +94,10 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 | Item | Status | Detalhe |
 |---|---|---|
 | `tracker.js` CDN — Cloudflare Worker dedicado | **pendente** | Servir `apps/tracker/dist/tracker.js` via CF Worker com cache headers corretos. |
-| `auth-cp.ts` — middleware JWT Supabase | **pendente produção** | `DEV_WORKSPACE_ID` hardcoded ativo em dev. Prod precisa de JWT validation. |
+| `auth-cp.ts` — middleware JWT Supabase | **pendente produção** | `DEV_WORKSPACE_ID` hardcoded ativo em dev. Prod precisa de JWT validation. RLS já está pronta para o caminho via JWT (auth_workspace_id). |
 | GA4 dispatch — `no_client_id` em leads via formulário | **design gap** | GA4 requer cookie `_ga` do browser. Leads via formulário sem cookie anterior não têm client_id. OQ-012 aberta. |
+| Endpoint manual de transição de status do launch | **gap** | Auto-promoção cobre draft→configuring→live; transições para `ended`/`archived` ainda não têm endpoint nem UI. |
+| Erros pré-existentes em `launches/page.tsx` (3x TS18048/TS2345) | **pendente** | Função `useAccessToken` quebra type narrowing. Não bloqueia runtime. |
 
 ### Pendências operacionais antes de produção
 
@@ -156,7 +171,7 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `abbd77f` |
+| Último commit antes da sessão | `ec320fb` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |

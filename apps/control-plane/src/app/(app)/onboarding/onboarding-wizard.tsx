@@ -10,6 +10,7 @@ import { useState } from 'react';
 import { mutate } from 'swr';
 import { toast } from 'sonner';
 import { SkipAllDialog } from './skip-all-dialog';
+import { StepForm } from './step-form';
 import { StepGa4 } from './step-ga4';
 import { StepInstall } from './step-install';
 import { StepLaunch } from './step-launch';
@@ -23,6 +24,7 @@ const STEPS: { key: StepKey; label: string; shortLabel: string }[] = [
   { key: 'step_launch', label: 'Lancamento', shortLabel: 'Launch' },
   { key: 'step_page', label: 'Landing Page', shortLabel: 'Page' },
   { key: 'step_install', label: 'Instalar Tracker', shortLabel: 'Install' },
+  { key: 'step_form', label: 'Capturar Leads', shortLabel: 'Form' },
 ];
 
 function isStepDone(state: OnboardingState, key: StepKey): boolean {
@@ -60,12 +62,14 @@ export function OnboardingWizard({
     step_launch: 'launch',
     step_page: 'page',
     step_install: 'install',
+    step_form: null, // client-only step — no server persistence
   } as const;
 
   async function persistStep(stepKey: StepKey, data: OnboardingState[StepKey]) {
+    const step = STEP_KEY_MAP[stepKey];
+    if (!step) return; // client-only step
     setIsSaving(true);
     try {
-      const step = STEP_KEY_MAP[stepKey];
       const body: Record<string, unknown> = { step };
 
       if (data) {
@@ -239,7 +243,7 @@ export function OnboardingWizard({
         <div>
           <h1 className="text-2xl font-semibold">Bem-vindo ao GlobalTracker</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Vamos configurar seu workspace em 5 passos. Cada passo leva ~2
+            Vamos configurar seu workspace em 6 passos. Cada passo leva ~2
             minutos.
           </p>
         </div>
@@ -312,6 +316,13 @@ export function OnboardingWizard({
               accessToken={accessToken}
               onComplete={(d) => handleStepComplete('step_install', d)}
               onSkip={() => handleStepSkip('step_install')}
+            />
+          )}
+          {currentStep === 5 && (
+            <StepForm
+              state={state.step_form}
+              onComplete={(d) => handleStepComplete('step_form', d)}
+              onSkip={() => handleStepSkip('step_form')}
             />
           )}
         </CardContent>
@@ -438,7 +449,7 @@ function OnboardingStepsSummary({
                     )}
                   </div>
                   <span className="text-sm">
-                    [{index + 1}/5] {step.label}{' '}
+                    [{index + 1}/6] {step.label}{' '}
                     {skipped ? (
                       <span className="text-muted-foreground text-xs">
                         — nao configurado
@@ -480,7 +491,7 @@ export function OnboardingWizardSkeleton() {
       <Skeleton className="h-8 w-64" />
       <Skeleton className="h-4 w-48" />
       <div className="flex items-center gap-2">
-        {(['meta', 'ga4', 'launch', 'page', 'install'] as const).map((k) => (
+        {(['meta', 'ga4', 'launch', 'page', 'install', 'form'] as const).map((k) => (
           <Skeleton key={k} className="h-8 w-8 rounded-full" />
         ))}
       </div>

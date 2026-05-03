@@ -32,6 +32,7 @@
 
 import { createDb, rawEvents } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
+import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { clampEventTime } from '../lib/event-time-clamp.js';
 import { isTestModeRequest } from '../lib/test-mode.js';
@@ -335,6 +336,27 @@ export function createEventsRoute(
           error_type: err instanceof Error ? err.constructor.name : 'unknown',
         });
       }
+    }
+
+    // Auto-promote launch configuring → live on first ping for this page (MOD-LAUNCH lifecycle).
+    // Fire-and-forget via waitUntil; idempotent UPDATE no-ops after first transition.
+    try {
+      const promotePromise = (async () => {
+        try {
+          const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+          const dbForLaunch = createDb(connString);
+          await dbForLaunch.execute(sql`
+            UPDATE launches SET status = 'live'
+            WHERE id = (SELECT launch_id FROM pages WHERE id = ${pageId} LIMIT 1)
+              AND status = 'configuring'
+          `);
+        } catch (err) {
+          safeLog('warn', { event: 'launch_auto_promote_failed', request_id: requestId, error_type: err instanceof Error ? err.constructor.name : 'unknown' });
+        }
+      })();
+      c.executionCtx.waitUntil(promotePromise);
+    } catch {
+      // executionCtx may be unavailable in tests — ignore
     }
 
     // -----------------------------------------------------------------------

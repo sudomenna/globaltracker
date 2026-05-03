@@ -132,6 +132,9 @@ export function StepPage({
       });
       if (res.ok) {
         const body = (await res.json()) as { page_token?: string };
+        if (body.page_token) {
+          localStorage.setItem(`gt:token:${selectedPublicId}`, body.page_token);
+        }
         toast.success(`Pagina "${selectedPublicId}" associada.`);
         onComplete({
           completed_at: new Date().toISOString(),
@@ -177,6 +180,9 @@ export function StepPage({
         };
         const pagePublicId =
           body.page_public_id ?? body.public_id ?? values.public_id;
+        if (body.page_token) {
+          localStorage.setItem(`gt:token:${pagePublicId}`, body.page_token);
+        }
         toast.success(`Pagina "${values.name}" criada`);
         onComplete({
           completed_at: new Date().toISOString(),

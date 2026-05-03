@@ -48,18 +48,36 @@ export function getDb(env: Env) {
 
 ## RLS (Row-Level Security)
 
-Política padrão em todas tabelas de domínio:
+Política **dual-mode** em todas tabelas de domínio (migration `0028_rls_auth_workspace_id.sql`): aceita o workspace via GUC do Postgres **ou** via lookup do JWT do Supabase.
 
 ```sql
 alter table <tabela> enable row level security;
 
 create policy <tabela>_workspace_isolation on <tabela>
-  using (workspace_id = current_setting('app.current_workspace_id', true)::uuid);
+  for all
+  using (
+    workspace_id = NULLIF(current_setting('app.current_workspace_id', true), '')::uuid
+    OR workspace_id = public.auth_workspace_id()
+  )
+  with check (
+    workspace_id = NULLIF(current_setting('app.current_workspace_id', true), '')::uuid
+    OR workspace_id = public.auth_workspace_id()
+  );
 ```
 
-Application seta `set local app.current_workspace_id = '<uuid>'` no início de cada request transaction (em `apps/edge/src/middleware/workspace-context.ts`).
+Helper `public.auth_workspace_id()` é `SECURITY DEFINER STABLE` e resolve o workspace via `auth.uid() → workspace_members` (bypassa RLS apenas para o lookup), permitindo Server Components do control-plane operarem com `role=authenticated` sem precisar setar GUC.
 
-Default-deny: query sem setting retorna 0 rows.
+Caminhos de uso:
+
+| Caller | Como satisfaz a policy |
+|---|---|
+| Edge Worker (`postgres` role via Hyperdrive) | Bypassa RLS por privilégio do role; opcionalmente seta `app.current_workspace_id` para defesa em profundidade. |
+| Control Plane (Supabase Server Components, role `authenticated`) | RLS ativa; `auth_workspace_id()` resolve a partir do JWT — nenhuma config adicional necessária. |
+| Background jobs com workspace fixo | Setam `set local app.current_workspace_id = '<uuid>'` no início da transaction. |
+
+`workspace_members` tem cláusula adicional `OR user_id = auth.uid()` para garantir que o usuário sempre lê a própria membership (necessário para o `auth_workspace_id()` funcionar).
+
+Default-deny: caller sem GUC e sem JWT válido (e.g., role `anon` sem session) retorna 0 rows.
 
 ## Audit log
 

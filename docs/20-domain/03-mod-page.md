@@ -80,6 +80,11 @@
 | `rotating` | `revoked` | sistema (após janela) | Automático. |
 | `active` | `revoked` | OPERATOR, ADMIN | Bypass da janela — emergência de segurança. |
 
+### Persistência do token claro
+
+- **Servidor:** apenas o `token_hash` (SHA-256) é persistido em `page_tokens`. O token claro é retornado pelo endpoint de criação/rotação **uma única vez** na response e nunca mais.
+- **Control-plane (cliente):** após criação ou rotação, o control-plane grava o token claro em `localStorage` na chave `gt:token:<page_public_id>` para permitir exibição posterior do snippet. Isso é uma conveniência de UX restrita ao browser do usuário; **não** muda o contrato de servidor (o backend continua sem qualquer cópia em claro). Se o `localStorage` estiver vazio (browser diferente, modo anônimo), o snippet aparece mascarado e a única forma de obter token novo é via `rotatePageToken()`.
+
 ## 7. Invariantes
 
 - **INV-PAGE-001 — `public_id` é único por launch.** `unique (launch_id, public_id)`. Testável.

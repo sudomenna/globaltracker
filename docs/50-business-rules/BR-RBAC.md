@@ -10,21 +10,28 @@
 Mesmo `owner` não pode ler dados de outro workspace. RLS do Postgres + filtro explícito em todo handler.
 
 ### Enforcement
-- RLS policy em todas tabelas de domínio: `using (workspace_id = current_setting('app.current_workspace_id')::uuid)`.
-- Application seta `set local app.current_workspace_id = '<uuid>'` no início de cada request transaction.
-- Test: query sem set retorna 0 rows.
+- RLS policy **dual-mode** em todas tabelas de domínio (migration `0028_rls_auth_workspace_id.sql`): aceita workspace via GUC `app.current_workspace_id` **OU** via `public.auth_workspace_id()` (lookup de `auth.uid() → workspace_members`, `SECURITY DEFINER`).
+- Edge Worker (role `postgres`, bypassa RLS) ainda seta `set local app.current_workspace_id = '<uuid>'` por defesa em profundidade.
+- Control Plane (role `authenticated` via supabase-js) depende exclusivamente de `auth_workspace_id()` — JWT do Supabase carrega `auth.uid()`.
+- Test: caller sem GUC e sem JWT retorna 0 rows.
 
 ### Gherkin
 ```gherkin
-Scenario: query sem workspace setado retorna vazio
-  Given session sem app.current_workspace_id setado
+Scenario: query sem workspace setado e sem JWT retorna vazio
+  Given session sem app.current_workspace_id e sem auth.uid() válido
   When SELECT * FROM leads
   Then 0 rows
 
-Scenario: workspace W1 não enxerga workspace W2
+Scenario: workspace W1 não enxerga workspace W2 via GUC
   Given app.current_workspace_id = W1
   When SELECT count(*) FROM leads
   Then count = leads de W1 apenas, mesmo que W2 tenha rows
+
+Scenario: control-plane via JWT enxerga apenas o workspace do membership
+  Given auth.uid() = U1 e workspace_members(user_id=U1, workspace_id=W1)
+  And app.current_workspace_id NÃO setada
+  When SELECT count(*) FROM leads
+  Then count = leads de W1 apenas
 ```
 
 ---

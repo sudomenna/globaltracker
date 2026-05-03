@@ -166,6 +166,17 @@ pagesRoute.post('/', async (c) => {
     return c.json({ code: 'internal_error', message: 'Failed to create page token', request_id: requestId }, 500);
   }
 
+  // Auto-promote launch draft → configuring on first page registration (MOD-LAUNCH lifecycle).
+  // Idempotent: WHERE clause filters by status='draft', so subsequent pages no-op.
+  try {
+    await db
+      .update(launches)
+      .set({ status: 'configuring' })
+      .where(and(eq(launches.id, launchId), eq(launches.status, 'draft')));
+  } catch (err) {
+    safeLog('warn', { event: 'launch_auto_promote_failed', request_id: requestId, error_type: err instanceof Error ? err.constructor.name : typeof err });
+  }
+
   safeLog('info', {
     event: 'page_create',
     request_id: requestId,

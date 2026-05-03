@@ -28,11 +28,11 @@ Re-acessível via **Configurações → Onboarding** ou pelo banner de "Setup in
 ┌──────────────────────────────────────────────────────────────────┐
 │ Bem-vindo ao GlobalTracker                              [Pular] │
 │                                                                  │
-│ Vamos configurar seu workspace em 5 passos.                      │
+│ Vamos configurar seu workspace em 6 passos.                      │
 │ Cada passo leva ~2 minutos.                                      │
 │                                                                  │
-│ ●━━━━━○━━━━━○━━━━━○━━━━━○                                        │
-│ 1     2     3     4     5                                        │
+│ ●━━━━━○━━━━━○━━━━━○━━━━━○━━━━━○                                  │
+│ 1     2     3     4     5     6                                  │
 │                                                                  │
 │ ┌──────────────────────────────────────────────────────────────┐│
 │ │ [conteúdo do passo atual]                                    ││
@@ -49,7 +49,7 @@ Stepper visual no topo: passo atual sólido, futuros vazios, completados com ✓
 
 ## 2. Passos
 
-### 2.1 — [1/5] Conecte seu Meta Pixel
+### 2.1 — [1/6] Conecte seu Meta Pixel
 
 ```
 Conecte seu Meta Pixel
@@ -82,7 +82,7 @@ Ao clicar "Salvar e validar":
 
 Persiste em `workspaces.config.tracking.meta` + `onboarding_state.step_meta = { completed_at, validated: bool }`.
 
-### 2.2 — [2/5] Conecte seu Google Analytics 4
+### 2.2 — [2/6] Conecte seu Google Analytics 4
 
 ```
 Conecte seu Google Analytics 4 (opcional)
@@ -100,7 +100,7 @@ Para enviar eventos analíticos ao GA4.
 
 Mesma lógica do passo 1: validate via `POST /v1/integrations/ga4/test`.
 
-### 2.3 — [3/5] Crie seu primeiro Lançamento
+### 2.3 — [3/6] Crie seu primeiro Lançamento
 
 ```
 Crie seu primeiro Lançamento
@@ -117,7 +117,7 @@ Um Lançamento agrupa landing pages, links e audiências de uma campanha.
 
 Ao criar: redireciona para passo 4 com `launch_id` no contexto.
 
-### 2.4 — [4/5] Registre sua Landing Page
+### 2.4 — [4/6] Registre sua Landing Page
 
 ```
 Registre sua Landing Page
@@ -140,7 +140,7 @@ Registre sua Landing Page
 
 Ao criar: gera `page_token` e avança ao passo 5 (instalação).
 
-### 2.5 — [5/5] Instale o tracker e verifique
+### 2.5 — [5/6] Instale o tracker e verifique
 
 ```
 Instale o tracker
@@ -175,6 +175,49 @@ Status:  ✅ Tracker instalado em lp.cliente.com
 Polling de `GET /v1/pages/:public_id/status` a cada 5s (timeout 5min).
 Detalhes visuais do snippet em [04-screen-page-registration.md](./04-screen-page-registration.md).
 
+Após criar/selecionar a página, o token claro é gravado em `localStorage` na chave `gt:token:<page_public_id>` (ver [04-screen-page-registration.md §2.1](./04-screen-page-registration.md)) — permite que o snippet do `<head>` permaneça visível em sessões posteriores sem rotação. O hash continua sendo a única forma persistida no servidor.
+
+### 2.6 — [6/6] Capturar leads do formulário (client-only)
+
+```
+Capturar leads do formulário
+
+Se sua LP tem um formulário de captura, instale o script abaixo
+para enviar email, nome e telefone ao GlobalTracker.
+
+Sua landing page tem um formulário de captura?
+   [Sim]  [Não]
+
+   ↓ (se Sim)
+
+Seletor CSS do seu formulário
+   [form___________________________]
+   Use o seletor que identifica seu <form>. Se houver apenas
+   um formulário, "form" já funciona.
+
+Cole este script antes do </body>:
+┌──────────────────────────────────────────────────────────┐
+│ <script>                                                 │
+│   document.addEventListener('DOMContentLoaded', ...);    │
+│   form.addEventListener('submit', function () {          │
+│     // val() tenta múltiplos seletores name/type         │
+│     window.Funil.identify({ email, name, phone });       │
+│   });                                                    │
+│ </script>                                       [📋 Copiar] │
+
+   [Já instalei]   [Pular]
+```
+
+**Comportamento:**
+
+- Step **client-only** — não persiste estado no backend (`STEP_KEY_MAP[step_form] = null` em `onboarding-wizard.tsx`; `persistStep` skipa). Apenas marca `step_form.completed_at` ou `step_form.skipped` no estado local + na resposta de `/v1/onboarding/state` quando `step=complete` é enviado no fim.
+- O script gerado faz inferência automática dos campos por múltiplos `name`/`type` comuns em LPs brasileiras:
+  - `email`: `[name="email"]`, `[type="email"]`, `[name="e-mail"]`
+  - `name`: `[name="nome"]`, `[name="name"]`, `[name="primeiro_nome"]`
+  - `phone`: `[name="telefone"]`, `[name="celular"]`, `[name="whatsapp"]`, `[name="phone"]`, `[name="fone"]`
+- No `submit` do form, chama `window.Funil.identify({ email, name, phone })` (API exposta pelo `tracker.js`).
+- Mesmo snippet aparece em [04-screen-page-registration.md §2.2](./04-screen-page-registration.md) (card "Captura de leads do formulário"), permitindo reconfigurar fora do wizard.
+
 ---
 
 ## 3. Estados especiais
@@ -183,7 +226,7 @@ Detalhes visuais do snippet em [04-screen-page-registration.md](./04-screen-page
 Header global mostra banner discreto enquanto `onboarding_state.completed_at IS NULL`:
 
 ```
-🟡 Setup incompleto — 2 de 5 passos pendentes  [Continuar →]
+🟡 Setup incompleto — 2 de 6 passos pendentes  [Continuar →]
 ```
 
 Click leva ao wizard com primeiro passo pendente.
@@ -203,11 +246,12 @@ Mensagens humanizadas via [11-copy-deck-skip-messages.md](./11-copy-deck-skip-me
 ### 3.4 — Volta ao wizard depois (re-entry)
 Skipped ou completed pode re-entrar via Configurações → Onboarding. Mostra status atual de cada passo:
 ```
-✓ [1/5] Meta Pixel — conectado
-○ [2/5] GA4 — não configurado    [Configurar agora]
-✓ [3/5] Lançamento — lcm-maio-2026
-✓ [4/5] Página — captura-v1
-○ [5/5] Verificar instalação      [Ir para snippet]
+✓ [1/6] Meta Pixel — conectado
+○ [2/6] GA4 — não configurado    [Configurar agora]
+✓ [3/6] Lançamento — lcm-maio-2026
+✓ [4/6] Página — captura-v1
+○ [5/6] Verificar instalação      [Ir para snippet]
+○ [6/6] Capturar leads do form   [Configurar agora]
 ```
 
 ---
@@ -271,7 +315,7 @@ ALTER TABLE workspaces ADD COLUMN onboarding_state JSONB NOT NULL DEFAULT '{}';
 
 ## 8. A11y
 
-- Stepper acessível: `aria-current="step"` no passo ativo, `aria-label` em cada step ("Passo 1 de 5: Meta Pixel — concluído").
+- Stepper acessível: `aria-current="step"` no passo ativo, `aria-label` em cada step ("Passo 1 de 6: Meta Pixel — concluído").
 - Validação inline com `aria-describedby` apontando para mensagem de erro.
 - Botão "Pular" sempre acessível por teclado (não escondido em hover-only menu).
 - Tooltips ⓘ disparáveis por focus, fecháveis por Escape.

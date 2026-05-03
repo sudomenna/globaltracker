@@ -32,6 +32,10 @@ export interface OnboardingState {
     first_ping_at?: string;
     skipped?: boolean;
   };
+  step_form?: {
+    completed_at?: string;
+    skipped?: boolean;
+  };
   completed_at?: string;
   skipped_at?: string;
   started_at?: string;
@@ -42,7 +46,8 @@ export type StepKey =
   | 'step_ga4'
   | 'step_launch'
   | 'step_page'
-  | 'step_install';
+  | 'step_install'
+  | 'step_form';
 
 export interface PageStatus {
   page_public_id: string;

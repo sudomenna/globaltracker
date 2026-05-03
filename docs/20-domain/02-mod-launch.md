@@ -59,12 +59,14 @@
 
 | De | Para | Quem | Validação |
 |---|---|---|---|
-| `draft` | `configuring` | MARKETER, ADMIN | Nome preenchido. |
-| `configuring` | `live` | MARKETER, ADMIN | Pixel policy declarada + ao menos 1 page registrada. |
+| `draft` | `configuring` | MARKETER, ADMIN, **sistema** | Nome preenchido. **Auto:** ao criar a primeira `page` em um launch `draft`, `POST /v1/launches/:id/pages` executa `UPDATE launches SET status='configuring' WHERE id=? AND status='draft'` (idempotente; falha é logada como `launch_auto_promote_failed` mas não bloqueia a criação da page). |
+| `configuring` | `live` | MARKETER, ADMIN, **sistema** | Pixel policy declarada + ao menos 1 page registrada. **Auto:** ao receber o primeiro raw event de uma page do launch, `POST /v1/events` dispara via `c.executionCtx.waitUntil(...)` um `UPDATE launches SET status='live' WHERE id=(SELECT launch_id FROM pages WHERE id=?) AND status='configuring'` (fire-and-forget, idempotente; falha é logada e ignorada — não afeta ingestão). |
 | `live` | `ended` | MARKETER, ADMIN | — |
 | `ended` | `live` | ADMIN | Confirmação dupla. |
 | `ended` | `archived` | OWNER | Confirmação dupla. |
 | qualquer | `archived` | OWNER | Confirmação dupla. |
+
+> **Nota sobre auto-promotion:** as duas transições `draft→configuring` e `configuring→live` são executadas pelo edge worker como side-effects de criar page / receber evento. Por serem `UPDATE ... WHERE status=<from>`, são naturalmente idempotentes — uma execução em estado já avançado é no-op silencioso. O `archived` jamais é alvo dessas transições automáticas (filtro de `WHERE status` impede).
 
 ## 7. Invariantes
 

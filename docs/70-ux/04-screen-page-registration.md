@@ -61,6 +61,15 @@ Lançamento "Maio 2026" > Pages > Nova página
 
 ---
 
+### Persistência client-side do `page_token`
+
+O `page_token` em claro **nunca** é persistido no servidor (apenas o `token_hash` SHA-256 fica em `page_tokens`, ver [20-domain/03-mod-page.md](../20-domain/03-mod-page.md)). Para permitir que o usuário visualize o snippet com o token real após o fim da sessão de onboarding:
+
+- Após criação ou rotação, o token claro é gravado em `localStorage` na chave `gt:token:<page_public_id>` (escrito por `step-page.tsx` no wizard e por `page-detail-client.tsx` ao concluir rotação).
+- Na montagem da tela de detalhes, `pageToken` é lido de `localStorage`. Se vazio (e.g., outro browser, modo anônimo), o snippet aparece com o token mascarado (`••••••…`) e o card exibe um aviso "Rotacione para obter um novo token em claro" — a rotação gera novo token (o antigo continua válido por 14 dias, ADR-023).
+
+---
+
 ## 2. Layout — pós-criação (passo de instalação)
 
 ```
@@ -98,6 +107,34 @@ Polling de `GET /v1/pages/:public_id/status` a cada 5s. Timeout 5min com mensage
    Confira se o snippet está colado corretamente.
    [Ver checklist de troubleshooting →]
 ```
+
+---
+
+### 2.2 — Card "Captura de leads do formulário" (snippet do `<body>`)
+
+Pós-criação e também no modo edição (`page-detail-client.tsx`), abaixo do snippet do `<head>` aparece um card adicional:
+
+```
+┌─ Captura de leads do formulário ─────────────────────────┐
+│ Cole antes do </body> da landing page.                   │
+│ Ajuste o seletor se necessário.                          │
+│                                                          │
+│ Seletor CSS do formulário                                │
+│ [form_______________________________]                    │
+│                                                          │
+│ ┌────────────────────────────────────────────────────────┐│
+│ │ <script>                                               ││
+│ │   document.addEventListener('DOMContentLoaded', ...);  ││
+│ │   form.addEventListener('submit', function () {        ││
+│ │     window.Funil.identify({ email, name, phone });     ││
+│ │   });                                                  ││
+│ │ </script>                                              ││
+│ └────────────────────────────────────────────────────────┘│
+│                                          [📋 Copiar script]│
+└──────────────────────────────────────────────────────────┘
+```
+
+O snippet é o mesmo do Step 6 do wizard (ver [03-screen-onboarding-wizard.md §2.6](./03-screen-onboarding-wizard.md)) — inferência automática de `email`/`name`/`phone` por múltiplos seletores `name`/`type` brasileiros, e dispara `window.Funil.identify(...)` no `submit`. O seletor é local ao componente (`useState('form')`) e não é persistido.
 
 ---
 
