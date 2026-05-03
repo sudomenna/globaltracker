@@ -15,8 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- [SYNC-PENDING-CONTRACT] `docs/30-contracts/05-api-server-actions.md` — seção `POST /v1/pages` deve especificar que `token_hash = SHA-256(TextEncoder(tokenHexString))`, não SHA-256 dos bytes crus. Requer T-ID `contract-change` serial (não editar em paralelo com outras T-IDs).
-- ~~[SYNC-PENDING-BUG-P1]~~ ✅ **FECHADO (commit cb169a6)** `insertRawEvent` wired inline em `events.ts` — fallback `createDb(DATABASE_URL ?? HYPERDRIVE)`, padrão idêntico ao `launches.ts`/`pages.ts`.
+(vazio)
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -40,8 +39,8 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 8 COMPLETO + Bug P1 insertRawEvent fechado (2026-05-03)
-Último commit: cb169a6 (branch main) — fix(events): wire insertRawEvent inline
+Estado:        SPRINT 8 COMPLETO + todas pendências §2 fechadas (2026-05-03)
+Último commit: c146eaa (branch main) — docs(contract): token_hash algorithm
 Branch:        main (~26 commits à frente de origin/main — não pushado)
 Verificação:   typecheck ✓ (db/shared/edge)  1352 testes passando [+2 novos] (1 falha pré-existente em integrations-test .strict())
 DB Supabase:   migrations 0000–0027 aplicadas ✓ (0027: workspaces.config jsonb)
