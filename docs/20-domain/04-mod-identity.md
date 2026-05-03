@@ -109,6 +109,7 @@
 - **INV-IDENTITY-005 — `pii_key_version` corresponde a uma versão de chave existente.** Validador (config tem lista de versões disponíveis). Testável.
 - **INV-IDENTITY-006 — `LeadToken` válido só com claim `page_token_hash` correspondente a `page_token` ativa ou rotating.** Validador no Edge. Testável.
 - **INV-IDENTITY-007 — Hash de email/phone usa normalização canônica antes do SHA-256.** Email: lowercase + trim. Phone: E.164. Testável: `hash('  Foo@Bar.COM ') === hash('foo@bar.com')`.
+- **INV-IDENTITY-008 — `leads.email_hash` e `leads.phone_hash` são populados (denormalizados) no momento da criação/atualização do lead por `resolveLeadByAliases()`.** Ao criar um novo lead (`createNewLead`), `emailHash` e `phoneHash` recebem os hashes dos aliases correspondentes. Ao atualizar um lead existente (`updateExistingLead`), as colunas são atualizadas quando novos aliases de email/phone são fornecidos. Essa denormalização permite que o dispatcher verifique elegibilidade (presença de `user_data`) sem join em `lead_aliases` a cada despacho.
 
 ## 8. BRs relacionadas
 

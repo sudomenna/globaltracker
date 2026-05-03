@@ -27,14 +27,14 @@ BR-IDENTITY-001 a 005, BR-PRIVACY-003 (PII enc), BR-CONSENT-001 a 004, BR-EVENT-
 5. Tracker captura UTMs + `fbclid`/`gclid` + `fbc`/`fbp` cookies + `_gcl_au` + referrer; persiste em `localStorage`.
 6. Tracker dispara PageView (`POST /v1/events`).
 7. Lead preenche form (email, phone, name, consent_ads). Submit → tracker dispara `POST /v1/lead` com payload completo + attribution params do localStorage.
-8. Edge valida (token, CORS, schema, replay protection, clamp event_time, bot mitigation), persiste em `raw_events`, retorna 202 com `lead_token` + `Set-Cookie: __ftk` (apenas se consent_analytics=granted).
-9. Ingestion processor (async): chama `resolveLeadByAliases({email, phone})`. Retorna 0 leads → cria novo Lead com PII hash + enc + `pii_key_version=1`. Cria 2 aliases (email_hash, phone_hash) `active`.
+8. Edge valida (token, CORS, schema, replay protection, clamp event_time, bot mitigation). Antes de persistir, constrói `processablePayload` enriquecido: adiciona `event_name: 'lead_identify'` e `event_time`, resolve `launch_public_id → launch_id` UUID via query em `launches`, normaliza booleans de consent para `'granted'|'denied'`. Persiste `processablePayload` em `raw_events`. Enfileira mensagem `{ raw_event_id }` em `gt-events`. Retorna 202 com `lead_token` + `Set-Cookie: __ftk` (apenas se consent.functional=true).
+9. Queue handler (async via `gt-events`): chama `processRawEvent(raw_event_id, db)`. O processador chama `resolveLeadByAliases({email, phone})`. Retorna 0 leads → cria novo Lead (com `emailHash`/`phoneHash` denormalizados) + `pii_key_version=1`. Cria aliases (email_hash, phone_hash) `active`.
 10. Processor cria `lead_consents` row (5 finalidades + `policy_version`).
 11. Processor cria `lead_attribution` row para `touch_type='first'` (e `last`) com UTMs + click IDs.
 12. Processor cria `lead_stages` row `stage='registered'`, `is_recurring=false`.
 13. Processor insere row em `events` com `event_name='Lead'`, `lead_id=L`, `consent_snapshot`.
-14. Processor cria `dispatch_jobs` para destinos elegíveis: Meta CAPI (Lead event), GA4 MP (Lead event), Google Ads conversion (se `gclid` válido + conversion_action mapeado).
-15. Workers de dispatch processam jobs → resultado em `dispatch_attempts`.
+14. Processor consulta `workspaces.config.integrations`: cria `dispatch_jobs` para Meta CAPI se `pixel_id` configurado, e para GA4 MP se `measurement_id` configurado. Os IDs dos jobs criados são retornados ao queue handler, que os enfileira individualmente em `gt-dispatch`.
+15. Queue handler `gt-dispatch` chama `processDispatchJob(dispatch_job_id, dispatchFn, db)` por job. Workers de dispatch processam → resultado em `dispatch_attempts`.
 16. MARKETER vê lead aparecer em dashboard.
 
 ## Fluxos alternativos

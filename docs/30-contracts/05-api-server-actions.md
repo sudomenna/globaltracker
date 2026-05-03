@@ -41,10 +41,22 @@ Identifica/cria lead, registra consent, emite `lead_token`.
 | **CONTRACT-id** | `CONTRACT-api-lead-v1` |
 | **Auth** | `X-Funil-Site` |
 | **Body** | `{ event_id, schema_version, launch_public_id, page_public_id, email?, phone?, name?, attribution, consent }` (mín. um de email/phone) |
-| **Side effects** | (1) Insert em `raw_events`; (2) ingestion processor cria/atualiza lead via `lead_aliases`; (3) emit `lead_token`; (4) `Set-Cookie: __ftk` |
+| **Side effects** | (1) Enriquece o payload antes de persistir em `raw_events` (veja nota abaixo); (2) ingestion processor cria/atualiza lead via `lead_aliases`; (3) emit `lead_token`; (4) `Set-Cookie: __ftk` |
 | **Response 202** | `{ lead_public_id, lead_token, expires_at, status: 'accepted' }` |
 | **Set-Cookie** | `__ftk=<token>; Path=/; SameSite=Lax; Secure; Max-Age=5184000` (60d default — configurável por workspace) |
 | **Errors** | `400 missing_identifier`, `400 validation_error`, `401`, `403`, `429` |
+
+> **Enriquecimento interno do payload antes de `raw_events`** (comportamento transparente para o caller):
+>
+> O Edge constrói um `processablePayload` enriquecido antes de inserir em `raw_events`:
+> - Adiciona `event_name: 'lead_identify'` e `event_time: <ISO 8601 do momento da request>`.
+> - Resolve `launch_public_id → launch_id` (UUID interno) via query em `launches`, linkando o evento ao launch correto para que o processador acesse o `pixel_id` e a configuração de dispatch.
+> - Normaliza os booleans de `consent` do payload original para o formato `'granted' | 'denied'` esperado pelo processador:
+>   - `consent.marketing = true` → `ad_user_data: 'granted'`, `ad_personalization: 'granted'`, `customer_match: 'granted'`
+>   - `consent.analytics = true` → `analytics: 'granted'`
+>   - Valor `false` em qualquer campo → `'denied'`
+>
+> Esse enriquecimento é interno ao Edge e não altera a response 202 retornada ao caller.
 
 ### `GET /r/:slug`
 
