@@ -16,6 +16,7 @@
  * INV-IDENTITY-006: page_token_hash binds lead_token to the issuing page.
  */
 
+import { createDb, rawEvents } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
 import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
@@ -37,18 +38,10 @@ type AppBindings = {
   QUEUE_EVENTS: Queue;
   QUEUE_DISPATCH: Queue;
   ENVIRONMENT: string;
-  /** Hyperdrive binding for DB access — undefined in test/dev environments. */
   DB?: Fetcher;
-  /**
-   * HMAC secret for signing lead tokens.
-   * BR-IDENTITY-005: HMAC secret must be a Wrangler secret — never hardcoded.
-   */
+  HYPERDRIVE: Hyperdrive;
+  DATABASE_URL?: string;
   LEAD_TOKEN_HMAC_SECRET?: string;
-  /**
-   * Cloudflare Turnstile secret key for server-side token verification.
-   * ADR-024: bot mitigation on /v1/lead.
-   * Value set via: wrangler secret put TURNSTILE_SECRET_KEY
-   */
   TURNSTILE_SECRET_KEY?: string;
 };
 
@@ -383,10 +376,25 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     //    BR-PRIVACY-001: raw payload MAY contain PII in transit — that is
     //      intentional for the ingestion processor to hash/encrypt; do not log it.
     // -------------------------------------------------------------------------
-    if (c.env.DB) {
-      // Raw insert via Hyperdrive — Drizzle wiring is a TODO for domain-author
-      // when Hyperdrive integration is complete (T-1-domain).
-      // Placeholder: insert will be wired here once lib/raw-event.ts exists.
+    try {
+      const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+      const db = createDb(connString);
+      await db.insert(rawEvents).values({
+        workspaceId,
+        pageId: c.get('page_id'),
+        payload: businessPayload as Record<string, unknown>,
+        headersSanitized: {
+          origin: c.req.header('origin') ?? null,
+          cf_ray: c.req.header('cf-ray') ?? null,
+        },
+      });
+    } catch (err) {
+      safeLog('error', {
+        event: 'raw_events_insert_failed',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
     }
 
     // -------------------------------------------------------------------------
