@@ -80,7 +80,7 @@ export type InsertRawEventFn = (params: {
   pageId: string;
   payload: Record<string, unknown>;
   headersSanitized: Record<string, unknown>;
-}) => Promise<void>;
+}) => Promise<{ id: string }>;
 
 // ---------------------------------------------------------------------------
 // Route factory
@@ -285,10 +285,12 @@ export function createEventsRoute(
       is_test: isTest,
     };
 
+    let rawEventId: string | undefined;
+
     if (insertRawEvent) {
       try {
         // INV-EVENT-005: awaited before returning 202
-        await insertRawEvent({
+        const result = await insertRawEvent({
           workspaceId,
           pageId,
           payload: rawPayload,
@@ -298,6 +300,7 @@ export function createEventsRoute(
             cf_ray: c.req.header('cf-ray') ?? null,
           },
         });
+        rawEventId = result.id;
       } catch (err) {
         // DB error — log without PII, continue to enqueue (at-least-once durability)
         // BR-PRIVACY-001: no PII in log
@@ -314,7 +317,7 @@ export function createEventsRoute(
       try {
         const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
         const db = createDb(connString);
-        await db.insert(rawEvents).values({
+        const [inserted] = await db.insert(rawEvents).values({
           workspaceId,
           pageId,
           payload: rawPayload,
@@ -322,7 +325,8 @@ export function createEventsRoute(
             origin: c.req.header('origin') ?? null,
             cf_ray: c.req.header('cf-ray') ?? null,
           },
-        });
+        }).returning({ id: rawEvents.id });
+        rawEventId = inserted?.id;
       } catch (err) {
         safeLog('error', {
           event: 'raw_events_insert_failed',
@@ -352,6 +356,7 @@ export function createEventsRoute(
 
     try {
       await c.env.QUEUE_EVENTS.send({
+        raw_event_id: rawEventId,
         event_id: payload.event_id,
         workspace_id: workspaceId,
         page_id: pageId,

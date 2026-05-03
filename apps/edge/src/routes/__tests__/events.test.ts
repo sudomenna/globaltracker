@@ -254,6 +254,7 @@ describe('POST /v1/events', () => {
     const insertCalls: unknown[] = [];
     const insertRawEvent: InsertRawEventFn = async (params) => {
       insertCalls.push(params);
+      return { id: 'test-raw-event-id' };
     };
     const { fetch } = buildApp({ insertRawEvent });
     const payload = validPayload();

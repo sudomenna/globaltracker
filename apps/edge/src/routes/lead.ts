@@ -384,10 +384,11 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     //    BR-PRIVACY-001: raw payload MAY contain PII in transit — that is
     //      intentional for the ingestion processor to hash/encrypt; do not log it.
     // -------------------------------------------------------------------------
+    let rawEventIdForQueue: string | undefined;
     try {
       const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
       const db = createDb(connString);
-      await db.insert(rawEvents).values({
+      const [inserted] = await db.insert(rawEvents).values({
         workspaceId,
         pageId: c.get('page_id'),
         payload: businessPayload as Record<string, unknown>,
@@ -395,7 +396,8 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
           origin: c.req.header('origin') ?? null,
           cf_ray: c.req.header('cf-ray') ?? null,
         },
-      });
+      }).returning({ id: rawEvents.id });
+      rawEventIdForQueue = inserted?.id;
     } catch (err) {
       safeLog('error', {
         event: 'raw_events_insert_failed',
@@ -412,6 +414,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     // -------------------------------------------------------------------------
     try {
       await c.env.QUEUE_EVENTS.send({
+        raw_event_id: rawEventIdForQueue,
         event_name: 'lead_identify',
         workspace_id: workspaceId,
         page_id: c.get('page_id'),

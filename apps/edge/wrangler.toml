@@ -22,6 +22,11 @@ queue = "gt-events"
 max_batch_size = 100
 max_batch_timeout = 5
 
+[[queues.consumers]]
+queue = "gt-dispatch"
+max_batch_size = 10
+max_batch_timeout = 5
+
 [vars]
 ENVIRONMENT = "development"
 # Dev shortcut: workspace UUID fixo para local dev (substitui auth-cp.ts em prod)

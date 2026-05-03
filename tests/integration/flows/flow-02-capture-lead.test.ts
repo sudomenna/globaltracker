@@ -37,6 +37,7 @@ vi.mock('@globaltracker/db', () => ({
   events: { id: 'id', workspaceId: 'workspace_id', eventId: 'event_id' },
   leadStages: {},
   rawEvents: {},
+  workspaces: { id: 'id', config: 'config' },
   leadAttributions: {
     id: 'id',
     workspaceId: 'workspace_id',

@@ -22,10 +22,11 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, leadStages, rawEvents } from '@globaltracker/db';
+import { events, leadStages, rawEvents, workspaces } from '@globaltracker/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { type AttributionParams, recordTouches } from './attribution.js';
+import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
 import { hashPii } from './pii.js';
@@ -195,7 +196,14 @@ export async function processRawEvent(
   db: Db,
   _kv?: KvStore,
 ): Promise<
-  Result<{ event_id: string; dispatch_jobs_created: number }, ProcessingError>
+  Result<
+    {
+      event_id: string;
+      dispatch_jobs_created: number;
+      dispatch_job_ids: { id: string; destination: string }[];
+    },
+    ProcessingError
+  >
 > {
   // -------------------------------------------------------------------------
   // Step 1: Fetch raw_events row
@@ -227,6 +235,7 @@ export async function processRawEvent(
       value: {
         event_id: payloadEventId ?? raw_event_id,
         dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
       },
     };
   }
@@ -407,6 +416,7 @@ export async function processRawEvent(
         value: {
           event_id: payload.event_id,
           dispatch_jobs_created: 0,
+          dispatch_job_ids: [],
         },
       };
     }
@@ -497,13 +507,55 @@ export async function processRawEvent(
   }
 
   // -------------------------------------------------------------------------
-  // Step 8: Create dispatch_jobs
-  //
-  // OQ-011: dispatch_jobs creation requires integration config per workspace
-  // (table not yet implemented — Sprint 3+). Skip silently.
-  // dispatch_jobs_created = 0 until MOD-DISPATCH.createDispatchJobs() is wired.
+  // Step 8: Create dispatch_jobs per active integration in workspace config.
+  // BR-DISPATCH-001: idempotency_key prevents duplicate jobs on retry.
   // -------------------------------------------------------------------------
-  const dispatchJobsCreated = 0;
+  const inputs: DispatchJobInput[] = [];
+
+  const [wsRow] = await db
+    .select({ config: workspaces.config })
+    .from(workspaces)
+    .where(eq(workspaces.id, rawEvent.workspaceId))
+    .limit(1);
+
+  const wsConfig = wsRow?.config as Record<string, unknown> | undefined;
+  const integrations = (wsConfig?.integrations ?? {}) as Record<string, unknown>;
+  const metaCfg = integrations.meta as Record<string, unknown> | undefined;
+  const ga4Cfg = integrations.ga4 as Record<string, unknown> | undefined;
+
+  if (metaCfg?.pixel_id) {
+    inputs.push({
+      workspace_id: rawEvent.workspaceId,
+      event_id: insertedEventId,
+      lead_id: resolvedLeadId,
+      destination: 'meta_capi' as const,
+      destination_account_id: metaCfg.pixel_id as string,
+      destination_resource_id: metaCfg.pixel_id as string,
+      payload: {},
+      max_attempts: 5,
+    });
+  }
+
+  if (ga4Cfg?.measurement_id) {
+    inputs.push({
+      workspace_id: rawEvent.workspaceId,
+      event_id: insertedEventId,
+      lead_id: resolvedLeadId,
+      destination: 'ga4_mp' as const,
+      destination_account_id: ga4Cfg.measurement_id as string,
+      destination_resource_id: ga4Cfg.measurement_id as string,
+      payload: {},
+      max_attempts: 5,
+    });
+  }
+
+  let createdJobs: { id: string; destination: string }[] = [];
+  if (inputs.length > 0) {
+    const jobs = await createDispatchJobs(inputs, db);
+    createdJobs = jobs.map((j) => ({ id: j.id, destination: j.destination }));
+  }
+
+  const dispatchJobsCreated = createdJobs.length;
 
   // -------------------------------------------------------------------------
   // Step 9: Mark raw_event as processed
@@ -515,6 +567,7 @@ export async function processRawEvent(
     value: {
       event_id: payload.event_id,
       dispatch_jobs_created: dispatchJobsCreated,
+      dispatch_job_ids: createdJobs,
     },
   };
 }

@@ -31,6 +31,7 @@ vi.mock('@globaltracker/db', () => ({
   },
   leadStages: {},
   rawEvents: {},
+  workspaces: { id: 'id', config: 'config' },
 }));
 
 vi.mock('../../../apps/edge/src/lib/lead-resolver', () => ({

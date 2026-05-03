@@ -85,6 +85,7 @@ import { pagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
+import { processRawEvent } from './lib/raw-events-processor.js';
 
 // ---------------------------------------------------------------------------
 // Bindings
@@ -122,14 +123,19 @@ type Bindings = {
 // Queue message schema
 // ---------------------------------------------------------------------------
 
-/**
- * Message shape published to the gt-dispatch queue.
- * Each message carries the dispatch_job_id and destination for routing.
- */
+/** Message published to gt-dispatch — carries job ID and destination for routing. */
 type DispatchQueueMessage = {
   dispatch_job_id: string;
   destination: string;
 };
+
+/** Message published to gt-events — carries raw_event_id for ingestion processor. */
+type EventsQueueMessage = {
+  raw_event_id: string;
+  workspace_id: string;
+};
+
+type AnyQueueMessage = DispatchQueueMessage | EventsQueueMessage;
 
 // ---------------------------------------------------------------------------
 // Context variables
@@ -294,38 +300,75 @@ app.route('/v1/orchestrator/workflows', orchestratorRoute);
 // ---------------------------------------------------------------------------
 
 async function queueHandler(
-  batch: MessageBatch<DispatchQueueMessage>,
+  batch: MessageBatch<AnyQueueMessage>,
   env: Bindings,
 ): Promise<void> {
-  // Build DB client from Hyperdrive connection string.
-  // Hyperdrive provides connection pooling; createDb is cheap per request.
   const db = createDb(env.HYPERDRIVE.connectionString);
 
   for (const message of batch.messages) {
-    const { dispatch_job_id, destination } = message.body;
+    const body = message.body;
+
+    // Route by message shape: raw_event_id → gt-events ingestion path.
+    if ('raw_event_id' in body) {
+      const { raw_event_id } = body as EventsQueueMessage;
+      try {
+        const result = await processRawEvent(raw_event_id, db);
+        if (!result.ok) {
+          safeLog('warn', {
+            event: 'ingestion_failed',
+            raw_event_id,
+            error_code: result.error.code,
+          });
+        } else {
+          safeLog('info', {
+            event: 'ingestion_processed',
+            raw_event_id,
+            dispatch_jobs_created: result.value.dispatch_jobs_created,
+          });
+          // Enqueue each created dispatch_job to gt-dispatch for external calls.
+          for (const job of result.value.dispatch_job_ids) {
+            try {
+              await env.QUEUE_DISPATCH.send({
+                dispatch_job_id: job.id,
+                destination: job.destination,
+              });
+            } catch (qErr) {
+              safeLog('error', {
+                event: 'dispatch_enqueue_failed',
+                raw_event_id,
+                dispatch_job_id: job.id,
+                error_type: qErr instanceof Error ? qErr.constructor.name : 'unknown',
+              });
+            }
+          }
+        }
+        message.ack();
+      } catch (err) {
+        safeLog('error', {
+          event: 'ingestion_unhandled_error',
+          raw_event_id,
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+        message.retry();
+      }
+      continue;
+    }
+
+    // gt-dispatch path: dispatch_job_id + destination.
+    const { dispatch_job_id, destination } = body as DispatchQueueMessage;
 
     try {
       let dispatchFn: DispatchFn;
 
       if (destination === 'meta_capi') {
-        // Build the Meta CAPI dispatch function for this job.
-        // dispatchFn is a closure over env (tokens) and db (lookups).
         dispatchFn = buildMetaCapiDispatchFn(env, db);
       } else if (destination === 'ga4_mp') {
-        // BR-DISPATCH-002: atomic lock held by processDispatchJob before calling this.
-        // BR-CONSENT-003: eligibility check enforces analytics consent.
         dispatchFn = buildGa4DispatchFn(env, db);
       } else if (destination === 'google_ads_conversion') {
-        // BR-DISPATCH-002: atomic lock held by processDispatchJob before calling this.
-        // BR-CONSENT-003: eligibility check enforces ad_user_data consent.
         dispatchFn = buildGoogleAdsConversionDispatchFn(env, db);
       } else if (destination === 'google_enhancement') {
-        // BR-DISPATCH-002: atomic lock held by processDispatchJob before calling this.
-        // BR-CONSENT-003: eligibility check enforces ad_user_data consent.
         dispatchFn = buildEnhancedConversionDispatchFn(env, db);
       } else {
-        // Unknown destination — log and ack to avoid poison-pill loop.
-        // BR-PRIVACY-001: no PII in log output.
         safeLog('warn', {
           event: 'dispatch_unknown_destination',
           dispatch_job_id,
@@ -338,11 +381,7 @@ async function queueHandler(
       const result = await processDispatchJob(dispatch_job_id, dispatchFn, db);
 
       if (!result.ok && result.error.code === 'already_processing') {
-        // INV-DISPATCH-008: another consumer claimed the lock — ack silently.
-        safeLog('info', {
-          event: 'dispatch_already_processing',
-          dispatch_job_id,
-        });
+        safeLog('info', { event: 'dispatch_already_processing', dispatch_job_id });
       } else if (!result.ok) {
         safeLog('warn', {
           event: 'dispatch_processing_error',
@@ -350,16 +389,11 @@ async function queueHandler(
           error_code: result.error.code,
         });
       } else {
-        safeLog('info', {
-          event: 'dispatch_processed',
-          dispatch_job_id,
-          destination,
-        });
+        safeLog('info', { event: 'dispatch_processed', dispatch_job_id, destination });
       }
 
       message.ack();
     } catch (err) {
-      // Unexpected error — retry delivery via queue.
       safeLog('error', {
         event: 'dispatch_unhandled_error',
         dispatch_job_id,
