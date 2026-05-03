@@ -120,11 +120,18 @@ Cria uma page vinculada a um launch. Consumido pelo wizard (step 4).
 | **CONTRACT-id** | `CONTRACT-api-pages-create-v1` |
 | **Auth** | session OWNER/ADMIN/MARKETER |
 | **Body** | `{ name, public_id (3–60, /^[a-z0-9-]+$/), launch_public_id, domains: string[] (min 1), mode: 'b_snippet' \| 'server', capture_pageview?: boolean, capture_lead?: boolean }` |
-| **Side effects** | INSERT em `pages` (`role='capture'`, `status='active'`); gera token SHA-256 e INSERT em `page_tokens`; `mode='server'` → `integration_mode='c_webhook'` |
+| **Side effects** | INSERT em `pages` (`role='capture'`, `status='active'`); gera token e INSERT em `page_tokens`; `mode='server'` → `integration_mode='c_webhook'` |
 | **Response 201** | `{ page_public_id, public_id, name, launch_public_id, page_token (raw — exibir uma vez), mode, created_at, request_id }` |
 | **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id já existe no launch), `422 launch_not_found` |
 
-> **Segurança (INV-PAGE-003):** `page_token` retornado é o token bruto (64-char hex). Somente o hash SHA-256 é armazenado em `page_tokens.token_hash`. O token não pode ser recuperado posteriormente.
+> **Segurança (INV-PAGE-003):** `page_token` retornado é o token bruto (64-char hex). Somente `token_hash` é armazenado em `page_tokens`.
+>
+> **Algoritmo de geração do token:**
+> ```
+> tokenRaw   = hex(crypto.getRandomValues(32 bytes))   // 64-char hex string
+> token_hash = hex(SHA-256(TextEncoder().encode(tokenRaw)))  // hash da string hex, não dos bytes crus
+> ```
+> O middleware `auth-public-token` recebe `tokenRaw` via header `X-Funil-Site` e recomputa o hash com o mesmo algoritmo (`TextEncoder` + `SHA-256`) para lookup em `page_tokens.token_hash`. Os dois **devem ser idênticos**; usar `SHA-256` dos bytes crus no middleware causaria colisão zero.
 
 ### `GET /v1/pages/:public_id/status`
 
