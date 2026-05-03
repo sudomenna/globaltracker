@@ -29,7 +29,7 @@ import type {
   ScheduledEvent,
 } from '@cloudflare/workers-types';
 import type { Db } from '@globaltracker/db';
-import { events, createDb, launches, leads, workspaces } from '@globaltracker/db';
+import { events, createDb, launches, leads, pageTokens, workspaces } from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
@@ -115,6 +115,7 @@ type Bindings = {
   GA4_MEASUREMENT_ID: string;
   GA4_API_SECRET: string;
   DEBUG_GA4?: string;
+  DATABASE_URL?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -170,14 +171,28 @@ app.get('/health', (c) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Lookup function for page_tokens — queries DB by token_hash.
- * In production this will query via Hyperdrive; stub returns null for now.
- *
- * domain-author implements: apps/edge/src/lib/page-token.ts → getPageByToken()
+ * Lookup function for page_tokens — queries DB by token_hash via Hyperdrive.
+ * Falls back to DATABASE_URL in local dev (HYPERDRIVE.connectionString requires prod env).
  */
-const lookupPageToken: LookupPageTokenFn = async (_tokenHash) => {
-  // TODO(T-1-domain): wire up apps/edge/src/lib/page-token.ts → getPageByToken()
-  return null;
+const lookupPageToken: LookupPageTokenFn = async (tokenHash, bindings) => {
+  const env = bindings as Bindings;
+  const connString = env.DATABASE_URL ?? env.HYPERDRIVE.connectionString;
+  const db = createDb(connString);
+  const rows = await db
+    .select({
+      workspaceId: pageTokens.workspaceId,
+      pageId: pageTokens.pageId,
+      status: pageTokens.status,
+    })
+    .from(pageTokens)
+    .where(eq(pageTokens.tokenHash, tokenHash))
+    .limit(1);
+  if (!rows[0]) return null;
+  return {
+    workspaceId: rows[0].workspaceId,
+    pageId: rows[0].pageId,
+    status: rows[0].status as 'active' | 'rotating' | 'revoked',
+  };
 };
 
 /**

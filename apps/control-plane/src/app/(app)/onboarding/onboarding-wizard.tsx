@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { Check, ChevronLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { mutate } from 'swr';
 import { toast } from 'sonner';
 import { SkipAllDialog } from './skip-all-dialog';
 import { StepGa4 } from './step-ga4';
@@ -175,6 +176,7 @@ export function OnboardingWizard({
       };
       setState(withCompletion);
       await persistCompleted();
+      await mutate('/v1/onboarding/state');
       toast.success('Onboarding concluido!');
     } else {
       setCurrentStep(nextIdx);
@@ -195,6 +197,7 @@ export function OnboardingWizard({
       };
       setState(withCompletion);
       await persistCompleted();
+      await mutate('/v1/onboarding/state');
     } else {
       setCurrentStep(nextIdx);
     }

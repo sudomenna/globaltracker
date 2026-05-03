@@ -147,7 +147,8 @@ pagesRoute.post('/', async (c) => {
   const tokenRaw = Array.from(tokenBytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', tokenBytes);
+  // Hash the hex string — must match auth-public-token middleware which does TextEncoder(rawToken)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(tokenRaw));
   const tokenHash = Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
@@ -261,7 +262,7 @@ pagesRoute.post('/:page_public_id/tokens', async (c) => {
   const tokenRaw = Array.from(tokenBytes)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', tokenBytes);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(tokenRaw));
   const tokenHash = Array.from(new Uint8Array(hashBuffer))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');

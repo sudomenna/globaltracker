@@ -45,6 +45,7 @@ export interface PageTokenRow {
 /** DB query function injected by the app to avoid direct DB coupling in middleware. */
 export type LookupPageTokenFn = (
   tokenHash: string,
+  bindings: Record<string, unknown>,
 ) => Promise<PageTokenRow | null>;
 
 // ---------------------------------------------------------------------------
@@ -127,8 +128,8 @@ export function authPublicToken(
 
     let row: PageTokenRow | null;
     try {
-      row = await lookupPageToken(tokenHash);
-    } catch {
+      row = await lookupPageToken(tokenHash, c.env as Record<string, unknown>);
+    } catch (err) {
       // DB error — do not leak details
       // BR-PRIVACY-001: log only non-PII fields
       console.error(
@@ -136,6 +137,7 @@ export function authPublicToken(
           level: 'error',
           event: 'auth_token_lookup_failed',
           request_id: requestId,
+          err: String(err),
         }),
       );
       return c.json(

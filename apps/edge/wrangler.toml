@@ -41,4 +41,4 @@ TURNSTILE_SECRET_KEY = "REPLACE_WITH_WRANGLER_SECRET"
 binding = "HYPERDRIVE"
 id = "39156b974a274f969ca96d4e0c32bce1"
 # Para dev local: copie DATABASE_URL do .env.local e descomentar (não commitar com senha preenchida)
-localConnectionString = "postgresql://postgres:whMCaulcmo0YsxO0Tqimdz%2F%2F9SQ9Q438@db.kaxcmhfaqrxwnpftkslj.supabase.co:5432/postgres"
+localConnectionString = "postgres://postgres:whMCaulcmo0YsxO0Tqimdz%2F%2F9SQ9Q438@db.kaxcmhfaqrxwnpftkslj.supabase.co:5432/postgres"
