@@ -303,7 +303,7 @@ async function queueHandler(
   batch: MessageBatch<AnyQueueMessage>,
   env: Bindings,
 ): Promise<void> {
-  const db = createDb(env.HYPERDRIVE.connectionString);
+  const db = createDb(env.DATABASE_URL ?? env.HYPERDRIVE.connectionString);
 
   for (const message of batch.messages) {
     const body = message.body;
@@ -932,7 +932,7 @@ async function scheduledHandler(
   env: Bindings,
   _ctx: ExecutionContext,
 ): Promise<void> {
-  const db = createDb(env.HYPERDRIVE.connectionString);
+  const db = createDb(env.DATABASE_URL ?? env.HYPERDRIVE.connectionString);
   const cron = event.cron;
 
   // ---------------------------------------------------------------------------

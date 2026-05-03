@@ -284,6 +284,11 @@ async function createNewLead(
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   const now = new Date();
 
+  // Extract hashes for denormalized columns — enables dispatcher eligibility checks
+  // without a join to lead_aliases on every dispatch.
+  const emailAlias = resolvedAliases.find((a) => a.identifier_type === 'email_hash');
+  const phoneAlias = resolvedAliases.find((a) => a.identifier_type === 'phone_hash');
+
   // Insert new lead row
   const inserted = await db
     .insert(leads)
@@ -292,6 +297,8 @@ async function createNewLead(
       status: 'active',
       firstSeenAt: now,
       lastSeenAt: now,
+      emailHash: emailAlias?.identifier_hash ?? null,
+      phoneHash: phoneAlias?.identifier_hash ?? null,
     })
     .returning({ id: leads.id });
 
@@ -342,10 +349,17 @@ async function updateExistingLead(
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   const now = new Date();
 
-  // Update last_seen_at
+  // Update last_seen_at + denormalized hash columns if newly provided.
+  const emailAlias = resolvedAliases.find((a) => a.identifier_type === 'email_hash');
+  const phoneAlias = resolvedAliases.find((a) => a.identifier_type === 'phone_hash');
   await db
     .update(leads)
-    .set({ lastSeenAt: now, updatedAt: now })
+    .set({
+      lastSeenAt: now,
+      updatedAt: now,
+      ...(emailAlias ? { emailHash: emailAlias.identifier_hash } : {}),
+      ...(phoneAlias ? { phoneHash: phoneAlias.identifier_hash } : {}),
+    })
     .where(and(eq(leads.id, leadId), eq(leads.workspaceId, workspace_id)));
 
   // Find which aliases already exist for this lead (active)

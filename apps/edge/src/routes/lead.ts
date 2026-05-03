@@ -16,8 +16,9 @@
  * INV-IDENTITY-006: page_token_hash binds lead_token to the issuing page.
  */
 
-import { createDb, rawEvents } from '@globaltracker/db';
+import { createDb, launches, rawEvents } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
+import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
 import { resolveLeadByAliases } from '../lib/lead-resolver.js';
@@ -384,6 +385,47 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     //    BR-PRIVACY-001: raw payload MAY contain PII in transit — that is
     //      intentional for the ingestion processor to hash/encrypt; do not log it.
     // -------------------------------------------------------------------------
+    // Resolve launch_public_id → launch UUID so the processor can link the event
+    // to the correct launch (and its pixel_id / dispatch config).
+    // Non-fatal: if resolution fails, launch_id stays undefined and the event
+    // is processed without launch context.
+    let resolvedLaunchId: string | undefined;
+    if (effectiveDb && businessPayload.launch_public_id) {
+      try {
+        const [launchRow] = await effectiveDb
+          .select({ id: launches.id })
+          .from(launches)
+          .where(
+            and(
+              eq(launches.publicId, businessPayload.launch_public_id),
+              eq(launches.workspaceId, workspaceId),
+            ),
+          )
+          .limit(1);
+        resolvedLaunchId = launchRow?.id;
+      } catch {
+        // Non-fatal — event will be processed without launch context
+      }
+    }
+
+    // Build processable payload: enrich businessPayload with fields required by
+    // RawEventPayloadSchema (event_name, event_time, launch_id) and normalize
+    // consent booleans to 'granted' | 'denied' format the processor expects.
+    // marketing consent implies ad_user_data + ad_personalization (Meta/Google).
+    const processablePayload = {
+      ...businessPayload,
+      event_name: 'lead_identify',
+      event_time: new Date().toISOString(),
+      ...(resolvedLaunchId ? { launch_id: resolvedLaunchId } : {}),
+      consent: {
+        analytics: businessPayload.consent.analytics ? 'granted' : 'denied',
+        marketing: businessPayload.consent.marketing ? 'granted' : 'denied',
+        ad_user_data: businessPayload.consent.marketing ? 'granted' : 'denied',
+        ad_personalization: businessPayload.consent.marketing ? 'granted' : 'denied',
+        customer_match: businessPayload.consent.marketing ? 'granted' : 'denied',
+      },
+    };
+
     let rawEventIdForQueue: string | undefined;
     try {
       const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
@@ -391,7 +433,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
       const [inserted] = await db.insert(rawEvents).values({
         workspaceId,
         pageId: c.get('page_id'),
-        payload: businessPayload as Record<string, unknown>,
+        payload: processablePayload as Record<string, unknown>,
         headersSanitized: {
           origin: c.req.header('origin') ?? null,
           cf_ray: c.req.header('cf-ray') ?? null,
@@ -420,8 +462,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
         page_id: c.get('page_id'),
         lead_public_id: leadPublicId,
         received_at: new Date().toISOString(),
-        // ADR-024: use businessPayload (cf_turnstile_response already stripped)
-        payload: businessPayload,
+        payload: processablePayload,
       });
     } catch (err) {
       // Queue failure is non-fatal for 202 response — processor will retry.
