@@ -39,36 +39,55 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 8 COMPLETO + todas pendências §2 fechadas (2026-05-03)
-Último commit: c146eaa (branch main) — docs(contract): token_hash algorithm
-Branch:        main (~26 commits à frente de origin/main — não pushado)
-Verificação:   typecheck ✓ (db/shared/edge)  1352 testes passando [+2 novos] (1 falha pré-existente em integrations-test .strict())
-DB Supabase:   migrations 0000–0027 aplicadas ✓ (0027: workspaces.config jsonb)
+Estado:        PIPELINE E2E COMPLETO (2026-05-03) — pronto para Sprint 9
+Último commit: abbd77f (branch main)
+Branch:        main (~38 commits à frente de origin/main — não pushado)
+Verificação:   typecheck ✓ (edge/shared)  1352 testes passando (1 falha pré-existente em integrations-test .strict())
+DB Supabase:   migrations 0000–0027 aplicadas ✓
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md
 ```
 
-### Pendências técnicas identificadas em sessão de teste (2026-05-03)
+### Pipeline E2E — status verificado em testes locais (2026-05-03)
+
+| Etapa | Status |
+|---|---|
+| `POST /v1/lead` → 202 + lead_token | ✅ funcionando |
+| `raw_events` insert + `processing_status: processed` | ✅ funcionando |
+| Queue consumer `gt-events` → `processRawEvent` | ✅ funcionando |
+| `events.launch_id` linkado ao launch | ✅ funcionando |
+| `events.consent_snapshot.ad_user_data = 'granted'` | ✅ funcionando |
+| `leads.email_hash` populado | ✅ funcionando |
+| Meta CAPI dispatch | ✅ `succeeded` |
+| GA4 dispatch | ✅ `skipped/no_client_id` (esperado sem browser — requer cookie `_ga`) |
+
+### Bugs corrigidos em sessão de teste E2E (2026-05-03) — COMMITADOS
+
+| Bug | Fix | Commit |
+|---|---|---|
+| `events.ts` raw_events nunca inserido | inline DB insert + raw_event_id no send | 4c482fa |
+| `lead.ts` raw_events nunca inserido | inline DB insert + raw_event_id no send | 4c482fa |
+| `lead.ts` resolveLeadByAliases nunca chamado | effectiveDb pattern (DATABASE_URL \|\| HYPERDRIVE) | 4c482fa |
+| queueHandler sem routing gt-events | roteia por shape `'raw_event_id' in body` | 4c482fa |
+| processRawEvent não criava dispatch_jobs | lê workspaces.config.integrations, chama createDispatchJobs | 4c482fa |
+| queueHandler usa HYPERDRIVE direto (URL inválida em dev) | DATABASE_URL ?? HYPERDRIVE.connectionString | abbd77f |
+| lead.ts payload sem event_name/event_time | constrói processablePayload com campos obrigatórios | abbd77f |
+| lead.ts launch_public_id não resolvido para UUID | query launches → launch_id incluído no payload | abbd77f |
+| lead.ts consent booleans não normalizados | marketing → ad_user_data/ad_personalization/customer_match = 'granted' | abbd77f |
+| lead-resolver.ts email_hash nunca salvo no leads | popula emailHash/phoneHash no INSERT e UPDATE | abbd77f |
+
+### Pendências técnicas
 
 | Item | Status | Detalhe |
 |---|---|---|
-| `tracker.js` CDN — Cloudflare Worker dedicado | **pendente** | Servir `apps/tracker/dist/tracker.js` via CF Worker com cache headers corretos. URL atual no snippet usa R2 público. Solução elegante: Worker próprio. |
-| `POST /v1/pages` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/pages.ts` persiste em `pages` + `page_tokens` via Drizzle + `DATABASE_URL`. |
-| `POST /v1/launches` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/launches.ts` persiste em `launches` via Drizzle + `DATABASE_URL`. |
-| `GET/PATCH /v1/onboarding/state` — persistência no DB | ✅ **implementado (2026-05-03)** | `routes/onboarding-state.ts` persiste em `workspaces.onboarding_state` via Drizzle + `DATABASE_URL`. Merge feito em JS (não SQL). |
-| auth-cp.ts — middleware JWT Supabase | **pendente produção** | Opção B ativa: `DEV_WORKSPACE_ID` hardcoded em `wrangler.toml` (local dev). Opção A para prod: criar `auth-cp.ts` que valida JWT Supabase → extrai `sub` → `SELECT workspace_id FROM workspace_members WHERE user_id = $sub`. Remover fallback `DEV_WORKSPACE_ID` nas rotas. |
-| Bugs corrigidos em sessão — COMMITADOS | ✅ **commit 0a6c3ca (2026-05-03)** | Tudo commitado. |
-| `.dev.vars` — `DATABASE_URL` correto | ✅ **corrigido (2026-05-03)** | Senha `//` → `%2F%2F` (URL-encode); scheme `postgresql://` → `postgres://`. Necessário porque `postgres.js` CF bundle usa `new URL()` para parse — falha com `//` literal em senha. Nota: `.dev.vars` não entra no git (gitignored). |
-| `docs/30-contracts/05-api-server-actions.md` | ✅ **atualizado (2026-05-03)** | Adicionado `POST /v1/launches`, `GET /v1/launches`, `POST /v1/pages` (eram contratos não documentados). |
-| Persistência creds wizard → dispatchers | ✅ **commit 3cb3c0a (2026-05-03)** | `workspaces.config.integrations.{meta,ga4}` alimentado pelo wizard step='complete'. Dispatchers leem com fallback env vars. migration 0027 aplicada. |
+| `tracker.js` CDN — Cloudflare Worker dedicado | **pendente** | Servir `apps/tracker/dist/tracker.js` via CF Worker com cache headers corretos. |
+| `auth-cp.ts` — middleware JWT Supabase | **pendente produção** | `DEV_WORKSPACE_ID` hardcoded ativo em dev. Prod precisa de JWT validation. |
+| GA4 dispatch — `no_client_id` em leads via formulário | **design gap** | GA4 requer cookie `_ga` do browser. Leads via formulário sem cookie anterior não têm client_id. OQ-012 aberta. |
 
 ### Pendências operacionais antes de produção
 
 | Item | Status | Ação necessária |
 |---|---|---|
-| Migration 0025_orchestrator | ✅ aplicada (2026-05-02) | — |
-| Migration 0026_test_mode_replay | ✅ aplicada (2026-05-02) | — |
-| Smoke E2E (T-1-021) | escrita, não executada | `wrangler dev` com `localConnectionString` |
 | Secrets produção (base) | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET PII_MASTER_KEY_V1 TURNSTILE_SECRET_KEY` |
 | Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
 | Secrets Sprint 5 (audience) | não deployados | `META_CUSTOM_AUDIENCE_TOKEN META_DEFAULT_AD_ACCOUNT_ID` |
@@ -81,33 +100,30 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 - OQ-012 ABERTA: GA4 client_id para comprador direto no checkout (não bloqueia Sprint 9)
 - OQ-013 FECHADA → ADR-025: dispatch-replay cria novo job filho
 
-### Sprint 8 — entregas (referência rápida)
+### Como retomar em nova sessão
 
-| T-ID | Entregável |
-|---|---|
-| T-8-001 | schema: `events.is_test boolean` + `dispatch_jobs.replayed_from_dispatch_job_id uuid`; migration 0026 |
-| T-8-002 | `apps/edge/src/lib/test-mode.ts` — KV TTL 1h, header `X-GT-Test-Mode`, cookie `__gt_test` |
-| T-8-003 | `POST/GET /v1/workspace/test-mode` + audit log |
-| T-8-004 | Propagação `events.is_test` via rawPayload no ingestion |
-| T-8-005 | Dispatchers: Meta usa `test_event_code`; GA4 usa debug endpoint; Google Ads faz skip |
-| T-8-006 | 54 novos testes (1351 total) |
-| T-8-007 | Live Event Console — Supabase Realtime + TanStack Virtual, rolling 100 eventos |
-| T-8-008 | Test Mode Toggle UI — AlertDialog + countdown + filtro `is_test=true` |
-| T-8-009 | dispatch-replay refatorado (ADR-025): cria job filho, retorna 202 |
-| T-8-010 | `ReplayModal.tsx` — justificativa obrigatória, badge REPLAY |
+```
+1. Ler este §5 (estado atual)
+2. git log -5 + git status (confirmar branch main + commit abbd77f)
+3. Abrir docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md (próximo sprint)
+4. Verificar pnpm typecheck && pnpm test antes de iniciar
+5. Decompor Sprint 9 conforme protocolo de paralelização (CLAUDE.md §3)
+```
 
 ### Notas técnicas relevantes para Sprint 9
+
+**Pipeline E2E (esta sessão)**
+- `DATABASE_URL ?? HYPERDRIVE.connectionString` — padrão obrigatório em TODAS as rotas e handlers
+- `processablePayload` em `lead.ts`: enriquece payload com `event_name`, `event_time`, `launch_id` UUID, consent normalizado
+- `leads.email_hash` e `leads.phone_hash` são denormalizações populadas pelo `lead-resolver.ts` — necessárias para eligibility no dispatcher
 
 **Test Mode (Sprint 8)**
 - KV key: `workspace_test_mode:<workspace_id>`, TTL 1h
 - Edge detecta `X-GT-Test-Mode: 1` header ou `__gt_test=1` cookie
-- CP: `/launches/[launch_public_id]/events/live` — Live Console
-- Google Ads e Enhanced Conversions fazem skip com `reason='test_mode'` (sem sandbox nessas APIs)
 
 **Trigger.dev 3.x (Sprint 7)**
 - SDK 3.3.17 instalado em `apps/orchestrator/`
 - Tasks conectam ao DB via `DATABASE_URL` env var (não Hyperdrive — Node.js, não CF Workers)
-- Tests devem ficar em `apps/orchestrator/src/tasks/__tests__/` (pnpm não hoist `@trigger.dev/sdk/v3`)
 
 **CF Pages (Sprint 7)**
 - Deploy via CF Pages REST API
@@ -125,24 +141,14 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 - Biome varre `.claude/worktrees/` — remover worktrees com `git worktree remove -f -f <path>` após uso
 
 **`*.tsbuildinfo`**
-- Adicionado ao `.gitignore` raiz em a616726 — não commitar
+- Adicionado ao `.gitignore` raiz — não commitar
 
 ### Notas técnicas — DB no CF Worker (local dev)
 
-- `c.env.HYPERDRIVE.connectionString` em `wrangler dev` local retorna URL proxy inválida para `postgres.js` (não é PostgreSQL real)
-- Usar `c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString` em todas as rotas CP
+- `c.env.HYPERDRIVE.connectionString` em `wrangler dev` local retorna URL proxy inválida para `postgres.js`
+- Usar `DATABASE_URL ?? HYPERDRIVE.connectionString` em TODAS as rotas e handlers
 - `DATABASE_URL` em `.dev.vars`: esquema `postgres://` (não `postgresql://`), senha com `%2F%2F` em vez de `//`
-- JSONB merge via SQL `||` com Drizzle sql template tem bug de encoding (parâmetro vira string scalar → array no DB). Fix: SELECT → merge JS → UPDATE com objeto plano.
-
-### Como retomar em nova sessão
-
-```
-1. Ler este §5 (estado atual)
-2. git log -5 + git status (confirmar branch main + commit a616726)
-3. Abrir docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md (próximo sprint)
-4. Verificar pnpm typecheck && pnpm test antes de iniciar
-5. Decompor Sprint 9 conforme protocolo de paralelização (CLAUDE.md §3)
-```
+- JSONB merge via SQL `||` com Drizzle sql template tem bug de encoding. Fix: SELECT → merge JS → UPDATE com objeto plano.
 
 ## §6 Ambiente operacional
 
@@ -150,16 +156,16 @@ Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwi
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `a616726` — chore: .gitignore tsbuildinfo |
+| Último commit | `abbd77f` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
 | CF KV (preview) | `59d0cf1570ca499eb4597fc5218504c2` |
 | CF Queues | `gt-events`, `gt-dispatch` |
-| Hyperdrive | config `globaltracker-db`, id `39156b974a274f969ca96d4e0c32bce1` — direct connection Supabase (Supavisor rejeitou com "Tenant not found") |
-| Wrangler | 4.87.0 (via npx — não instalado globalmente) |
+| Hyperdrive | config `globaltracker-db`, id `39156b974a274f969ca96d4e0c32bce1` |
+| Wrangler | 4.87.0 (via npx) |
 | Supabase CLI | 2.90.0 (logado na conta CNE) |
-| Node | 24.x (v24.10.0 detectado) |
+| Node | 24.x (v24.10.0) |
 | pnpm | 10.x |
 
 ## Política de uso
