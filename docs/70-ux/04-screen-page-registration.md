@@ -32,6 +32,21 @@ Lançamento "Maio 2026" > Pages > Nova página
 │ Public ID:       [captura-v1________________]  ⓘ         │
 └──────────────────────────────────────────────────────────┘
 
+┌─ Papel da página (role) ─────────────────────────────────┐
+│ Qual é a função desta página no funil?                   │
+│                                                          │
+│ ◉ Captura       (pré-popula: PageView, Lead)             │
+│ ○ Vendas        (pré-popula: PageView, ViewContent,      │
+│                              InitiateCheckout)           │
+│ ○ Checkout      (pré-popula: PageView, InitiateCheckout) │
+│ ○ Obrigado      (pré-popula: PageView, Purchase)         │
+│ ○ Webinar       (pré-popula: PageView, ViewContent)      │
+│ ○ Pesquisa      (pré-popula: PageView)                   │
+│                                                          │
+│ A seleção de role pré-preenche os eventos canônicos      │
+│ abaixo. Você pode ajustar após a criação.  ⓘ            │
+└──────────────────────────────────────────────────────────┘
+
 ┌─ Domínios permitidos ────────────────────────────────────┐
 │ Adicione todos os domínios onde a LP roda:               │
 │   [lp.cliente.com______________________]   [Remover]    │
@@ -49,6 +64,7 @@ Lançamento "Maio 2026" > Pages > Nova página
 └──────────────────────────────────────────────────────────┘
 
 ┌─ Eventos a capturar ─────────────────────────────────────┐
+│ (pré-preenchido conforme role selecionado)               │
 │ ☑ PageView (automático ao carregar)                      │
 │ ☑ Lead    (no submit do formulário)                      │
 │   └ Selector do form: [#capture-form_______]  ⓘ          │
@@ -59,14 +75,11 @@ Lançamento "Maio 2026" > Pages > Nova página
                           [Cancelar]   [Criar página]
 ```
 
----
+### 1.1 Comportamento do seletor de role
 
-### Persistência client-side do `page_token`
-
-O `page_token` em claro **nunca** é persistido no servidor (apenas o `token_hash` SHA-256 fica em `page_tokens`, ver [20-domain/03-mod-page.md](../20-domain/03-mod-page.md)). Para permitir que o usuário visualize o snippet com o token real após o fim da sessão de onboarding:
-
-- Após criação ou rotação, o token claro é gravado em `localStorage` na chave `gt:token:<page_public_id>` (escrito por `step-page.tsx` no wizard e por `page-detail-client.tsx` ao concluir rotação).
-- Na montagem da tela de detalhes, `pageToken` é lido de `localStorage`. Se vazio (e.g., outro browser, modo anônimo), o snippet aparece com o token mascarado (`••••••…`) e o card exibe um aviso "Rotacione para obter um novo token em claro" — a rotação gera novo token (o antigo continua válido por 14 dias, ADR-023).
+- Ao selecionar um `role`, o form pré-popula automaticamente os checkboxes de "Eventos a capturar" com os defaults canônicos daquele role (via `page-role-defaults.ts`).
+- Se o usuário já havia marcado/desmarcado checkboxes manualmente, a mudança de role sobrescreve com os novos defaults (com confirmação inline discreta: "Substituir seleção atual pelos eventos padrão de Obrigado?").
+- O `role` é salvo em `pages.role` e exibido como chip na tab Pages do detalhe do lançamento.
 
 ---
 
@@ -110,34 +123,6 @@ Polling de `GET /v1/pages/:public_id/status` a cada 5s. Timeout 5min com mensage
 
 ---
 
-### 2.2 — Card "Captura de leads do formulário" (snippet do `<body>`)
-
-Pós-criação e também no modo edição (`page-detail-client.tsx`), abaixo do snippet do `<head>` aparece um card adicional:
-
-```
-┌─ Captura de leads do formulário ─────────────────────────┐
-│ Cole antes do </body> da landing page.                   │
-│ Ajuste o seletor se necessário.                          │
-│                                                          │
-│ Seletor CSS do formulário                                │
-│ [form_______________________________]                    │
-│                                                          │
-│ ┌────────────────────────────────────────────────────────┐│
-│ │ <script>                                               ││
-│ │   document.addEventListener('DOMContentLoaded', ...);  ││
-│ │   form.addEventListener('submit', function () {        ││
-│ │     window.Funil.identify({ email, name, phone });     ││
-│ │   });                                                  ││
-│ │ </script>                                              ││
-│ └────────────────────────────────────────────────────────┘│
-│                                          [📋 Copiar script]│
-└──────────────────────────────────────────────────────────┘
-```
-
-O snippet é o mesmo do Step 6 do wizard (ver [03-screen-onboarding-wizard.md §2.6](./03-screen-onboarding-wizard.md)) — inferência automática de `email`/`name`/`phone` por múltiplos seletores `name`/`type` brasileiros, e dispara `window.Funil.identify(...)` no `submit`. O seletor é local ao componente (`useState('form')`) e não é persistido.
-
----
-
 ## 3. Layout — modo edição (depois)
 
 ```
@@ -164,6 +149,40 @@ Lançamento "Maio 2026" > Pages > captura-v1     [Editar] [Rotacionar token]
 ```
 
 Token nunca exibido em claro após criação. Para "ver" novamente, MARKETER deve rotacionar (gera token novo, antigo entra em `rotating` por 14d).
+
+---
+
+## 3a. Painel "Configuração de eventos" (modo edição)
+
+Presente na tela de detalhe da page (`page-detail-client.tsx`). Permite ajustar `event_config` após a criação sem precisar recriar a page.
+
+```
+┌─ Configuração de eventos ────────────────────────────────┐
+│ Eventos canônicos                                        │
+│ ☑ PageView                                              │
+│ ☑ Lead                                                  │
+│ ☐ ViewContent                                           │
+│ ☐ InitiateCheckout                                      │
+│ ☐ Purchase                                              │
+│                                                          │
+│ Eventos customizados                     ⓘ              │
+│ Um por linha. Prefixo obrigatório: custom:              │
+│ ┌────────────────────────────────────────────────────┐  │
+│ │ custom:BotaoAssistirClicado                        │  │
+│ │ custom:VideoProgressoMeio                          │  │
+│ └────────────────────────────────────────────────────┘  │
+│                                                          │
+│                              [Cancelar]   [Salvar]      │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Comportamento
+
+- Checkboxes representam `event_config.canonical[]`. Marcados = incluídos.
+- Textarea representa `event_config.custom[]`. Cada linha é um item; prefixo `custom:` é obrigatório (validado client-side antes do PATCH).
+- Salvar dispara `PATCH /v1/launches/:id/pages/:public_id` com body `{ event_config: { canonical, custom } }`.
+- Feedback inline: toast "Configuração de eventos salva" ao sucesso; toast de erro com correlation id em falha.
+- Alterações não salvas exibem badge discreto "Não salvo" no cabeçalho do painel.
 
 ---
 

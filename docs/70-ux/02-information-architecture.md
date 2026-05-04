@@ -50,8 +50,13 @@ Header global tem **badge de saúde do workspace** (B.4) com painel lateral de i
 /                                       → home/dashboard
 /onboarding                             → wizard 5 passos (Sprint 6)
 /launches                               → lista
-/launches/:public_id                    → detalhe (tabs)
-/launches/:public_id/pages              → tab pages
+/launches/:public_id                    → detalhe (tabs); tab ativa via query param ?tab=
+/launches/:public_id?tab=overview       → visão geral do lançamento (Sprint 9)
+/launches/:public_id?tab=pages          → tab pages (chip de role por page) (Sprint 9)
+/launches/:public_id?tab=eventos        → tab eventos ao vivo — GET /v1/events + autorefresh 10s (Sprint 9)
+/launches/:public_id?tab=audiences      → tab audiences (Sprint 9)
+/launches/:public_id?tab=performance    → tab performance (Sprint 9)
+/launches/:public_id/pages              → tab pages (rota legada — redireciona para ?tab=pages)
 /launches/:public_id/pages/new          → criação de page (Sprint 6)
 /launches/:public_id/pages/:public_id   → detalhe page + snippet vivo (Sprint 6)
 /launches/:public_id/links              → tab links

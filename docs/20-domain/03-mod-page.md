@@ -28,16 +28,42 @@
 - `integration_mode`
 - `url` (informativo, opcional)
 - `allowed_domains` (array — multi-domain ok)
-- `event_config` (jsonb — schema declarativo de eventos a capturar)
+- `event_config` (jsonb — schema declarativo de eventos a capturar; ver formato abaixo)
 - `variant` (A/B testing, opcional)
 - `status` (`active`/`paused`/`archived`)
 - `created_at`, `updated_at`
+
+#### Formato canônico de `event_config`
+
+Definido por `EventConfigSchema` em `packages/shared/src/schemas/event-config.ts`:
+
+```ts
+{ canonical: string[], custom: string[] }
+```
+
+- `canonical`: nomes de eventos canônicos (ex.: `"PageView"`, `"Lead"`, `"Purchase"`).
+- `custom`: eventos customizados com prefixo obrigatório `custom:` (ex.: `"custom:BotaoClicado"`).
+
+#### Defaults de `event_config` por `role`
+
+Implementados em `apps/control-plane/src/lib/page-role-defaults.ts`. Ao criar uma page, o form pré-popula `event_config` com os defaults do `role` selecionado:
+
+| `role` | `canonical` (default) |
+|---|---|
+| `capture` | `["PageView", "Lead"]` |
+| `sales` | `["PageView", "ViewContent", "InitiateCheckout"]` |
+| `checkout` | `["PageView", "InitiateCheckout"]` |
+| `thankyou` | `["PageView", "Purchase"]` |
+| `webinar` | `["PageView", "ViewContent"]` |
+| `survey` | `["PageView"]` |
+
+O usuário pode sobrescrever os defaults via painel "Configuração de eventos" na tela de detalhe da page (ver [70-ux/04-screen-page-registration.md](../70-ux/04-screen-page-registration.md)).
 
 ### PageToken
 - `id`
 - `workspace_id`
 - `page_id`
-- `token_hash` (SHA-256 do segredo emitido — input exato: `TextEncoder('utf-8').encode(tokenHexString)`, onde `tokenHexString` é a representação hex-string dos 32 bytes aleatórios gerados; hash e validação usam o mesmo input)
+- `token_hash` (SHA-256 do segredo emitido)
 - `label` (humano, ex.: "v1 — produção")
 - `status` (`active` / `rotating` / `revoked`)
 - `created_at`, `rotated_at`, `revoked_at`
@@ -80,11 +106,6 @@
 | `rotating` | `revoked` | sistema (após janela) | Automático. |
 | `active` | `revoked` | OPERATOR, ADMIN | Bypass da janela — emergência de segurança. |
 
-### Persistência do token claro
-
-- **Servidor:** apenas o `token_hash` (SHA-256) é persistido em `page_tokens`. O token claro é retornado pelo endpoint de criação/rotação **uma única vez** na response e nunca mais.
-- **Control-plane (cliente):** após criação ou rotação, o control-plane grava o token claro em `localStorage` na chave `gt:token:<page_public_id>` para permitir exibição posterior do snippet. Isso é uma conveniência de UX restrita ao browser do usuário; **não** muda o contrato de servidor (o backend continua sem qualquer cópia em claro). Se o `localStorage` estiver vazio (browser diferente, modo anônimo), o snippet aparece mascarado e a única forma de obter token novo é via `rotatePageToken()`.
-
 ## 7. Invariantes
 
 - **INV-PAGE-001 — `public_id` é único por launch.** `unique (launch_id, public_id)`. Testável.
@@ -92,7 +113,7 @@
 - **INV-PAGE-003 — `token_hash` é único globalmente.** `unique (page_tokens.token_hash)`. Testável.
 - **INV-PAGE-004 — Cada page tem ao menos um page_token `active` enquanto `pages.status='active'`.** Validador no service. Testável.
 - **INV-PAGE-005 — Token `revoked` não autentica.** Edge retorna 401 + métrica `legacy_token_in_use=false` para tokens revoked (separado de `rotating`). Testável.
-- **INV-PAGE-006 — `event_config` é Zod-válido.** Schema `EventConfigSchema` valida no momento do save. Testável.
+- **INV-PAGE-006 — `event_config` é Zod-válido.** Schema `EventConfigSchema` (`packages/shared/src/schemas/event-config.ts`) valida no momento do save: `{ canonical: string[], custom: string[] }`. Eventos em `custom` devem ter prefixo `custom:`. Testável.
 - **INV-PAGE-007 — Origem do request é validada contra `allowed_domains` em modo `b_snippet`.** Edge faz match por sufixo (subdomain ok). Testável.
 
 ## 8. BRs relacionadas

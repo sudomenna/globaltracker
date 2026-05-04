@@ -41,22 +41,10 @@ Identifica/cria lead, registra consent, emite `lead_token`.
 | **CONTRACT-id** | `CONTRACT-api-lead-v1` |
 | **Auth** | `X-Funil-Site` |
 | **Body** | `{ event_id, schema_version, launch_public_id, page_public_id, email?, phone?, name?, attribution, consent }` (mín. um de email/phone) |
-| **Side effects** | (1) Enriquece o payload antes de persistir em `raw_events` (veja nota abaixo); (2) ingestion processor cria/atualiza lead via `lead_aliases`; (3) emit `lead_token`; (4) `Set-Cookie: __ftk` |
+| **Side effects** | (1) Insert em `raw_events`; (2) ingestion processor cria/atualiza lead via `lead_aliases`; (3) emit `lead_token`; (4) `Set-Cookie: __ftk` |
 | **Response 202** | `{ lead_public_id, lead_token, expires_at, status: 'accepted' }` |
 | **Set-Cookie** | `__ftk=<token>; Path=/; SameSite=Lax; Secure; Max-Age=5184000` (60d default — configurável por workspace) |
 | **Errors** | `400 missing_identifier`, `400 validation_error`, `401`, `403`, `429` |
-
-> **Enriquecimento interno do payload antes de `raw_events`** (comportamento transparente para o caller):
->
-> O Edge constrói um `processablePayload` enriquecido antes de inserir em `raw_events`:
-> - Adiciona `event_name: 'lead_identify'` e `event_time: <ISO 8601 do momento da request>`.
-> - Resolve `launch_public_id → launch_id` (UUID interno) via query em `launches`, linkando o evento ao launch correto para que o processador acesse o `pixel_id` e a configuração de dispatch.
-> - Normaliza os booleans de `consent` do payload original para o formato `'granted' | 'denied'` esperado pelo processador:
->   - `consent.marketing = true` → `ad_user_data: 'granted'`, `ad_personalization: 'granted'`, `customer_match: 'granted'`
->   - `consent.analytics = true` → `analytics: 'granted'`
->   - Valor `false` em qualquer campo → `'denied'`
->
-> Esse enriquecimento é interno ao Edge e não altera a response 202 retornada ao caller.
 
 ### `GET /r/:slug`
 
@@ -80,6 +68,21 @@ Ver `04-webhook-contracts.md`.
 
 Endpoints internos consumidos pela UI Next.js do Control Plane (autenticação por session cookie ou API key com escopo apropriado). Detalhamento em [70-ux/](../70-ux/).
 
+### `GET /v1/events`
+
+Lista paginada de eventos de um lançamento. Consumida pela tab Eventos do detalhe de launch no Control Plane (T-FUNIL-003 / T-FUNIL-004).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-events-list-cp-v1` |
+| **Auth** | `auth-cp` (session MARKETER+) |
+| **Query params** | `launch_id` (UUID, obrigatório), `limit` (int 1–200, default 50), `cursor` (ISO string, opcional — último `event_time` da página anterior) |
+| **Workspace isolation** | Verifica que o launch pertence ao workspace autenticado antes de retornar dados |
+| **Response 200** | `{ events: [...], total: number, next_cursor: string \| null }` |
+| **Errors** | `400 missing_launch_id`, `403 forbidden_workspace`, `404 launch_not_found` |
+
+A tab Eventos no Control Plane consome este endpoint com autorefresh a cada 10 segundos.
+
 ### `GET /v1/onboarding/state`
 
 Retorna estado do wizard de onboarding do workspace ativo. Implementa A.1 ([70-ux/03-screen-onboarding-wizard.md](../70-ux/03-screen-onboarding-wizard.md)).
@@ -99,51 +102,6 @@ Atualiza step específico. Idempotente.
 | **Auth** | session OWNER/ADMIN/MARKETER |
 | **Body** | `{ step: 'meta' | 'ga4' | 'launch' | 'page' | 'install', completed_at?, validated?, ... }` |
 | **Response 200** | `{ onboarding_state }` |
-
-### `POST /v1/launches`
-
-Cria um launch novo para o workspace autenticado. Consumido pelo wizard (step 3) e pelo painel de launches.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-api-launches-create-v1` |
-| **Auth** | session OWNER/ADMIN/MARKETER (`Authorization: Bearer <supabase_jwt>`) |
-| **Body** | `{ name: string (1–100), public_id: string (3–60, /^[a-z0-9-]+$/), status?: 'draft' \| 'configuring' \| 'live' (default 'draft') }` |
-| **Side effects** | INSERT em `launches` com `workspace_id` do JWT; `timezone` default `'America/Sao_Paulo'`; `config: {}` |
-| **Response 201** | `{ id, launch_public_id, public_id, name, status, created_at, request_id }` |
-| **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id já existe no workspace) |
-
-### `GET /v1/launches`
-
-Lista todos os launches do workspace autenticado, ordenados por `created_at` ASC.
-
-| Item | Especificação |
-|---|---|
-| **Auth** | session MARKETER+ |
-| **Response 200** | `{ launches: [{ id, public_id, name, status, created_at }], request_id }` |
-| **Errors** | `401 unauthorized` |
-
-### `POST /v1/pages`
-
-Cria uma page vinculada a um launch. Consumido pelo wizard (step 4).
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-api-pages-create-v1` |
-| **Auth** | session OWNER/ADMIN/MARKETER |
-| **Body** | `{ name, public_id (3–60, /^[a-z0-9-]+$/), launch_public_id, domains: string[] (min 1), mode: 'b_snippet' \| 'server', capture_pageview?: boolean, capture_lead?: boolean }` |
-| **Side effects** | INSERT em `pages` (`role='capture'`, `status='active'`); gera token e INSERT em `page_tokens`; `mode='server'` → `integration_mode='c_webhook'` |
-| **Response 201** | `{ page_public_id, public_id, name, launch_public_id, page_token (raw — exibir uma vez), mode, created_at, request_id }` |
-| **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id já existe no launch), `422 launch_not_found` |
-
-> **Segurança (INV-PAGE-003):** `page_token` retornado é o token bruto (64-char hex). Somente `token_hash` é armazenado em `page_tokens`.
->
-> **Algoritmo de geração do token:**
-> ```
-> tokenRaw   = hex(crypto.getRandomValues(32 bytes))   // 64-char hex string
-> token_hash = hex(SHA-256(TextEncoder().encode(tokenRaw)))  // hash da string hex, não dos bytes crus
-> ```
-> O middleware `auth-public-token` recebe `tokenRaw` via header `X-Funil-Site` e recomputa o hash com o mesmo algoritmo (`TextEncoder` + `SHA-256`) para lookup em `page_tokens.token_hash`. Os dois **devem ser idênticos**; usar `SHA-256` dos bytes crus no middleware causaria colisão zero.
 
 ### `GET /v1/pages/:public_id/status`
 
@@ -280,93 +238,6 @@ SAR/erasure. Auth restrita.
 | **Side effects** | Enqueue job de anonimização. Não-bloqueante. |
 | **Response 202** | `{ job_id, status: 'queued' }` |
 | **Errors** | `401`, `403 forbidden_role`, `404 lead_not_found`, `409 already_erased` |
-
----
-
-## Endpoints do Orchestrator (Sprint 7+, Fase 5)
-
-Endpoints internos consumidos pela UI do Control Plane e pelo próprio `apps/orchestrator/` via callback. Autenticação por session cookie (OPERATOR/ADMIN). Trigger.dev 3.x é o motor de execução — estes endpoints acionam e monitoram os workflows.
-
-> **Base path:** `/v1/orchestrator/workflows`
-
-### `POST /v1/orchestrator/workflows/setup-tracking`
-
-Dispara workflow `setup-tracking` para uma Page: configura pixel policy, event_config e emite page_token.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-trigger-setup-tracking-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Body** | `{ page_id: uuid, launch_id: uuid }` |
-| **Side effects** | Insere `workflow_runs` com `workflow='setup-tracking'` + `status='running'`; aciona task Trigger.dev; emite `audit_log` action=`'workflow_triggered'` |
-| **Response 202** | `{ run_id: uuid, workflow: 'setup-tracking', status: 'running' }` |
-| **Errors** | `404 page_not_found`, `409 workflow_already_running` (run ativo para mesmo page_id), `400 validation_error` |
-
-### `POST /v1/orchestrator/workflows/deploy-lp`
-
-Dispara workflow `deploy-lp`: faz fork do template Astro, configura variáveis, publica no CF Pages e chama `setup-tracking` como sub-task.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-trigger-deploy-lp-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Body** | `{ template: string, launch_id: uuid, slug: string, domain?: string }` |
-| **Validações** | `slug` único por workspace; `template` pertence ao catálogo de `apps/lp-templates/`; `domain` quando presente deve ser FQDN válido |
-| **Side effects** | Insere `workflow_runs` + `lp_deployments` (`status='deploying'`); aciona task Trigger.dev; audit |
-| **Response 202** | `{ run_id: uuid, workflow: 'deploy-lp', status: 'running' }` |
-| **Errors** | `404 launch_not_found`, `400 slug_taken`, `400 invalid_template`, `400 validation_error` |
-
-### `POST /v1/orchestrator/workflows/provision-campaigns`
-
-Dispara workflow `provision-campaigns`: cria estrutura de campanha paused no Meta/Google e aguarda aprovação humana antes de ativar.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-trigger-provision-campaigns-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Body** | `{ launch_id: uuid, platforms: ('meta' \| 'google')[] }` |
-| **Validações** | Launch em status `live`; `platforms` não vazio; credenciais de API configuradas para cada platform |
-| **Side effects** | Insere `workflow_runs` + `campaign_provisions` por platform; aciona task Trigger.dev; workflow pausa em `waiting_approval` após criar campanhas paused; audit |
-| **Response 202** | `{ run_id: uuid, workflow: 'provision-campaigns', status: 'running' }` |
-| **Errors** | `404 launch_not_found`, `409 launch_not_live`, `400 missing_credentials`, `400 validation_error` |
-
-### `GET /v1/orchestrator/workflows/:run_id`
-
-Retorna estado atual de um workflow run com steps detalhados.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-status-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Response 200** | `{ run_id, workflow, status, steps: [{ name, status, started_at, finished_at, error? }], result?, created_at, updated_at }` |
-| **Status possíveis** | `running`, `waiting_approval`, `completed`, `failed`, `rolled_back`, `expired` |
-| **Errors** | `404 run_not_found`, `403 forbidden_workspace` |
-
-### `POST /v1/orchestrator/workflows/:run_id/approve`
-
-Desbloqueia um workflow em `waiting_approval` — envia evento externo ao Trigger.dev para retomar execução.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-approve-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Body** | `{ justification: string (min 10, max 500) }` |
-| **Side effects** | Emite evento externo `approved` ao Trigger.dev (`triggerdev.sendEvent`); atualiza `workflow_runs.status='running'`; `audit_log` action=`'workflow_approved'` com justification + actor |
-| **Response 200** | `{ run_id, status: 'running' }` |
-| **Errors** | `404 run_not_found`, `409 not_approvable` (status ≠ `waiting_approval`), `403 forbidden_workspace` |
-
-### `POST /v1/orchestrator/workflows/:run_id/rollback`
-
-Aciona rollback de um workflow: desfaz mudanças criadas (campanhas Meta/Google deletadas via API) e marca run como `rolled_back`.
-
-| Item | Especificação |
-|---|---|
-| **CONTRACT-id** | `CONTRACT-orc-rollback-v1` |
-| **Auth** | session OPERATOR/ADMIN |
-| **Body** | `{ reason: string (min 10, max 500) }` |
-| **Side effects** | Dispara task `rollback-provisioning` no Trigger.dev; atualiza `workflow_runs.status='rolled_back'`; `campaign_provisions.status='rolled_back'` por provision; `audit_log` action=`'workflow_rollback'` com reason + actor |
-| **Response 202** | `{ run_id, status: 'rolled_back' }` |
-| **Errors** | `404 run_not_found`, `409 not_rollbackable` (status ∉ `{waiting_approval, completed, failed}`), `409 already_rolled_back`, `403 forbidden_workspace` |
 
 ---
 

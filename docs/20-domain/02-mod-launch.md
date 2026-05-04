@@ -29,8 +29,21 @@
 - `name`
 - `status` (`draft` / `configuring` / `live` / `ended` / `archived`)
 - `timezone` (default `America/Sao_Paulo`)
-- `config` (jsonb com tracking config: meta, google, lead_token TTL, fx, etc.)
+- `config` (jsonb com tracking config + metadados opcionais de lançamento — ver abaixo)
 - `created_at`, `updated_at`
+
+### Campos opcionais em `launches.config` (JSONB)
+
+Além da configuração de tracking (`config.tracking.*`), o JSONB `config` persiste metadados editoriais do lançamento, todos opcionais:
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `config.type` | `string` enum | Tipo do lançamento: `lancamento_gratuito`, `lancamento_pago`, `evergreen`, `outro` |
+| `config.objective` | `string` | Objetivo livre (textarea) — usado internamente como contexto |
+| `config.timeline.start_date` | `string` ISO date (`YYYY-MM-DD`) | Data de início planejada |
+| `config.timeline.end_date` | `string` ISO date (`YYYY-MM-DD`) | Data de encerramento planejada |
+
+`config.type` é exibido como badge na lista de lançamentos no Control Plane.
 
 ## 4. Relações
 
@@ -59,14 +72,12 @@
 
 | De | Para | Quem | Validação |
 |---|---|---|---|
-| `draft` | `configuring` | MARKETER, ADMIN, **sistema** | Nome preenchido. **Auto:** ao criar a primeira `page` em um launch `draft`, `POST /v1/launches/:id/pages` executa `UPDATE launches SET status='configuring' WHERE id=? AND status='draft'` (idempotente; falha é logada como `launch_auto_promote_failed` mas não bloqueia a criação da page). |
-| `configuring` | `live` | MARKETER, ADMIN, **sistema** | Pixel policy declarada + ao menos 1 page registrada. **Auto:** ao receber o primeiro raw event de uma page do launch, `POST /v1/events` dispara via `c.executionCtx.waitUntil(...)` um `UPDATE launches SET status='live' WHERE id=(SELECT launch_id FROM pages WHERE id=?) AND status='configuring'` (fire-and-forget, idempotente; falha é logada e ignorada — não afeta ingestão). |
+| `draft` | `configuring` | MARKETER, ADMIN | Nome preenchido. |
+| `configuring` | `live` | MARKETER, ADMIN | Pixel policy declarada + ao menos 1 page registrada. |
 | `live` | `ended` | MARKETER, ADMIN | — |
 | `ended` | `live` | ADMIN | Confirmação dupla. |
 | `ended` | `archived` | OWNER | Confirmação dupla. |
 | qualquer | `archived` | OWNER | Confirmação dupla. |
-
-> **Nota sobre auto-promotion:** as duas transições `draft→configuring` e `configuring→live` são executadas pelo edge worker como side-effects de criar page / receber evento. Por serem `UPDATE ... WHERE status=<from>`, são naturalmente idempotentes — uma execução em estado já avançado é no-op silencioso. O `archived` jamais é alvo dessas transições automáticas (filtro de `WHERE status` impede).
 
 ## 7. Invariantes
 
