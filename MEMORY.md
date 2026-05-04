@@ -39,14 +39,20 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        UX/RLS HARDENING (2026-05-03 sessão 2) — pronto para Sprint 9
-Último commit: 0ff85ab (branch main)
+Estado:        PLANO FUNIS APROVADO (2026-05-03 sessão 3) — aguardando início de implementação
+Último commit: 0b4a7e4 (branch main)
 Branch:        main (não pushado)
-Verificação:   typecheck ✓ (edge/control-plane nas mudanças)
+Verificação:   typecheck ✓ (edge/control-plane nas mudanças anteriores)
 DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  SPRINT 9 — docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md
+Próxima ação:  IMPLEMENTAR Fase 1 do plano em docs/80-roadmap/funil-templates-plan.md (T-FUNIL-001..004)
+                Após Fase 1, seguir para Fase 2 (templates + scaffolding) e Fase 3 (webhook Guru contextualizado).
+                Sprint 9 (webhooks Hotmart/Kiwify/Stripe) fica para depois desta entrega.
 ```
+
+### Plano canônico desta entrega
+
+Ver [docs/80-roadmap/funil-templates-plan.md](docs/80-roadmap/funil-templates-plan.md) — plano em 3 fases para suportar Funil A (Lançamento Gratuito 3 Aulas) e Funil B (Lançamento Pago Workshop low ticket + Main Offer high ticket), com templates reutilizáveis, stages customizáveis por launch e webhook Guru contextualizado por launch + funnel_role.
 
 ### Mudanças entregues nesta sessão (2026-05-03 sessão 2)
 
