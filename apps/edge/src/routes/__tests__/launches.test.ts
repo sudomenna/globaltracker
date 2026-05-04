@@ -388,3 +388,119 @@ describe('POST /v1/launches', () => {
     expect(body.error).toBe('internal_error');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PATCH /v1/launches/:id — T-FUNIL-013 (Sprint 10)
+// ---------------------------------------------------------------------------
+
+describe('PATCH /v1/launches/:id', () => {
+  const LAUNCH_ID = '11111111-1111-1111-1111-111111111111';
+
+  it('returns 401 when Authorization header is absent', async () => {
+    const app = buildApp(undefined);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ funnel_blueprint: {} }),
+      }),
+      createMockBindings({ DEV_WORKSPACE_ID: undefined }),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 when body is invalid JSON', async () => {
+    const app = buildApp(undefined);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEV_WS_ID}`,
+        },
+        body: 'not-json',
+      }),
+      createMockBindings(),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('validation_error');
+  });
+
+  it('returns 400 when funnel_blueprint is missing from body', async () => {
+    const app = buildApp(undefined);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEV_WS_ID}`,
+        },
+        body: JSON.stringify({ other_field: 'value' }),
+      }),
+      createMockBindings(),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe('validation_error');
+  });
+
+  it('returns 503 when no DB configured', async () => {
+    const app = buildApp(undefined);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEV_WS_ID}`,
+        },
+        body: JSON.stringify({ funnel_blueprint: { stages: [] } }),
+      }),
+      createMockBindings(),
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 404 when DB returns no updated rows', async () => {
+    const mockDb = {
+      execute: vi.fn().mockResolvedValue([]),
+    };
+    const app = buildApp(() => mockDb as never);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEV_WS_ID}`,
+        },
+        body: JSON.stringify({ funnel_blueprint: { stages: [] } }),
+      }),
+      createMockBindings(),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 200 with { launch: { id, public_id } } when DB mock succeeds', async () => {
+    const mockDb = {
+      execute: vi
+        .fn()
+        .mockResolvedValue([{ id: LAUNCH_ID, public_id: 'test-launch' }]),
+    };
+    const app = buildApp(() => mockDb as never);
+    const res = await app.fetch(
+      new Request(`http://localhost/v1/launches/${LAUNCH_ID}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${DEV_WS_ID}`,
+        },
+        body: JSON.stringify({ funnel_blueprint: { stages: [] } }),
+      }),
+      createMockBindings(),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json<{ launch: { id: string; public_id: string } }>();
+    expect(body.launch.id).toBe(LAUNCH_ID);
+    expect(body.launch.public_id).toBe('test-launch');
+  });
+});
