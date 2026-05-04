@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-- `PATCH /v1/workspace/config` implementado (T-FUNIL-021) mas não documentado em `docs/30-contracts/05-api-server-actions.md`. Sync via T-FUNIL-025 (Onda 3).
+(vazio)
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -36,25 +36,24 @@
 | Sprint 8 | **completed** (2026-05-02, commit 4c72732) | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 | Sprint 9 | **completed** (2026-05-04, commit ded8fd2) | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
 | Sprint 10 | **completed** (2026-05-04, commit ac93148) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
-| Sprint 11 | **planned** | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
+| Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **planned** (realocado) | `docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 10 COMPLETO + DB MIGRADO (2026-05-04)
-Último commit: ac93148 (branch main, não pushado)
+Estado:        SPRINT 11 COMPLETO (2026-05-04)
+Último commit: 165855c (branch main, não pushado)
 Branch:        main
-Verificação:   typecheck ✓ (só pré-existentes) | lint ✓ | test 1464/1465 ✓
-DB Supabase:   migrations 0000–0029 aplicadas ✓ (0029 aplicado hoje via supabase db push)
+Verificação:   typecheck ✓ (só pré-existentes CP) | test 1508/1509 ✓ (1 pré-existente)
+DB Supabase:   migrations 0000–0029 aplicadas ✓ (sem migration nova no Sprint 11)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  SPRINT 11 — Funil Webhook Guru Contextualizado (T-FUNIL-020..026)
-                Ver docs/80-roadmap/11-sprint-11-funil-webhook-guru.md
+Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
+                Ver docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md
 ```
 
 ### Plano canônico de sprints restantes
 
-- **Sprint 11** — Webhook Guru Contextualizado (Fase 3): guru-launch-resolver, PATCH workspace/config, UI mapping product↔launch. T-FUNIL-020..026. Ver [`11-sprint-11-funil-webhook-guru.md`](docs/80-roadmap/11-sprint-11-funil-webhook-guru.md).
 - **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe. Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
 
 ### O que foi entregue nos Sprints 9 e 10
