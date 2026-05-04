@@ -25,7 +25,7 @@
 
 ### Audience
 - `id`, `workspace_id`
-- `public_id` (único por workspace)
+- `public_id` (único por workspace — INV-AUDIENCE-001)
 - `name`
 - `platform` (`meta` / `google`)
 - `destination_strategy` (Meta: `meta_custom_audience`; Google: `google_data_manager` / `google_ads_api_allowlisted` / `disabled_not_eligible`)
@@ -33,6 +33,24 @@
 - `consent_policy` (jsonb — quais finalidades exigir)
 - `status` (`active` / `paused` / `archived`)
 - `created_at`, `updated_at`
+
+### Audiences scaffoldadas de template (Sprint 10)
+
+Quando `POST /v1/launches` é chamado com `funnel_template_slug`, `scaffoldLaunch()` insere audiências definidas no `blueprint.audiences` do template. Cada linha inserida:
+
+| Campo | Valor |
+|---|---|
+| `workspace_id` | workspace do launch |
+| `public_id` | `audience.slug` do blueprint |
+| `name` | `audience.name` do blueprint |
+| `platform` | `audience.platform` ('meta' ou 'google') |
+| `destination_strategy` | `'disabled_not_eligible'` (padrão — BR-AUDIENCE-001) |
+| `query_definition` | `audience.query_template` do blueprint (DSL placeholder) |
+| `status` | `'draft'` |
+
+**Idempotência:** `ON CONFLICT (workspace_id, public_id) DO NOTHING` — chamar o scaffolding duas vezes não gera duplicatas.
+
+**Observação — `query_template`:** o campo `query_template` do blueprint é um DSL placeholder. A avaliação real e o sync de audiences ficarão operacionais na Sprint 11+, quando `MOD-AUDIENCE.evaluateAudience()` for integrado ao pipeline.
 
 ### AudienceSnapshot
 - `id`, `workspace_id`

@@ -226,6 +226,67 @@ Lê estado atual + TTL restante.
 | **Auth** | session MARKETER+ |
 | **Response 200** | `{ enabled, expires_at: string \| null }` |
 
+### `GET /v1/funnel-templates` (Sprint 10)
+
+Lista templates de funil disponíveis para o workspace autenticado.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-funnel-templates-list-v1` |
+| **Auth** | `Authorization: Bearer <token>` (control-plane pattern); `DEV_WORKSPACE_ID` env como bypass em dev/test |
+| **Scope** | Templates globais (`workspace_id IS NULL`) + templates workspace-scoped |
+| **Response 200** | `{ templates: [{ id, slug, name, description, blueprint, is_system }] }` ordenado por `is_system DESC, name ASC` |
+| **Errors** | `401 unauthorized` (Bearer ausente), `503 service_unavailable` (DB não configurado) |
+
+### `GET /v1/funnel-templates/:slug` (Sprint 10)
+
+Retorna detalhe de um template por slug.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-funnel-templates-get-v1` |
+| **Auth** | `Authorization: Bearer <token>` |
+| **Scope** | Templates globais + workspace-scoped do workspace autenticado |
+| **Response 200** | `{ template: { id, slug, name, description, blueprint, is_system } }` |
+| **Errors** | `401 unauthorized`, `404 not_found` (template não encontrado ou de outro workspace), `503 service_unavailable` |
+
+### `POST /v1/launches` (atualizado Sprint 10)
+
+Cria um novo launch com scaffolding opcional de funil.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launches-create-v1` |
+| **Auth** | `Authorization: Bearer <token>` |
+| **Body** | `{ public_id: string (3–64), name: string, timezone?: string, config?: object, funnel_template_slug?: string }` |
+| **Scaffolding** | Quando `funnel_template_slug` presente: `scaffoldLaunch()` executa de forma assíncrona via `waitUntil` (fire-and-forget); erros são logados mas não falham o response |
+| **Response 201 (sem template)** | `{ launch: { id, public_id, name, timezone, status, workspace_id } }` |
+| **Response 201 (com template)** | `{ launch: { id, public_id, name, timezone, status, workspace_id }, scaffolded: true }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `409 conflict` (public_id duplicado), `503 service_unavailable` |
+
+### `GET /v1/launches` (atualizado Sprint 10)
+
+Lista launches do workspace. Passa a incluir `funnel_blueprint` em cada objeto da resposta.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | `Authorization: Bearer <token>` |
+| **Response 200** | `{ launches: [{ id, public_id, name, status, config, funnel_blueprint, created_at }], request_id }` — `funnel_blueprint` é `null` quando não configurado |
+| **Errors** | `401 unauthorized`, `503 service_unavailable` |
+
+### `PATCH /v1/launches/:id` (Sprint 10)
+
+Atualiza `funnel_blueprint` de um launch existente (editor manual de stages).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launches-patch-v1` |
+| **Auth** | `Authorization: Bearer <token>` |
+| **Body** | `{ funnel_blueprint: Record<string, unknown> }` |
+| **Workspace isolation** | WHERE `id = :id AND workspace_id = authenticated_workspace` (BR-RBAC-002) |
+| **Response 200** | `{ launch: { id, public_id } }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `404 not_found` (launch não encontrado ou de outro workspace), `503 service_unavailable` |
+
 ### `DELETE /v1/admin/leads/:lead_id`
 
 SAR/erasure. Auth restrita.

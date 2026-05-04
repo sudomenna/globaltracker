@@ -62,6 +62,7 @@ Header global tem **badge de saúde do workspace** (B.4) com painel lateral de i
 /launches/:public_id/links              → tab links
 /launches/:public_id/audiences          → tab audiences
 /launches/:public_id/events/live        → console de eventos ao vivo (Sprint 8)
+/launches/[launch_public_id]/funnel     → editor de stages do funil (Sprint 10)
 /leads                                  → busca
 /leads/:public_id                       → detalhe (default tab=timeline) (Sprint 6)
 /leads/:public_id?tab=timeline          → aba Timeline visual
