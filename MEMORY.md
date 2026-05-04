@@ -34,22 +34,22 @@
 | Sprint 6 | **completed** (2026-05-02, commit e613140) | `docs/80-roadmap/06-sprint-6-control-plane.md` |
 | Sprint 7 | **completed** (2026-05-02, commit bd44b7f) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | **completed** (2026-05-02, commit 4c72732) | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
-| Sprint 9 | **planned** | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
-| Sprint 10 | **planned** | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
+| Sprint 9 | **completed** (2026-05-04, commit ded8fd2) | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
+| Sprint 10 | **completed** (2026-05-04, commit 103dcf8) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
 | Sprint 11 | **planned** | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **planned** (realocado) | `docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 9 COMPLETO (2026-05-04) — T-FUNIL-001..007 entregues, commit b254b85
-Último commit: b254b85 (branch main)
+Estado:        SPRINT 10 COMPLETO (2026-05-04) — T-FUNIL-010..017 entregues, commit 103dcf8
+Último commit: 103dcf8 (branch main)
 Branch:        main (não pushado)
-Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ | test 1402/1403 ✓ (1 pré-existente em integrations-test)
-DB Supabase:   migrations 0000–0028 aplicadas ✓ — sem nova migration no Sprint 9
+Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ | test 1464/1465 ✓ (1 pré-existente em integrations-test)
+DB Supabase:   migration 0029_funnel_templates.sql PENDENTE aplicação em Supabase cloud
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  SPRINT 10 — Funil Templates + Scaffolding (T-FUNIL-010..017)
-                Ver docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md
+Próxima ação:  SPRINT 11 — Funil Webhook Guru Contextualizado (T-FUNIL-020..026)
+                Ver docs/80-roadmap/11-sprint-11-funil-webhook-guru.md
 ```
 
 ### Plano canônico desta entrega
