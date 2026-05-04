@@ -35,149 +35,87 @@
 | Sprint 7 | **completed** (2026-05-02, commit bd44b7f) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | **completed** (2026-05-02, commit 4c72732) | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
 | Sprint 9 | **completed** (2026-05-04, commit ded8fd2) | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
-| Sprint 10 | **completed** (2026-05-04, commit 103dcf8) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
+| Sprint 10 | **completed** (2026-05-04, commit ac93148) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
 | Sprint 11 | **planned** | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **planned** (realocado) | `docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 10 COMPLETO (2026-05-04) — T-FUNIL-010..017 entregues, commit 103dcf8
-Último commit: 103dcf8 (branch main)
-Branch:        main (não pushado)
-Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ | test 1464/1465 ✓ (1 pré-existente em integrations-test)
-DB Supabase:   migration 0029_funnel_templates.sql PENDENTE aplicação em Supabase cloud
+Estado:        SPRINT 10 COMPLETO + DB MIGRADO (2026-05-04)
+Último commit: ac93148 (branch main, não pushado)
+Branch:        main
+Verificação:   typecheck ✓ (só pré-existentes) | lint ✓ | test 1464/1465 ✓
+DB Supabase:   migrations 0000–0029 aplicadas ✓ (0029 aplicado hoje via supabase db push)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Próxima ação:  SPRINT 11 — Funil Webhook Guru Contextualizado (T-FUNIL-020..026)
                 Ver docs/80-roadmap/11-sprint-11-funil-webhook-guru.md
 ```
 
-### Plano canônico desta entrega
+### Plano canônico de sprints restantes
 
-Sprints 9→11 (Funil Configurável) + Sprint 12 (Webhooks restantes):
-- **Sprint 9** — UX Hardening (Fase 1): expor page.role, event_config, launch.type pela UI. T-FUNIL-001..007. Ver [`09-sprint-9-funil-ux-hardening.md`](docs/80-roadmap/09-sprint-9-funil-ux-hardening.md).
-- **Sprint 10** — Templates + Scaffolding (Fase 2): migration 0029, 4 presets globais, funnel-scaffolder, processor usa blueprint. T-FUNIL-010..017. Ver [`10-sprint-10-funil-templates-scaffolding.md`](docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md).
 - **Sprint 11** — Webhook Guru Contextualizado (Fase 3): guru-launch-resolver, PATCH workspace/config, UI mapping product↔launch. T-FUNIL-020..026. Ver [`11-sprint-11-funil-webhook-guru.md`](docs/80-roadmap/11-sprint-11-funil-webhook-guru.md).
-- **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe (realocado do antigo Sprint 9). Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe. Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
 
-Plano original em 3 fases: [docs/80-roadmap/funil-templates-plan.md](docs/80-roadmap/funil-templates-plan.md).
+### O que foi entregue nos Sprints 9 e 10
 
-### Mudanças entregues nesta sessão (2026-05-03 sessão 2)
+**Sprint 9 (T-FUNIL-001..007):**
+- UI de criação de launch com type/objective/dates
+- Page role defaults + EventConfig schema (`{ canonical, custom }`)
+- Tab Eventos no launch detail com GET /v1/events?launch_id + autorefresh
+- Auditoria corrigiu: launch_id aceita slug (não UUID), campo `lead_id` na resposta
 
-| Área | Entrega |
+**Sprint 10 (T-FUNIL-010..017):**
+- Migration 0029: tabela `funnel_templates` + `launches.funnel_blueprint` + `launches.funnel_template_id`
+- 4 presets globais (`lancamento_gratuito_3_aulas`, `lancamento_pago_workshop_com_main_offer`, `lancamento_pago_workshop_apenas`, `evergreen_direct_sale`)
+- `GET /v1/funnel-templates` + `GET /v1/funnel-templates/:slug`
+- `funnel-scaffolder.ts`: `scaffoldLaunch()` — pages + audiences em transação, idempotente
+- `POST /v1/launches` aceita `funnel_template_slug` → scaffold via `waitUntil`
+- `PATCH /v1/launches/:id` — atualiza `funnel_blueprint`
+- `GET /v1/launches` agora inclui `funnel_blueprint`
+- `raw-events-processor`: cache de blueprint (60s TTL) + `matchesStageFilters()` + fallback hardcoded
+- CP: seletor de template (4 cards) no form de criação + tab Funil + `/funnel` editor de stages
+
+### Pendências técnicas (não bloqueiam Sprint 11)
+
+| Item | Detalhe |
 |---|---|
-| **Wizard onboarding** | Step 6 "Capturar leads do formulário" — client-only, gera script `<body>` com inferência automática de campos email/name/phone |
-| **Page detail UI** | Card de snippet do body + persistência de `page_token` em `localStorage` (`gt:token:<page_public_id>`) — usuário acessa snippet com token real após onboarding sem rotacionar |
-| **Launch lifecycle** | Auto-promoção `draft→configuring` em `pages.ts` (POST page) e `configuring→live` em `events.ts` (via `c.executionCtx.waitUntil`) — idempotente |
-| **Launches list** | Agora faz GET real (era `useState([])`); itens clicáveis |
-| **Launch detail page** | Nova rota `/launches/[launch_public_id]/page.tsx` com header + status + botão "Eventos ao vivo" + lista de pages |
-| **RLS fix sistêmico** | Migration 0028 — função `public.auth_workspace_id()` SECURITY DEFINER + 30 policies reescritas (GUC OR auth-derived). Antes: `app.current_workspace_id` nunca era setado, supabase-js no control-plane via `authenticated` retornava 0 rows. Agora: control-plane Server Components funcionam com RLS real |
-| **Live Events Console acessível** | Página `/launches/:id/events/live` agora carrega (Realtime Supabase OK). Bug raiz era a RLS, não a página |
-| **Dependência faltando** | `@tanstack/react-virtual` instalado em `apps/control-plane` (era importado em EventConsole.tsx) |
+| `tracker.js` CDN | Servir `apps/tracker/dist/tracker.js` via CF Worker dedicado |
+| `auth-cp.ts` JWT | `DEV_WORKSPACE_ID` hardcoded em dev. Prod precisa JWT validation |
+| GA4 `no_client_id` | GA4 requer `_ga` cookie — leads sem browser não têm client_id. OQ-012 aberta |
+| TS pré-existentes CP | 3 erros em `layout.tsx` / `use-workspace.ts` (Supabase relation type inference) |
 
-### Pipeline E2E — status verificado em testes locais (2026-05-03)
+### Pendências operacionais
 
-| Etapa | Status |
+| Item | Status |
 |---|---|
-| `POST /v1/lead` → 202 + lead_token | ✅ funcionando |
-| `raw_events` insert + `processing_status: processed` | ✅ funcionando |
-| Queue consumer `gt-events` → `processRawEvent` | ✅ funcionando |
-| `events.launch_id` linkado ao launch | ✅ funcionando |
-| `events.consent_snapshot.ad_user_data = 'granted'` | ✅ funcionando |
-| `leads.email_hash` populado | ✅ funcionando |
-| Meta CAPI dispatch | ✅ `succeeded` |
-| GA4 dispatch | ✅ `skipped/no_client_id` (esperado sem browser — requer cookie `_ga`) |
+| Secrets produção (todos os sprints) | não deployados — ver lista completa na última sessão |
+| Migration 0029 Supabase | ✅ aplicada (supabase db push 2026-05-04) |
 
-### Bugs corrigidos em sessão de teste E2E (2026-05-03) — COMMITADOS
+### Notas técnicas invariantes
 
-| Bug | Fix | Commit |
-|---|---|---|
-| `events.ts` raw_events nunca inserido | inline DB insert + raw_event_id no send | 4c482fa |
-| `lead.ts` raw_events nunca inserido | inline DB insert + raw_event_id no send | 4c482fa |
-| `lead.ts` resolveLeadByAliases nunca chamado | effectiveDb pattern (DATABASE_URL \|\| HYPERDRIVE) | 4c482fa |
-| queueHandler sem routing gt-events | roteia por shape `'raw_event_id' in body` | 4c482fa |
-| processRawEvent não criava dispatch_jobs | lê workspaces.config.integrations, chama createDispatchJobs | 4c482fa |
-| queueHandler usa HYPERDRIVE direto (URL inválida em dev) | DATABASE_URL ?? HYPERDRIVE.connectionString | abbd77f |
-| lead.ts payload sem event_name/event_time | constrói processablePayload com campos obrigatórios | abbd77f |
-| lead.ts launch_public_id não resolvido para UUID | query launches → launch_id incluído no payload | abbd77f |
-| lead.ts consent booleans não normalizados | marketing → ad_user_data/ad_personalization/customer_match = 'granted' | abbd77f |
-| lead-resolver.ts email_hash nunca salvo no leads | popula emailHash/phoneHash no INSERT e UPDATE | abbd77f |
-
-### Pendências técnicas
-
-| Item | Status | Detalhe |
-|---|---|---|
-| `tracker.js` CDN — Cloudflare Worker dedicado | **pendente** | Servir `apps/tracker/dist/tracker.js` via CF Worker com cache headers corretos. |
-| `auth-cp.ts` — middleware JWT Supabase | **pendente produção** | `DEV_WORKSPACE_ID` hardcoded ativo em dev. Prod precisa de JWT validation. RLS já está pronta para o caminho via JWT (auth_workspace_id). |
-| GA4 dispatch — `no_client_id` em leads via formulário | **design gap** | GA4 requer cookie `_ga` do browser. Leads via formulário sem cookie anterior não têm client_id. OQ-012 aberta. |
-| Endpoint manual de transição de status do launch | **gap** | Auto-promoção cobre draft→configuring→live; transições para `ended`/`archived` ainda não têm endpoint nem UI. |
-| Erros pré-existentes em `launches/page.tsx` (3x TS18048/TS2345) | **pendente** | Função `useAccessToken` quebra type narrowing. Não bloqueia runtime. |
-
-### Pendências operacionais antes de produção
-
-| Item | Status | Ação necessária |
-|---|---|---|
-| Secrets produção (base) | não deployados | `wrangler secret put LEAD_TOKEN_HMAC_SECRET PII_MASTER_KEY_V1 TURNSTILE_SECRET_KEY` |
-| Secrets Sprint 4 (cost/google/ga4) | não deployados | `META_ADS_ACCOUNT_ID META_ADS_ACCESS_TOKEN GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN GOOGLE_ADS_CLIENT_ID GOOGLE_ADS_CLIENT_SECRET GOOGLE_ADS_REFRESH_TOKEN GOOGLE_ADS_CURRENCY GA4_MEASUREMENT_ID GA4_API_SECRET FX_RATES_PROVIDER` |
-| Secrets Sprint 5 (audience) | não deployados | `META_CUSTOM_AUDIENCE_TOKEN META_DEFAULT_AD_ACCOUNT_ID` |
-| Secrets Sprint 7 (orchestrator) | não deployados | `TRIGGER_SECRET_KEY DATABASE_URL CF_PAGES_API_TOKEN CF_ACCOUNT_ID` |
-| Secret Sprint 8 (test mode) | não deployado | `META_CAPI_TEST_EVENT_CODE` |
+- `DATABASE_URL ?? HYPERDRIVE?.connectionString ?? ''` — padrão obrigatório em todas as rotas
+- Duas pastas de migrations: `packages/db/migrations/0NNN_*.sql` E `supabase/migrations/20260502000NNN_*.sql`
+- RLS dual-mode: `NULLIF(current_setting('app.current_workspace_id', true), '')::uuid OR public.auth_workspace_id()`
+- Biome varre `.claude/worktrees/` — limpar com `git worktree remove -f <path>` após uso
+- `<dialog open>` nativo (não `div role="dialog"`) nos componentes CP
+- OXC parse error em type aliases multi-linha → usar `Record<string, unknown>`
 
 ### Decisões já tomadas (não reabrir)
 
 - ADR-001 a ADR-025 em `docs/90-meta/04-decision-log.md`
-- OQ-012 ABERTA: GA4 client_id para comprador direto no checkout (não bloqueia Sprint 9)
+- OQ-012 ABERTA: GA4 client_id para comprador direto
 - OQ-013 FECHADA → ADR-025: dispatch-replay cria novo job filho
 
 ### Como retomar em nova sessão
 
 ```
-1. Ler este §5 (estado atual)
-2. git log -5 + git status (confirmar branch main + commit abbd77f)
-3. Abrir docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md (próximo sprint)
-4. Verificar pnpm typecheck && pnpm test antes de iniciar
-5. Decompor Sprint 9 conforme protocolo de paralelização (CLAUDE.md §3)
+1. Ler este §5
+2. git log -5 + git status (confirmar branch main + commit ac93148)
+3. Abrir docs/80-roadmap/11-sprint-11-funil-webhook-guru.md
+4. pnpm typecheck && pnpm test (verde exceto 1 pré-existente)
+5. Decompor Sprint 11 por onda, conforme CLAUDE.md §3
 ```
-
-### Notas técnicas relevantes para Sprint 9
-
-**Pipeline E2E (esta sessão)**
-- `DATABASE_URL ?? HYPERDRIVE.connectionString` — padrão obrigatório em TODAS as rotas e handlers
-- `processablePayload` em `lead.ts`: enriquece payload com `event_name`, `event_time`, `launch_id` UUID, consent normalizado
-- `leads.email_hash` e `leads.phone_hash` são denormalizações populadas pelo `lead-resolver.ts` — necessárias para eligibility no dispatcher
-
-**Test Mode (Sprint 8)**
-- KV key: `workspace_test_mode:<workspace_id>`, TTL 1h
-- Edge detecta `X-GT-Test-Mode: 1` header ou `__gt_test=1` cookie
-
-**Trigger.dev 3.x (Sprint 7)**
-- SDK 3.3.17 instalado em `apps/orchestrator/`
-- Tasks conectam ao DB via `DATABASE_URL` env var (não Hyperdrive — Node.js, não CF Workers)
-
-**CF Pages (Sprint 7)**
-- Deploy via CF Pages REST API
-- Template `apps/lp-templates/src/templates/capture/index.astro` injeta tracker.js
-
-**Dois diretórios de migrations**
-- Ao criar em `packages/db/migrations/0NNN_*.sql`, copiar para `supabase/migrations/20260502000NNN_*.sql`
-
-**A11y nos componentes CP**
-- Padrão de `<dialog open>` nativo (não `div role="dialog"`)
-- Usar `<output>` no lugar de `div role="status"`
-
-**OXC + Biome**
-- `typeof import('long/path')` em type aliases multi-linha → parse error no OXC. Fix: `Record<string, unknown>`
-- Biome varre `.claude/worktrees/` — remover worktrees com `git worktree remove -f -f <path>` após uso
-
-**`*.tsbuildinfo`**
-- Adicionado ao `.gitignore` raiz — não commitar
-
-### Notas técnicas — DB no CF Worker (local dev)
-
-- `c.env.HYPERDRIVE.connectionString` em `wrangler dev` local retorna URL proxy inválida para `postgres.js`
-- Usar `DATABASE_URL ?? HYPERDRIVE.connectionString` em TODAS as rotas e handlers
-- `DATABASE_URL` em `.dev.vars`: esquema `postgres://` (não `postgresql://`), senha com `%2F%2F` em vez de `//`
-- JSONB merge via SQL `||` com Drizzle sql template tem bug de encoding. Fix: SELECT → merge JS → UPDATE com objeto plano.
 
 ## §6 Ambiente operacional
 
@@ -185,7 +123,7 @@ Plano original em 3 fases: [docs/80-roadmap/funil-templates-plan.md](docs/80-roa
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `0ff85ab` |
+| Último commit | `ac93148` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
