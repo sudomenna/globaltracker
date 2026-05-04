@@ -1,143 +1,378 @@
 /**
- * routes/launches.ts — POST /v1/launches, GET /v1/launches
+ * routes/launches.ts — POST /v1/launches
  *
- * Control Plane endpoints for launch CRUD.
- * Inline DB via Hyperdrive + DEV_WORKSPACE_ID (dev shortcut).
- * Production: replace DEV_WORKSPACE_ID with workspace_id injected by auth-cp.ts middleware.
+ * T-FUNIL-011 (Sprint 10): Control-plane endpoint to create a new launch,
+ * with optional funnel template scaffolding.
  *
- * BR-PRIVACY-001: zero PII in logs.
- * BR-RBAC-002: workspace_id isolation.
+ * Auth:
+ *   Authorization: Bearer <api_key> (control-plane pattern).
+ *   DEV_WORKSPACE_ID env fallback in dev/test.
+ *
+ * Fast-accept + scaffold pattern:
+ *   1. Validate body (Zod).
+ *   2. INSERT INTO launches.
+ *   3. If funnel_template_slug present: scaffoldLaunch via waitUntil (async).
+ *   4. Return 201 { launch, scaffolded } immediately.
+ *
+ * Scaffolding is fire-and-forget via executionCtx.waitUntil — it does not
+ * block the 201 response. Errors are logged but do not fail the request.
+ *
+ * BR-PRIVACY-001: no PII in logs or error responses.
+ * BR-RBAC-002: workspace isolation — inserts scoped to authenticated workspaceId.
+ * INV-LAUNCH-001: (workspace_id, public_id) unique — DB constraint enforces this.
  */
 
-import { createDb, launches } from '@globaltracker/db';
-import { eq } from 'drizzle-orm';
+import { createDb } from '@globaltracker/db';
+import type { Db } from '@globaltracker/db';
+import { sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { scaffoldLaunch } from '../lib/funnel-scaffolder.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 
+// ---------------------------------------------------------------------------
+// Bindings / Variables types
+// ---------------------------------------------------------------------------
+
 type AppBindings = {
-  HYPERDRIVE: Hyperdrive;
+  GT_KV: KVNamespace;
+  QUEUE_EVENTS: Queue;
+  QUEUE_DISPATCH: Queue;
   ENVIRONMENT: string;
-  DEV_WORKSPACE_ID?: string;
+  HYPERDRIVE?: Hyperdrive;
+  /** DATABASE_URL for local dev */
   DATABASE_URL?: string;
+  /** Dev-only workspace ID bypass */
+  DEV_WORKSPACE_ID?: string;
 };
-type AppVariables = { request_id: string; workspace_id?: string };
+
+type AppVariables = {
+  request_id: string;
+  workspace_id: string;
+};
+
 type AppEnv = { Bindings: AppBindings; Variables: AppVariables };
 
-const CreateLaunchSchema = z.object({
-  name: z.string().min(1).max(100),
-  public_id: z
-    .string()
-    .min(3)
-    .max(60)
-    .regex(/^[a-z0-9-]+$/),
-  status: z.enum(['draft', 'configuring', 'live']).default('draft'),
-});
+// ---------------------------------------------------------------------------
+// Zod schema for POST body
+// ---------------------------------------------------------------------------
 
-export const launchesRoute = new Hono<AppEnv>();
+/**
+ * Body schema for POST /v1/launches.
+ *
+ * Required fields: public_id, name.
+ * Optional fields: timezone, config, funnel_template_slug.
+ */
+const CreateLaunchBodySchema = z
+  .object({
+    /** INV-LAUNCH-001: unique per workspace — 3–64 chars */
+    public_id: z.string().min(3).max(64),
+    /** Human-readable launch name */
+    name: z.string().min(1).max(255),
+    /** IANA timezone string. Defaults to America/Sao_Paulo */
+    timezone: z.string().optional(),
+    /** Tracking config blob (jsonb). Defaults to {} */
+    config: z.record(z.unknown()).optional(),
+    /**
+     * Optional funnel template slug to scaffold pages + audiences.
+     * If provided, scaffoldLaunch runs asynchronously via waitUntil.
+     */
+    funnel_template_slug: z.string().optional(),
+  })
+  .strict();
 
-// Auth guard
-launchesRoute.use('*', async (c, next) => {
-  const auth = c.req.header('Authorization');
-  const requestId = (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
-  if (!auth?.startsWith('Bearer ')) {
-    return c.json({ code: 'unauthorized', message: 'Missing authorization', request_id: requestId }, 401);
-  }
-  await next();
-});
+type CreateLaunchBody = z.infer<typeof CreateLaunchBodySchema>;
 
-// POST /v1/launches
-launchesRoute.post('/', async (c) => {
-  const requestId = (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
-  const workspaceId = (c.get('workspace_id') as string | undefined) ?? c.env.DEV_WORKSPACE_ID ?? 'placeholder-workspace-id';
+// ---------------------------------------------------------------------------
+// Auth helper
+// ---------------------------------------------------------------------------
 
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ code: 'validation_error', message: 'Invalid JSON body', request_id: requestId }, 400);
-  }
+function extractBearerToken(authHeader: string | undefined): string | null {
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match?.[1]?.trim()) return null;
+  return match[1].trim();
+}
 
-  const parsed = CreateLaunchSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      { code: 'validation_error', message: 'Invalid request body', details: parsed.error.flatten().fieldErrors, request_id: requestId },
-      400,
-    );
-  }
+// ---------------------------------------------------------------------------
+// Route factory
+// ---------------------------------------------------------------------------
 
-  const { name, public_id, status } = parsed.data;
+/**
+ * Create the launches sub-router.
+ *
+ * @param getDb - factory to obtain a Drizzle DB instance from the request context.
+ *   Required for DB operations. When absent, returns 503.
+ */
+export function createLaunchesRoute(
+  getDb?: (c: { env: AppBindings }) => Db,
+): Hono<AppEnv> {
+  const router = new Hono<AppEnv>();
 
-  safeLog('info', { event: 'launch_create', request_id: requestId, public_id, workspace_id: workspaceId });
-
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
-
-  let inserted: typeof launches.$inferSelect[];
-  try {
-    inserted = await db
-      .insert(launches)
-      .values({
-        workspaceId,
-        publicId: public_id,
-        name,
-        status,
-        config: {},
-        timezone: 'America/Sao_Paulo',
-      })
-      .returning();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('uq_launches_workspace_public_id') || msg.includes('unique')) {
-      return c.json({ code: 'conflict', message: 'Launch public_id already exists', request_id: requestId }, 409);
+  // -------------------------------------------------------------------------
+  // Auth middleware
+  // -------------------------------------------------------------------------
+  router.use('*', async (c, next) => {
+    const requestId =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+    if (!(c.get('request_id' as keyof AppVariables) as string | undefined)) {
+      c.set('request_id', requestId);
     }
-    safeLog('error', { event: 'launch_create_db_error', request_id: requestId, error_type: err instanceof Error ? err.constructor.name : typeof err });
-    return c.json({ code: 'internal_error', message: 'Failed to create launch', request_id: requestId }, 500);
-  }
 
-  const row = inserted[0];
-  if (!row) {
-    return c.json({ code: 'internal_error', message: 'Insert returned no rows', request_id: requestId }, 500);
-  }
-  return c.json(
-    {
-      id: row.id,
-      launch_public_id: row.publicId,
-      public_id: row.publicId,
-      name: row.name,
-      status: row.status,
-      created_at: row.createdAt.toISOString(),
+    const token = extractBearerToken(c.req.header('Authorization'));
+
+    if (!token) {
+      return c.json(
+        {
+          error: 'unauthorized',
+          message: 'Authorization: Bearer required',
+          request_id: requestId,
+        },
+        401,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // Dev bypass: DEV_WORKSPACE_ID skips DB API key lookup
+    if (c.env.DEV_WORKSPACE_ID) {
+      c.set('workspace_id', c.env.DEV_WORKSPACE_ID);
+      return next();
+    }
+
+    // Sprint 10 simplified — token treated as workspace_id (opaque UUID).
+    // TODO(T-AUTH-CP): replace with workspace_api_keys lookup.
+    c.set('workspace_id', token);
+    return next();
+  });
+
+  // -------------------------------------------------------------------------
+  // POST / — create a new launch
+  // -------------------------------------------------------------------------
+  router.post('/', async (c) => {
+    const requestId = c.get('request_id');
+    const workspaceId = c.get('workspace_id');
+
+    // -----------------------------------------------------------------------
+    // Step 1: Parse JSON body
+    // -----------------------------------------------------------------------
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: 'invalid json',
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: Zod validation
+    // -----------------------------------------------------------------------
+    const parsed = CreateLaunchBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: parsed.error.flatten(),
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const body: CreateLaunchBody = parsed.data;
+
+    // -----------------------------------------------------------------------
+    // Step 3: Require DB
+    // -----------------------------------------------------------------------
+    const db = getDb?.(c);
+
+    if (!db) {
+      safeLog('warn', {
+        event: 'launches_create_no_db',
+        request_id: requestId,
+        workspace_id: workspaceId,
+      });
+      return c.json(
+        {
+          error: 'service_unavailable',
+          message: 'DB not configured',
+          request_id: requestId,
+        },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 4: Insert launch
+    // INV-LAUNCH-001: unique constraint (workspace_id, public_id) — DB error on conflict.
+    // -----------------------------------------------------------------------
+    const launchId = crypto.randomUUID();
+    const timezone = body.timezone ?? 'America/Sao_Paulo';
+    const config = JSON.stringify(body.config ?? {});
+
+    try {
+      await db.execute(
+        sql`INSERT INTO launches (id, workspace_id, public_id, name, timezone, config, status)
+            VALUES (
+              ${launchId}::uuid,
+              ${workspaceId}::uuid,
+              ${body.public_id},
+              ${body.name},
+              ${timezone},
+              ${config}::jsonb,
+              'draft'
+            )`,
+      );
+    } catch (err) {
+      const errName = err instanceof Error ? err.constructor.name : 'unknown';
+      // Check for unique constraint violation (PostgreSQL code 23505)
+      const isConflict =
+        err instanceof Error &&
+        err.message.includes('uq_launches_workspace_public_id');
+
+      safeLog('error', {
+        event: 'launches_create_db_error',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        error_type: errName,
+        conflict: isConflict,
+      });
+
+      if (isConflict) {
+        return c.json(
+          {
+            error: 'conflict',
+            message: 'A launch with this public_id already exists',
+            request_id: requestId,
+          },
+          409,
+          { 'X-Request-Id': requestId },
+        );
+      }
+
+      return c.json({ error: 'internal_error', request_id: requestId }, 500, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    safeLog('info', {
+      event: 'launch_created',
       request_id: requestId,
-    },
-    201,
-  );
-});
+      workspace_id: workspaceId,
+      launch_id: launchId,
+    });
 
-// GET /v1/launches
-launchesRoute.get('/', async (c) => {
-  const requestId = (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
-  const workspaceId = (c.get('workspace_id') as string | undefined) ?? c.env.DEV_WORKSPACE_ID ?? 'placeholder-workspace-id';
+    // -----------------------------------------------------------------------
+    // Step 5: Fire-and-forget scaffold if funnel_template_slug provided
+    // waitUntil ensures the Worker doesn't terminate before scaffold completes.
+    // Errors are logged but do not fail this response.
+    // -----------------------------------------------------------------------
+    const templateSlug = body.funnel_template_slug;
+    let scaffolded = false;
 
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
-  const rows = await db
-    .select({
-      id: launches.id,
-      publicId: launches.publicId,
-      name: launches.name,
-      status: launches.status,
-      createdAt: launches.createdAt,
-    })
-    .from(launches)
-    .where(eq(launches.workspaceId, workspaceId))
-    .orderBy(launches.createdAt);
+    if (templateSlug) {
+      scaffolded = true;
 
-  return c.json({
-    launches: rows.map((r) => ({
-      id: r.id,
-      public_id: r.publicId,
-      name: r.name,
-      status: r.status,
-      created_at: r.createdAt.toISOString(),
-    })),
-    request_id: requestId,
-  }, 200);
-});
+      c.executionCtx.waitUntil(
+        scaffoldLaunch({
+          templateSlug,
+          launchId,
+          launchPublicId: body.public_id,
+          workspaceId,
+          db,
+        }).catch((err) => {
+          safeLog('error', {
+            event: 'scaffold_error',
+            request_id: requestId,
+            workspace_id: workspaceId,
+            launch_id: launchId,
+            error: String(err),
+          });
+        }),
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 6: Return 201 Created
+    // -----------------------------------------------------------------------
+    const launchResponse = {
+      id: launchId,
+      public_id: body.public_id,
+      name: body.name,
+      timezone,
+      status: 'draft',
+      workspace_id: workspaceId,
+    };
+
+    return c.json(
+      scaffolded
+        ? { launch: launchResponse, scaffolded: true }
+        : { launch: launchResponse },
+      201,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // GET / — list launches for the authenticated workspace
+  // -------------------------------------------------------------------------
+  router.get('/', async (c) => {
+    const requestId = c.get('request_id');
+    const workspaceId = c.get('workspace_id');
+    const db = getDb?.(c);
+
+    if (!db) {
+      return c.json(
+        {
+          error: 'service_unavailable',
+          message: 'DB not configured',
+          request_id: requestId,
+        },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const rows = await db.execute(
+      sql`SELECT id, public_id, name, status, config, created_at FROM launches WHERE workspace_id = ${workspaceId}::uuid ORDER BY created_at DESC`,
+    );
+
+    type LaunchRow = {
+      id: string;
+      public_id: string;
+      name: string;
+      status: string;
+      config: unknown;
+      created_at: string;
+    };
+    return c.json(
+      {
+        launches: (rows as unknown as LaunchRow[]).map((r) => ({
+          id: r.id,
+          public_id: r.public_id,
+          name: r.name,
+          status: r.status,
+          config: r.config,
+          created_at: r.created_at,
+        })),
+        request_id: requestId,
+      },
+      200,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  return router;
+}
+
+export const launchesRoute = createLaunchesRoute((c) =>
+  createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? ''),
+);

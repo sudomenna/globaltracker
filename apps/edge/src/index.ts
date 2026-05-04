@@ -29,7 +29,14 @@ import type {
   ScheduledEvent,
 } from '@cloudflare/workers-types';
 import type { Db } from '@globaltracker/db';
-import { events, createDb, launches, leads, pageTokens, workspaces } from '@globaltracker/db';
+import {
+  events,
+  createDb,
+  launches,
+  leads,
+  pageTokens,
+  workspaces,
+} from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
@@ -62,6 +69,7 @@ import {
   type DispatchResult,
   processDispatchJob,
 } from './lib/dispatch.js';
+import { processRawEvent } from './lib/raw-events-processor.js';
 import {
   type LookupPageTokenFn,
   authPublicToken,
@@ -73,6 +81,7 @@ import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
 import { configRoute } from './routes/config.js';
 import { dispatchReplayRoute } from './routes/dispatch-replay.js';
 import { eventsRoute } from './routes/events.js';
+import { funnelTemplatesRoute } from './routes/funnel-templates.js';
 import { healthCpRoute } from './routes/health-cp.js';
 import { helpRoute } from './routes/help.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
@@ -85,7 +94,6 @@ import { pagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
-import { processRawEvent } from './lib/raw-events-processor.js';
 
 // ---------------------------------------------------------------------------
 // Bindings
@@ -245,6 +253,7 @@ const cpCors = corsMiddleware({
 app.use('/v1/health/*', cpCors);
 app.use('/v1/onboarding/*', cpCors);
 app.use('/v1/launches/*', cpCors);
+app.use('/v1/funnel-templates/*', cpCors);
 app.use('/v1/pages/*', cpCors);
 app.use('/v1/leads/*', cpCors);
 app.use('/v1/integrations/*', cpCors);
@@ -283,6 +292,7 @@ app.route('/v1/integrations', integrationsTestRoute);
 
 // Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
 app.route('/v1/launches', launchesRoute);
+app.route('/v1/funnel-templates', funnelTemplatesRoute);
 app.route('/v1/onboarding', onboardingStateRoute);
 app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);
@@ -337,7 +347,8 @@ async function queueHandler(
                 event: 'dispatch_enqueue_failed',
                 raw_event_id,
                 dispatch_job_id: job.id,
-                error_type: qErr instanceof Error ? qErr.constructor.name : 'unknown',
+                error_type:
+                  qErr instanceof Error ? qErr.constructor.name : 'unknown',
               });
             }
           }
@@ -381,7 +392,10 @@ async function queueHandler(
       const result = await processDispatchJob(dispatch_job_id, dispatchFn, db);
 
       if (!result.ok && result.error.code === 'already_processing') {
-        safeLog('info', { event: 'dispatch_already_processing', dispatch_job_id });
+        safeLog('info', {
+          event: 'dispatch_already_processing',
+          dispatch_job_id,
+        });
       } else if (!result.ok) {
         safeLog('warn', {
           event: 'dispatch_processing_error',
@@ -389,7 +403,11 @@ async function queueHandler(
           error_code: result.error.code,
         });
       } else {
-        safeLog('info', { event: 'dispatch_processed', dispatch_job_id, destination });
+        safeLog('info', {
+          event: 'dispatch_processed',
+          dispatch_job_id,
+          destination,
+        });
       }
 
       message.ack();
@@ -485,7 +503,10 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     if (event.isTest) {
       resolvedTestEventCode = env.META_CAPI_TEST_EVENT_CODE;
       if (!resolvedTestEventCode) {
-        safeLog('warn', { event: 'meta_capi_test_mode_no_code', dispatch_job_id: job.id });
+        safeLog('warn', {
+          event: 'meta_capi_test_mode_no_code',
+          dispatch_job_id: job.id,
+        });
       }
     }
 
@@ -515,7 +536,9 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       .where(eq(workspaces.id, event.workspaceId));
     const wsCapiToken = (ws?.config as Record<string, unknown> | undefined)
       ?.integrations as Record<string, unknown> | undefined;
-    const wsMetaToken = wsCapiToken?.meta as Record<string, unknown> | undefined;
+    const wsMetaToken = wsCapiToken?.meta as
+      | Record<string, unknown>
+      | undefined;
     if (wsMetaToken?.capi_token) capiToken = wsMetaToken.capi_token as string;
 
     // 7. Send to Meta CAPI — injectable fetch.
@@ -587,12 +610,21 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
       .select({ config: workspaces.config })
       .from(workspaces)
       .where(eq(workspaces.id, event.workspaceId));
-    const wsIntegrations = (wsGa4?.config as Record<string, unknown> | undefined)
-      ?.integrations as Record<string, unknown> | undefined;
-    const wsGa4Config = wsIntegrations?.ga4 as Record<string, unknown> | undefined;
+    const wsIntegrations = (
+      wsGa4?.config as Record<string, unknown> | undefined
+    )?.integrations as Record<string, unknown> | undefined;
+    const wsGa4Config = wsIntegrations?.ga4 as
+      | Record<string, unknown>
+      | undefined;
     const ga4Config = {
-      measurementId: (wsGa4Config?.measurement_id as string | undefined) || env.GA4_MEASUREMENT_ID || null,
-      apiSecret: (wsGa4Config?.api_secret as string | undefined) || env.GA4_API_SECRET || null,
+      measurementId:
+        (wsGa4Config?.measurement_id as string | undefined) ||
+        env.GA4_MEASUREMENT_ID ||
+        null,
+      apiSecret:
+        (wsGa4Config?.api_secret as string | undefined) ||
+        env.GA4_API_SECRET ||
+        null,
     };
 
     const eligibility = checkGa4Eligibility(

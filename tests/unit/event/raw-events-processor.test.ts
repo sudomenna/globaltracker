@@ -31,8 +31,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ConsentSnapshotSchema,
+  FunnelBlueprintSchema,
   RawEventPayloadSchema,
   UserDataSchema,
+  blueprintCache,
+  getBlueprintForLaunch,
+  matchesStageFilters,
   processRawEvent,
 } from '../../../apps/edge/src/lib/raw-events-processor';
 
@@ -45,7 +49,6 @@ vi.mock('@globaltracker/db', () => ({
   events: { id: 'id', workspaceId: 'workspace_id', eventId: 'event_id' },
   leadStages: {},
   rawEvents: {},
-  workspaces: { id: 'id', config: 'config' },
 }));
 
 // Mock lead-resolver
@@ -1041,5 +1044,709 @@ describe('processRawEvent', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.dispatch_jobs_created).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FunnelBlueprintSchema unit tests (Sprint 10 — T-FUNIL-012)
+// ---------------------------------------------------------------------------
+
+describe('FunnelBlueprintSchema', () => {
+  it('accepts a valid blueprint with stages', () => {
+    const result = FunnelBlueprintSchema.safeParse({
+      version: 1,
+      stages: [
+        {
+          slug: 'lead_identified',
+          source_events: ['Lead', 'lead_identify'],
+          is_recurring: false,
+        },
+        {
+          slug: 'purchased',
+          source_events: ['Purchase'],
+          is_recurring: false,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts blueprint with source_event_filters', () => {
+    const result = FunnelBlueprintSchema.safeParse({
+      version: 1,
+      stages: [
+        {
+          slug: 'purchased_product_a',
+          source_events: ['Purchase'],
+          source_event_filters: { funnel_role: 'main_product' },
+          is_recurring: false,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects blueprint with empty stage slug', () => {
+    const result = FunnelBlueprintSchema.safeParse({
+      version: 1,
+      stages: [{ slug: '', source_events: ['Lead'], is_recurring: false }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts blueprint with optional label', () => {
+    const result = FunnelBlueprintSchema.safeParse({
+      version: 1,
+      stages: [
+        {
+          slug: 'lead_identified',
+          label: 'Lead Identificado',
+          source_events: ['Lead'],
+          is_recurring: false,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.stages[0]?.label).toBe('Lead Identificado');
+  });
+
+  it('defaults version to 1 when not provided', () => {
+    const result = FunnelBlueprintSchema.safeParse({
+      stages: [{ slug: 'lead_identified', source_events: ['Lead'] }],
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.version).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchesStageFilters unit tests (Sprint 10 — T-FUNIL-012)
+// ---------------------------------------------------------------------------
+
+describe('matchesStageFilters', () => {
+  const stage = {
+    slug: 'lead_identified',
+    source_events: ['Lead', 'lead_identify'],
+    source_event_filters: undefined,
+    is_recurring: false,
+  };
+
+  it('returns true when event_name is in source_events and no filters', () => {
+    expect(matchesStageFilters('Lead', {}, stage)).toBe(true);
+  });
+
+  it('returns false when event_name is NOT in source_events', () => {
+    expect(matchesStageFilters('Purchase', {}, stage)).toBe(false);
+  });
+
+  it('returns true with empty filters object (no predicates)', () => {
+    const stageWithEmptyFilters = {
+      ...stage,
+      source_event_filters: {},
+    };
+    expect(matchesStageFilters('Lead', {}, stageWithEmptyFilters)).toBe(true);
+  });
+
+  it('returns true when filter key matches payload value', () => {
+    const stageWithFilter = {
+      slug: 'purchased_main',
+      source_events: ['Purchase'],
+      source_event_filters: { funnel_role: 'main_product' },
+      is_recurring: false,
+    };
+    expect(
+      matchesStageFilters('Purchase', { funnel_role: 'main_product' }, stageWithFilter),
+    ).toBe(true);
+  });
+
+  it('returns false when filter key exists but value does not match', () => {
+    const stageWithFilter = {
+      slug: 'purchased_main',
+      source_events: ['Purchase'],
+      source_event_filters: { funnel_role: 'main_product' },
+      is_recurring: false,
+    };
+    expect(
+      matchesStageFilters('Purchase', { funnel_role: 'order_bump' }, stageWithFilter),
+    ).toBe(false);
+  });
+
+  it('returns false when filter key is absent from payload (null-safe)', () => {
+    const stageWithFilter = {
+      slug: 'purchased_main',
+      source_events: ['Purchase'],
+      source_event_filters: { funnel_role: 'main_product' },
+      is_recurring: false,
+    };
+    // payload does not have funnel_role — should NOT match (Sprint 11 not yet injecting it)
+    expect(matchesStageFilters('Purchase', {}, stageWithFilter)).toBe(false);
+  });
+
+  it('returns true when all multiple filters match', () => {
+    const stageWithMultiFilter = {
+      slug: 'purchased_upsell',
+      source_events: ['Purchase'],
+      source_event_filters: { funnel_role: 'upsell', currency: 'BRL' },
+      is_recurring: false,
+    };
+    expect(
+      matchesStageFilters(
+        'Purchase',
+        { funnel_role: 'upsell', currency: 'BRL' },
+        stageWithMultiFilter,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when only one of multiple filters matches', () => {
+    const stageWithMultiFilter = {
+      slug: 'purchased_upsell',
+      source_events: ['Purchase'],
+      source_event_filters: { funnel_role: 'upsell', currency: 'BRL' },
+      is_recurring: false,
+    };
+    expect(
+      matchesStageFilters(
+        'Purchase',
+        { funnel_role: 'upsell', currency: 'USD' }, // currency mismatch
+        stageWithMultiFilter,
+      ),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getBlueprintForLaunch unit tests (Sprint 10 — T-FUNIL-012)
+// ---------------------------------------------------------------------------
+
+describe('getBlueprintForLaunch', () => {
+  const CACHE_LAUNCH_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
+  beforeEach(() => {
+    // Clear module-level cache between tests
+    blueprintCache.clear();
+    vi.clearAllMocks();
+  });
+
+  it('returns null and caches when DB row has null funnel_blueprint', async () => {
+    const selectLimitFn = vi.fn().mockResolvedValue([{ funnelBlueprint: null }]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: selectLimitFn }),
+        }),
+      }),
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    const result = await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    expect(result).toBeNull();
+    expect(blueprintCache.has(CACHE_LAUNCH_ID)).toBe(true);
+    expect(blueprintCache.get(CACHE_LAUNCH_ID)?.blueprint).toBeNull();
+  });
+
+  it('returns null and caches when DB row does not exist', async () => {
+    const selectLimitFn = vi.fn().mockResolvedValue([]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: selectLimitFn }),
+        }),
+      }),
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    const result = await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns parsed blueprint when funnel_blueprint is valid JSON', async () => {
+    const blueprintData = {
+      version: 1,
+      stages: [
+        {
+          slug: 'lead_identified',
+          source_events: ['Lead'],
+          is_recurring: false,
+        },
+      ],
+    };
+    const selectLimitFn = vi
+      .fn()
+      .mockResolvedValue([{ funnelBlueprint: blueprintData }]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: selectLimitFn }),
+        }),
+      }),
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    const result = await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    expect(result).not.toBeNull();
+    expect(result?.stages).toHaveLength(1);
+    expect(result?.stages[0]?.slug).toBe('lead_identified');
+    // Should be cached
+    expect(blueprintCache.get(CACHE_LAUNCH_ID)?.blueprint).toEqual(result);
+  });
+
+  it('returns null (and caches null) when funnel_blueprint fails schema validation', async () => {
+    const invalidBlueprint = { version: 1, stages: 'not-an-array' };
+    const selectLimitFn = vi
+      .fn()
+      .mockResolvedValue([{ funnelBlueprint: invalidBlueprint }]);
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({ limit: selectLimitFn }),
+        }),
+      }),
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    const result = await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    expect(result).toBeNull();
+    expect(blueprintCache.get(CACHE_LAUNCH_ID)?.blueprint).toBeNull();
+  });
+
+  it('returns cached value on second call without hitting DB again', async () => {
+    const blueprintData = {
+      version: 1,
+      stages: [{ slug: 'lead_identified', source_events: ['Lead'] }],
+    };
+    const selectLimitFn = vi
+      .fn()
+      .mockResolvedValue([{ funnelBlueprint: blueprintData }]);
+    const selectFn = vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ limit: selectLimitFn }),
+      }),
+    });
+    const db = {
+      select: selectFn,
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+    await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    // DB should only be queried once (cache hit on second call)
+    expect(selectFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null gracefully when DB call throws (e.g. launches not in mock schema)', async () => {
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockImplementation(() => {
+            throw new TypeError('Cannot read properties of undefined');
+          }),
+        }),
+      }),
+    } as unknown as Parameters<typeof getBlueprintForLaunch>[1];
+
+    const result = await getBlueprintForLaunch(CACHE_LAUNCH_ID, db);
+
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// processRawEvent — blueprint-driven stage resolution (Sprint 10 — T-FUNIL-012)
+// ---------------------------------------------------------------------------
+
+describe('processRawEvent — blueprint-driven stages', () => {
+  beforeEach(() => {
+    blueprintCache.clear();
+    vi.clearAllMocks();
+  });
+
+  it('T-FUNIL-012: uses blueprint stage when launch has a valid blueprint', async () => {
+    const rawRow = makeRawEventRow({
+      event_name: 'Lead',
+      event_id: 'evt-blueprint-lead',
+      email: 'user@example.com',
+      launch_id: LAUNCH_ID,
+    });
+
+    vi.mocked(resolveLeadByAliases).mockResolvedValue({
+      ok: true,
+      value: {
+        lead_id: LEAD_ID,
+        was_created: true,
+        merge_executed: false,
+        merged_lead_ids: [],
+      },
+    });
+
+    const blueprintData = {
+      version: 1,
+      stages: [
+        {
+          slug: 'registro_lead',
+          source_events: ['Lead', 'lead_identify'],
+          is_recurring: false,
+        },
+      ],
+    };
+
+    let insertIdx = 0;
+    const eventsReturning = vi.fn().mockResolvedValue([{ id: 'evt-uuid-bp' }]);
+    const eventsValues = vi
+      .fn()
+      .mockReturnValue({ returning: eventsReturning });
+    const leadStagesValues = vi.fn().mockResolvedValue([]);
+
+    const insert = vi.fn(() => {
+      insertIdx++;
+      if (insertIdx === 1) return { values: eventsValues };
+      return { values: leadStagesValues };
+    });
+
+    const updateSetWhere = vi.fn().mockResolvedValue([]);
+    const updateSet = vi.fn().mockReturnValue({ where: updateSetWhere });
+    const update = vi.fn().mockReturnValue({ set: updateSet });
+
+    let selectCallIdx = 0;
+    const select = vi.fn(() => {
+      selectCallIdx++;
+      if (selectCallIdx === 1) {
+        // First select = rawEvents lookup
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([rawRow]),
+            }),
+          }),
+        };
+      }
+      // Second select = blueprint lookup
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ funnelBlueprint: blueprintData }]),
+          }),
+        }),
+      };
+    });
+
+    const db = { select, insert, update } as unknown as Parameters<
+      typeof processRawEvent
+    >[1];
+
+    const result = await processRawEvent(RAW_EVENT_ID, db);
+
+    expect(result.ok).toBe(true);
+
+    // Should use blueprint stage 'registro_lead', NOT the hardcoded 'lead_identified'
+    expect(leadStagesValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: 'registro_lead',
+        leadId: LEAD_ID,
+        launchId: LAUNCH_ID,
+      }),
+    );
+    // Should NOT use hardcoded 'lead_identified'
+    expect(leadStagesValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'lead_identified' }),
+    );
+  });
+
+  it('T-FUNIL-012: blueprint with source_event_filters — stage matches when filter matches payload', async () => {
+    const rawRow = makeRawEventRow({
+      event_name: 'Purchase',
+      event_id: 'evt-blueprint-purchase-main',
+      lead_id: LEAD_ID,
+      launch_id: LAUNCH_ID,
+      custom_data: { funnel_role: 'main_product' },
+    });
+
+    const blueprintData = {
+      version: 1,
+      stages: [
+        {
+          slug: 'compra_produto_principal',
+          source_events: ['Purchase'],
+          source_event_filters: { funnel_role: 'main_product' },
+          is_recurring: false,
+        },
+        {
+          slug: 'compra_order_bump',
+          source_events: ['Purchase'],
+          source_event_filters: { funnel_role: 'order_bump' },
+          is_recurring: false,
+        },
+      ],
+    };
+
+    let insertIdx = 0;
+    const eventsReturning = vi.fn().mockResolvedValue([{ id: 'evt-uuid-bp2' }]);
+    const eventsValues = vi
+      .fn()
+      .mockReturnValue({ returning: eventsReturning });
+    const leadStagesValues = vi.fn().mockResolvedValue([]);
+
+    const insert = vi.fn(() => {
+      insertIdx++;
+      if (insertIdx === 1) return { values: eventsValues };
+      return { values: leadStagesValues };
+    });
+
+    const updateSetWhere = vi.fn().mockResolvedValue([]);
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: updateSetWhere }),
+    });
+
+    let selectCallIdx = 0;
+    const select = vi.fn(() => {
+      selectCallIdx++;
+      if (selectCallIdx === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([rawRow]),
+            }),
+          }),
+        };
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ funnelBlueprint: blueprintData }]),
+          }),
+        }),
+      };
+    });
+
+    const db = { select, insert, update } as unknown as Parameters<
+      typeof processRawEvent
+    >[1];
+
+    const result = await processRawEvent(RAW_EVENT_ID, db);
+
+    expect(result.ok).toBe(true);
+
+    // Only the stage matching funnel_role='main_product' should be inserted
+    expect(leadStagesValues).toHaveBeenCalledTimes(1);
+    expect(leadStagesValues).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'compra_produto_principal' }),
+    );
+    expect(leadStagesValues).not.toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'compra_order_bump' }),
+    );
+  });
+
+  it('T-FUNIL-012: blueprint with source_event_filters — stage DOES NOT match when filter key absent from payload', async () => {
+    const rawRow = makeRawEventRow({
+      event_name: 'Purchase',
+      event_id: 'evt-blueprint-no-role',
+      lead_id: LEAD_ID,
+      launch_id: LAUNCH_ID,
+      // No custom_data.funnel_role — Sprint 11 not yet injecting it
+    });
+
+    const blueprintData = {
+      version: 1,
+      stages: [
+        {
+          slug: 'compra_produto_principal',
+          source_events: ['Purchase'],
+          source_event_filters: { funnel_role: 'main_product' },
+          is_recurring: false,
+        },
+      ],
+    };
+
+    let insertIdx = 0;
+    const eventsReturning = vi.fn().mockResolvedValue([{ id: 'evt-uuid-bp3' }]);
+    const eventsValues = vi
+      .fn()
+      .mockReturnValue({ returning: eventsReturning });
+    const leadStagesValues = vi.fn().mockResolvedValue([]);
+
+    const insert = vi.fn(() => {
+      insertIdx++;
+      if (insertIdx === 1) return { values: eventsValues };
+      return { values: leadStagesValues };
+    });
+
+    const updateSetWhere = vi.fn().mockResolvedValue([]);
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: updateSetWhere }),
+    });
+
+    let selectCallIdx = 0;
+    const select = vi.fn(() => {
+      selectCallIdx++;
+      if (selectCallIdx === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([rawRow]),
+            }),
+          }),
+        };
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ funnelBlueprint: blueprintData }]),
+          }),
+        }),
+      };
+    });
+
+    const db = { select, insert, update } as unknown as Parameters<
+      typeof processRawEvent
+    >[1];
+
+    const result = await processRawEvent(RAW_EVENT_ID, db);
+
+    expect(result.ok).toBe(true);
+    // No stage inserted — blueprint has filter that payload doesn't satisfy
+    expect(leadStagesValues).not.toHaveBeenCalled();
+  });
+
+  it('T-FUNIL-012: falls back to hardcoded stages when blueprint is null', async () => {
+    const rawRow = makeRawEventRow({
+      event_name: 'Lead',
+      event_id: 'evt-fallback-lead',
+      email: 'fallback@example.com',
+      launch_id: LAUNCH_ID,
+    });
+
+    vi.mocked(resolveLeadByAliases).mockResolvedValue({
+      ok: true,
+      value: {
+        lead_id: LEAD_ID,
+        was_created: true,
+        merge_executed: false,
+        merged_lead_ids: [],
+      },
+    });
+
+    let insertIdx = 0;
+    const eventsReturning = vi.fn().mockResolvedValue([{ id: 'evt-uuid-fb' }]);
+    const eventsValues = vi
+      .fn()
+      .mockReturnValue({ returning: eventsReturning });
+    const leadStagesValues = vi.fn().mockResolvedValue([]);
+
+    const insert = vi.fn(() => {
+      insertIdx++;
+      if (insertIdx === 1) return { values: eventsValues };
+      return { values: leadStagesValues };
+    });
+
+    const updateSetWhere = vi.fn().mockResolvedValue([]);
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: updateSetWhere }),
+    });
+
+    let selectCallIdx = 0;
+    const select = vi.fn(() => {
+      selectCallIdx++;
+      if (selectCallIdx === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([rawRow]),
+            }),
+          }),
+        };
+      }
+      // Blueprint lookup returns null row (launch has no blueprint)
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ funnelBlueprint: null }]),
+          }),
+        }),
+      };
+    });
+
+    const db = { select, insert, update } as unknown as Parameters<
+      typeof processRawEvent
+    >[1];
+
+    const result = await processRawEvent(RAW_EVENT_ID, db);
+
+    expect(result.ok).toBe(true);
+    // Fallback: 'Lead' event → 'lead_identified' stage
+    expect(leadStagesValues).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'lead_identified', leadId: LEAD_ID }),
+    );
+  });
+
+  it('T-FUNIL-012: blueprint with recurring stage creates recurring=true lead_stage', async () => {
+    const rawRow = makeRawEventRow({
+      event_name: 'WatchedClass',
+      event_id: 'evt-watched-class-1',
+      lead_id: LEAD_ID,
+      launch_id: LAUNCH_ID,
+    });
+
+    const blueprintData = {
+      version: 1,
+      stages: [
+        {
+          slug: 'watched_class',
+          source_events: ['WatchedClass'],
+          is_recurring: true,
+        },
+      ],
+    };
+
+    let insertIdx = 0;
+    const eventsReturning = vi.fn().mockResolvedValue([{ id: 'evt-uuid-wc' }]);
+    const eventsValues = vi
+      .fn()
+      .mockReturnValue({ returning: eventsReturning });
+    const leadStagesValues = vi.fn().mockResolvedValue([]);
+
+    const insert = vi.fn(() => {
+      insertIdx++;
+      if (insertIdx === 1) return { values: eventsValues };
+      return { values: leadStagesValues };
+    });
+
+    const updateSetWhere = vi.fn().mockResolvedValue([]);
+    const update = vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({ where: updateSetWhere }),
+    });
+
+    let selectCallIdx = 0;
+    const select = vi.fn(() => {
+      selectCallIdx++;
+      if (selectCallIdx === 1) {
+        return {
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([rawRow]),
+            }),
+          }),
+        };
+      }
+      return {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ funnelBlueprint: blueprintData }]),
+          }),
+        }),
+      };
+    });
+
+    const db = { select, insert, update } as unknown as Parameters<
+      typeof processRawEvent
+    >[1];
+
+    const result = await processRawEvent(RAW_EVENT_ID, db);
+
+    expect(result.ok).toBe(true);
+    expect(leadStagesValues).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: 'watched_class', isRecurring: true }),
+    );
   });
 });

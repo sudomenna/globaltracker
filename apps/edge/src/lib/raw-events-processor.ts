@@ -22,11 +22,10 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, leadStages, rawEvents, workspaces } from '@globaltracker/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { events, launches, leadStages, rawEvents } from '@globaltracker/db';
+import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { type AttributionParams, recordTouches } from './attribution.js';
-import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
 import { hashPii } from './pii.js';
@@ -132,6 +131,9 @@ const RawEventPayloadSchema = z.object({
   event_time: z.string().datetime({ offset: true }),
   lead_id: z.string().uuid().optional(), // pre-resolved by Edge when lead_token was valid
   lead_token: z.string().optional(), // original token (informational only; resolution is via lead_id)
+  // visitor_id: anonymous visitor cookie (__fvid) — present only when consent_analytics='granted'
+  // INV-TRACKER-003: tracker enforces consent before sending
+  visitor_id: z.string().optional(),
   // PII fields for lead resolution — hashed before logging (BR-PRIVACY-001)
   email: z.string().email().optional(),
   phone: z.string().optional(),
@@ -141,18 +143,193 @@ const RawEventPayloadSchema = z.object({
   user_data: z.record(z.unknown()).optional().default({}),
   custom_data: z.record(z.unknown()).optional().default({}),
   consent: ConsentSnapshotSchema,
-  // visitor_id: anonymous visitor cookie (__fvid) — present only when consent_analytics='granted'
-  // INV-TRACKER-003: tracker enforces presence; processor accepts and persists as-is
-  visitor_id: z.string().optional(),
   // Launch context (optional — some events arrive without a launch)
   launch_id: z.string().uuid().optional(),
   // Request context snapshot
   request_context: z.record(z.unknown()).optional().default({}),
-  // is_test: injected by Edge when X-GT-Test-Mode: 1 header or __gt_test=1 cookie (T-8-004)
+  // Test mode flag (T-8-004): injected by Edge when X-GT-Test-Mode: 1 header or __gt_test=1 cookie
   is_test: z.boolean().optional().default(false),
 });
 
 type RawEventPayload = z.infer<typeof RawEventPayloadSchema>;
+
+// ---------------------------------------------------------------------------
+// FunnelBlueprint schema (Sprint 10 — dynamic stage resolution)
+//
+// Defined inline because:
+//   1. packages/shared/src/schemas/funnel-blueprint.ts does not exist yet (Sprint 10 adds it).
+//   2. @globaltracker/shared is not yet a declared dependency of @globaltracker/edge.
+//   When Sprint 11 stabilises the shared package, this can be extracted and imported from there.
+// ---------------------------------------------------------------------------
+
+/**
+ * Source event filter — optional payload predicates that must ALL match for the
+ * stage to be triggered.
+ *
+ * NOTE: source_event_filters.funnel_role only works when Phase 3 (Sprint 11)
+ * injects `funnel_role` into the event payload. Before Sprint 11, events that
+ * do not carry `funnel_role` will NOT match a stage that requires it, so both
+ * Purchase events from different products will fall through to the hardcoded
+ * fallback stage ('purchased') instead of product-specific stages.
+ */
+const SourceEventFiltersSchema = z.record(z.string(), z.unknown()).optional();
+
+/**
+ * A single stage definition within a funnel blueprint.
+ * source_events: list of event_name values that trigger this stage.
+ * source_event_filters: optional payload key=value predicates (AND logic).
+ */
+const BlueprintStageSchema = z.object({
+  slug: z.string().min(1).max(64),
+  label: z.string().optional(),
+  source_events: z.array(z.string().min(1).max(128)),
+  source_event_filters: SourceEventFiltersSchema,
+  is_recurring: z.boolean().default(false),
+});
+
+/**
+ * Funnel blueprint stored in launches.funnel_blueprint (jsonb, nullable).
+ * Added by migration 0029.
+ */
+const FunnelBlueprintSchema = z.object({
+  version: z.number().int().positive().default(1),
+  stages: z.array(BlueprintStageSchema),
+});
+
+type FunnelBlueprint = z.infer<typeof FunnelBlueprintSchema>;
+
+// ---------------------------------------------------------------------------
+// Blueprint cache (module-level, per-launch TTL)
+//
+// Avoids a DB round-trip per event for the same launch within the TTL window.
+// Cache key = launchId (internal UUID — unique per workspace, no cross-workspace leak).
+// ---------------------------------------------------------------------------
+
+const blueprintCache = new Map<
+  string,
+  { blueprint: FunnelBlueprint | null; fetchedAt: number }
+>();
+
+/**
+ * TTL for blueprint cache entries.
+ * Production: 60 s. Tests can override via BLUEPRINT_CACHE_TTL_MS env var (set to 0 or 5000).
+ */
+const BLUEPRINT_CACHE_TTL_MS =
+  typeof globalThis !== 'undefined' &&
+  typeof (globalThis as unknown as Record<string, unknown>)
+    .BLUEPRINT_CACHE_TTL_MS === 'number'
+    ? (globalThis as unknown as Record<string, number>).BLUEPRINT_CACHE_TTL_MS
+    : 60_000;
+
+/**
+ * Fetches and caches the FunnelBlueprint for a launch.
+ *
+ * 1. Cache hit within TTL → return cached value (may be null for launches without blueprint).
+ * 2. Cache miss / expired → SELECT funnel_blueprint FROM launches WHERE id = $launchId.
+ * 3. null column → cache null, return null.
+ * 4. Parse with FunnelBlueprintSchema.safeParse — on failure log warning, cache null.
+ * 5. Return parsed blueprint.
+ *
+ * DI: db is injected (no singleton import) — compatible with Cloudflare Workers per-request Db.
+ */
+async function getBlueprintForLaunch(
+  launchId: string,
+  db: Db,
+): Promise<FunnelBlueprint | null> {
+  const now = Date.now();
+  const cached = blueprintCache.get(launchId);
+
+  if (cached !== undefined && now - cached.fetchedAt < BLUEPRINT_CACHE_TTL_MS) {
+    return cached.blueprint;
+  }
+
+  // Cache miss or TTL expired — fetch from DB.
+  // launches.funnel_blueprint was added by migration 0029; Drizzle schema not yet
+  // regenerated with the new column — use sql`` template to reach it directly so the
+  // TS type of `launches` doesn't need to be updated here.
+  let rows: Array<{ funnelBlueprint: unknown }>;
+  try {
+    rows = await db
+      .select({ funnelBlueprint: sql<unknown>`funnel_blueprint` })
+      .from(launches)
+      .where(eq(launches.id, launchId))
+      .limit(1);
+  } catch {
+    // Gracefully degrade — fall back to hardcoded stage rules.
+    // This also handles test environments where launches is not included in the DB mock.
+    blueprintCache.set(launchId, { blueprint: null, fetchedAt: now });
+    return null;
+  }
+
+  const row = rows[0];
+
+  if (
+    !row ||
+    row.funnelBlueprint === null ||
+    row.funnelBlueprint === undefined
+  ) {
+    blueprintCache.set(launchId, { blueprint: null, fetchedAt: now });
+    return null;
+  }
+
+  const parsed = FunnelBlueprintSchema.safeParse(row.funnelBlueprint);
+
+  if (!parsed.success) {
+    // BR-PRIVACY-001: no PII in logs — launchId is a UUID, safe to log.
+    console.warn(
+      `[raw-events-processor] Invalid funnel_blueprint for launch ${launchId}: ${parsed.error.message.slice(0, 200)}`,
+    );
+    blueprintCache.set(launchId, { blueprint: null, fetchedAt: now });
+    return null;
+  }
+
+  blueprintCache.set(launchId, { blueprint: parsed.data, fetchedAt: now });
+  return parsed.data;
+}
+
+// ---------------------------------------------------------------------------
+// Blueprint stage match helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the event matches a blueprint stage's source_events and
+ * optional source_event_filters.
+ *
+ * Filter match rules (AND logic, null-safe):
+ *   - If filters is undefined → any payload passes.
+ *   - For each filter key: payload[key] must === filter value.
+ *   - If payload does not have the key at all → NO match (return false).
+ *
+ * NOTE: source_event_filters.funnel_role only works when Sprint 11 injects
+ * `funnel_role` into the event payload. Until then, events without `funnel_role`
+ * will not match stages that require it — they fall through to the fallback.
+ */
+function matchesStageFilters(
+  eventName: string,
+  customData: Record<string, unknown>,
+  stage: z.infer<typeof BlueprintStageSchema>,
+): boolean {
+  if (!stage.source_events.includes(eventName)) {
+    return false;
+  }
+
+  const filters = stage.source_event_filters;
+  if (!filters || Object.keys(filters).length === 0) {
+    return true; // No filters — event_name match is sufficient
+  }
+
+  for (const [key, expectedValue] of Object.entries(filters)) {
+    if (!(key in customData)) {
+      // Null-safe: field absent → no match
+      return false;
+    }
+    if (customData[key] !== expectedValue) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Identify-type event names
@@ -196,14 +373,7 @@ export async function processRawEvent(
   db: Db,
   _kv?: KvStore,
 ): Promise<
-  Result<
-    {
-      event_id: string;
-      dispatch_jobs_created: number;
-      dispatch_job_ids: { id: string; destination: string }[];
-    },
-    ProcessingError
-  >
+  Result<{ event_id: string; dispatch_jobs_created: number }, ProcessingError>
 > {
   // -------------------------------------------------------------------------
   // Step 1: Fetch raw_events row
@@ -235,7 +405,6 @@ export async function processRawEvent(
       value: {
         event_id: payloadEventId ?? raw_event_id,
         dispatch_jobs_created: 0,
-        dispatch_job_ids: [],
       },
     };
   }
@@ -275,10 +444,6 @@ export async function processRawEvent(
 
   const payload = parseResult.data;
 
-  // INV-TRACKER-003: visitor_id only present when consent_analytics='granted' (tracker enforces);
-  // processor accepts and persists whatever the tracker sends — null if absent
-  const visitorId: string | null = payload.visitor_id ?? null;
-
   // -------------------------------------------------------------------------
   // Step 3: Resolve lead identity
   //
@@ -293,6 +458,9 @@ export async function processRawEvent(
 
   let resolvedLeadId: string | null = payload.lead_id ?? null;
   let attributionWasRecorded = false;
+
+  // INV-TRACKER-003: visitor_id only present when consent_analytics='granted' (tracker enforces).
+  const visitorId: string | null = payload.visitor_id ?? null;
 
   const hasIdentifiers = Boolean(
     payload.email || payload.phone || payload.external_id,
@@ -394,8 +562,8 @@ export async function processRawEvent(
         customData: payload.custom_data as Record<string, unknown>,
         consentSnapshot: consentSnapshot as Record<string, unknown>,
         requestContext: payload.request_context as Record<string, unknown>,
-        processingStatus: 'accepted',
         isTest: payload.is_test,
+        processingStatus: 'accepted',
       })
       .returning({ id: events.id });
 
@@ -416,7 +584,6 @@ export async function processRawEvent(
         value: {
           event_id: payload.event_id,
           dispatch_jobs_created: 0,
-          dispatch_job_ids: [],
         },
       };
     }
@@ -433,15 +600,82 @@ export async function processRawEvent(
   }
 
   // -------------------------------------------------------------------------
-  // Step 6b: Retroactive backfill — link anonymous events to resolved lead_id
+  // Step 7: Insert lead_stages when applicable
   //
-  // INV-EVENT-007: events with valid lead_token have lead_id resolved by processor
+  // Dynamic blueprint lookup (Sprint 10 — T-FUNIL-012):
+  //   If launches.funnel_blueprint is set, iterate its stages and match by
+  //   source_events + optional source_event_filters (AND logic, null-safe).
+  //
+  // Fallback (backward-compat — launches without blueprint):
+  //   'Lead' | 'lead_identify' → stage='lead_identified', is_recurring=false
+  //   'Purchase'               → stage='purchased',       is_recurring=false
+  //
+  // Requires: resolvedLeadId + launch_id (both must be present for a stage row)
+  // -------------------------------------------------------------------------
+  if (resolvedLeadId && payload.launch_id) {
+    const blueprint = await getBlueprintForLaunch(payload.launch_id, db);
+
+    if (blueprint !== null) {
+      // Dynamic path: blueprint-driven stage resolution
+      // T-FUNIL-012: iterate stages and match by source_events + filters
+      for (const stage of blueprint.stages) {
+        const customData = payload.custom_data as Record<string, unknown>;
+        if (matchesStageFilters(payload.event_name, customData, stage)) {
+          await insertLeadStageIgnoreDuplicate(
+            {
+              workspaceId: rawEvent.workspaceId,
+              leadId: resolvedLeadId,
+              launchId: payload.launch_id,
+              stage: stage.slug,
+              isRecurring: stage.is_recurring,
+              sourceEventId: insertedEventId,
+            },
+            db,
+          );
+        }
+      }
+    } else {
+      // Fallback path: hardcoded stage rules for launches without a blueprint.
+      // NOTE: source_event_filters.funnel_role (used in blueprint path) only works
+      // when Sprint 11 (Phase 3) injects `funnel_role` into the event payload.
+      // Until then, both Purchase events (regardless of product) map to the generic
+      // 'purchased' stage via this fallback. This is intentional and backward-compatible.
+      if (LEAD_STAGE_IDENTIFY_EVENT_NAMES.has(payload.event_name)) {
+        await insertLeadStageIgnoreDuplicate(
+          {
+            workspaceId: rawEvent.workspaceId,
+            leadId: resolvedLeadId,
+            launchId: payload.launch_id,
+            stage: 'lead_identified',
+            isRecurring: false,
+            sourceEventId: insertedEventId,
+          },
+          db,
+        );
+      } else if (PURCHASE_EVENT_NAMES.has(payload.event_name)) {
+        await insertLeadStageIgnoreDuplicate(
+          {
+            workspaceId: rawEvent.workspaceId,
+            leadId: resolvedLeadId,
+            launchId: payload.launch_id,
+            stage: 'purchased',
+            isRecurring: false,
+            sourceEventId: insertedEventId,
+          },
+          db,
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 8: Retroactive visitor_id → lead_id backfill (INV-EVENT-007)
+  //
   // When a lead is resolved and the current event has a visitor_id, backfill
   // lead_id on prior anonymous events (lead_id IS NULL) sharing the same visitor_id.
+  // This links anonymous PageViews to the lead after identification.
   //
-  // Idempotency: WHERE lead_id IS NULL ensures re-executions are noop for already-linked rows.
-  // Non-fatal: backfill failure never blocks the main event processing — log and continue.
-  // INV-TRACKER-003: visitor_id is only present when consent_analytics='granted' (tracker enforces).
+  // INV-TRACKER-003: visitor_id is only present when consent_analytics='granted'.
   // -------------------------------------------------------------------------
   if (resolvedLeadId && visitorId) {
     try {
@@ -449,116 +683,33 @@ export async function processRawEvent(
         .update(events)
         .set({ leadId: resolvedLeadId })
         .where(
-          and(
-            eq(events.workspaceId, rawEvent.workspaceId),
-            eq(events.visitorId, visitorId),
-            isNull(events.leadId),
-          ),
+          sql`workspace_id = ${rawEvent.workspaceId}::uuid
+            AND lead_id IS NULL
+            AND visitor_id = ${visitorId}`,
         );
     } catch (backfillErr) {
-      // BR-PRIVACY-001: log only non-PII context — no visitor_id or lead_id values in message
       const backfillMsg =
         backfillErr instanceof Error
           ? backfillErr.message
           : String(backfillErr);
-      // eslint-disable-next-line no-console -- safeLog unavailable here; no PII in message
+      // BR-PRIVACY-001: log only non-PII context — no visitor_id or lead_id values in message
       console.error(
         `[visitor_id backfill failed] raw_event_id=${raw_event_id} err=${backfillMsg.slice(0, 200)}`,
       );
-      // Continue — event was already inserted successfully
     }
   }
 
   // -------------------------------------------------------------------------
-  // Step 7: Insert lead_stages when applicable
+  // Step 9: Create dispatch_jobs
   //
-  // Lead stage rules:
-  //   'Lead' | 'lead_identify' → stage='lead_identified', is_recurring=false
-  //   'Purchase'               → stage='purchased',       is_recurring=false
-  //
-  // Requires: resolvedLeadId + launch_id (both must be present for a stage row)
+  // OQ-011: dispatch_jobs creation requires integration config per workspace
+  // (table not yet implemented — Sprint 3+). Skip silently.
+  // dispatch_jobs_created = 0 until MOD-DISPATCH.createDispatchJobs() is wired.
   // -------------------------------------------------------------------------
-  if (resolvedLeadId && payload.launch_id) {
-    if (LEAD_STAGE_IDENTIFY_EVENT_NAMES.has(payload.event_name)) {
-      await insertLeadStageIgnoreDuplicate(
-        {
-          workspaceId: rawEvent.workspaceId,
-          leadId: resolvedLeadId,
-          launchId: payload.launch_id,
-          stage: 'lead_identified',
-          isRecurring: false,
-          sourceEventId: insertedEventId,
-        },
-        db,
-      );
-    } else if (PURCHASE_EVENT_NAMES.has(payload.event_name)) {
-      await insertLeadStageIgnoreDuplicate(
-        {
-          workspaceId: rawEvent.workspaceId,
-          leadId: resolvedLeadId,
-          launchId: payload.launch_id,
-          stage: 'purchased',
-          isRecurring: false,
-          sourceEventId: insertedEventId,
-        },
-        db,
-      );
-    }
-  }
+  const dispatchJobsCreated = 0;
 
   // -------------------------------------------------------------------------
-  // Step 8: Create dispatch_jobs per active integration in workspace config.
-  // BR-DISPATCH-001: idempotency_key prevents duplicate jobs on retry.
-  // -------------------------------------------------------------------------
-  const inputs: DispatchJobInput[] = [];
-
-  const [wsRow] = await db
-    .select({ config: workspaces.config })
-    .from(workspaces)
-    .where(eq(workspaces.id, rawEvent.workspaceId))
-    .limit(1);
-
-  const wsConfig = wsRow?.config as Record<string, unknown> | undefined;
-  const integrations = (wsConfig?.integrations ?? {}) as Record<string, unknown>;
-  const metaCfg = integrations.meta as Record<string, unknown> | undefined;
-  const ga4Cfg = integrations.ga4 as Record<string, unknown> | undefined;
-
-  if (metaCfg?.pixel_id) {
-    inputs.push({
-      workspace_id: rawEvent.workspaceId,
-      event_id: insertedEventId,
-      lead_id: resolvedLeadId,
-      destination: 'meta_capi' as const,
-      destination_account_id: metaCfg.pixel_id as string,
-      destination_resource_id: metaCfg.pixel_id as string,
-      payload: {},
-      max_attempts: 5,
-    });
-  }
-
-  if (ga4Cfg?.measurement_id) {
-    inputs.push({
-      workspace_id: rawEvent.workspaceId,
-      event_id: insertedEventId,
-      lead_id: resolvedLeadId,
-      destination: 'ga4_mp' as const,
-      destination_account_id: ga4Cfg.measurement_id as string,
-      destination_resource_id: ga4Cfg.measurement_id as string,
-      payload: {},
-      max_attempts: 5,
-    });
-  }
-
-  let createdJobs: { id: string; destination: string }[] = [];
-  if (inputs.length > 0) {
-    const jobs = await createDispatchJobs(inputs, db);
-    createdJobs = jobs.map((j) => ({ id: j.id, destination: j.destination }));
-  }
-
-  const dispatchJobsCreated = createdJobs.length;
-
-  // -------------------------------------------------------------------------
-  // Step 9: Mark raw_event as processed
+  // Step 10: Mark raw_event as processed
   // -------------------------------------------------------------------------
   await markRawEventProcessed(raw_event_id, db);
 
@@ -567,7 +718,6 @@ export async function processRawEvent(
     value: {
       event_id: payload.event_id,
       dispatch_jobs_created: dispatchJobsCreated,
-      dispatch_job_ids: createdJobs,
     },
   };
 }
@@ -676,5 +826,13 @@ async function insertLeadStageIgnoreDuplicate(
 // Exported helpers (useful for tests)
 // ---------------------------------------------------------------------------
 
-export { UserDataSchema, ConsentSnapshotSchema, RawEventPayloadSchema };
-export type { RawEventPayload };
+export {
+  UserDataSchema,
+  ConsentSnapshotSchema,
+  RawEventPayloadSchema,
+  FunnelBlueprintSchema,
+  blueprintCache,
+  getBlueprintForLaunch,
+  matchesStageFilters,
+};
+export type { RawEventPayload, FunnelBlueprint };
