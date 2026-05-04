@@ -1,25 +1,32 @@
 /**
- * events.ts — Sub-router for POST /v1/events.
+ * events.ts — Sub-router for POST /v1/events and GET /v1/events.
  *
  * CONTRACT-id: CONTRACT-api-events-v1
- * T-ID: T-1-017, T-2-010
+ * T-ID: T-1-017, T-2-010, T-FUNIL-004
  *
  * Model: "fast accept" (ADR-004).
- * Validates → replay protection → lead_token HMAC → insert raw_events → enqueue → 202.
+ * POST: Validates → replay protection → lead_token HMAC → insert raw_events → enqueue → 202.
+ * GET:  Validates query params → workspace isolation → paginated event list → 200.
  * No synchronous normalisation; ingestion processor handles raw_events async.
  *
- * Middleware applied before this handler (from index.ts):
+ * Middleware applied before POST handler (from index.ts):
  *   auth-public-token          → sets workspace_id, page_id, request_id
  *   cors                       → validates Origin against allowed_domains
  *   rate-limit                 → sliding window via KV (100 req/min/workspace)
  *   sanitize-logs              → global; sets X-Request-Id
  *   lead-token-validate (T-2-010) → injects lead_id from __ftk cookie when valid
  *
+ * GET /v1/events — Control Plane query:
+ *   Auth: Bearer token (Authorization header) — workspace_id from context or DEV_WORKSPACE_ID.
+ *   Isolation: launch must belong to the authenticated workspace (404 if not).
+ *   Pagination: cursor-based (created_at ISO string of last item).
+ *
  * BRs applied:
  *   BR-EVENT-002: event_time clamped (not future, not past > window)
  *   BR-EVENT-003: (event_id, workspace_id) unique — replay protection via KV
  *   BR-EVENT-004: lead_token HMAC validated when present
  *   BR-PRIVACY-001: zero PII in logs and error responses
+ *   BR-RBAC-002: workspace_id isolation enforced on GET
  *   INV-EVENT-002: clampEventTime applied before raw_events insert
  *   INV-EVENT-003: KV replay check before insert; duplicate_accepted returned
  *   INV-EVENT-005: raw_events insert awaited before 202 (when DB available)
@@ -30,17 +37,30 @@
  * testable without a real DB binding.
  */
 
-import { createDb, rawEvents } from '@globaltracker/db';
+import { events, createDb, launches, rawEvents } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
-import { sql } from 'drizzle-orm';
+import { and, count, eq, lt, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { z } from 'zod';
 import { clampEventTime } from '../lib/event-time-clamp.js';
-import { isTestModeRequest } from '../lib/test-mode.js';
 import { parseLeadToken, verifyLeadToken } from '../lib/lead-token.js';
 import { isReplay, markSeen } from '../lib/replay-protection.js';
+import { isTestModeRequest } from '../lib/test-mode.js';
 import { createLeadTokenValidateMiddleware } from '../middleware/lead-token-validate.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { EventPayloadSchema } from './schemas/event-payload.js';
+
+// ---------------------------------------------------------------------------
+// GET /v1/events — query schema (T-FUNIL-004)
+// ---------------------------------------------------------------------------
+
+const EventsQuerySchema = z
+  .object({
+    launch_id: z.string().uuid(),
+    limit: z.coerce.number().min(1).max(200).default(50),
+    cursor: z.string().optional(), // ISO timestamp of last item from previous page
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +76,8 @@ type AppBindings = {
   DATABASE_URL?: string;
   /** HMAC secret for lead_token verification. Injected as Worker secret. */
   LEAD_TOKEN_SECRET?: string;
+  /** Dev shortcut: fixed workspace_id for local dev. Used by GET /v1/events. */
+  DEV_WORKSPACE_ID?: string;
 };
 
 type AppVariables = {
@@ -103,6 +125,166 @@ export function createEventsRoute(
   // Injects lead_id when __ftk cookie is present and valid.
   // Anonymous events (no cookie or invalid cookie) pass through unblocked.
   router.use('/', createLeadTokenValidateMiddleware(db));
+
+  // -------------------------------------------------------------------------
+  // GET /v1/events — Control Plane: paginated event list for a launch.
+  // T-FUNIL-004
+  //
+  // Auth: Bearer token required (Authorization header).
+  // Workspace isolation: launch must belong to the authenticated workspace.
+  // BR-RBAC-002: workspace_id from context (auth-cp) or DEV_WORKSPACE_ID (local dev).
+  // BR-PRIVACY-001: zero PII in logs and error responses.
+  // Pagination: cursor-based on created_at (ISO string).
+  // -------------------------------------------------------------------------
+  router.get('/', async (c) => {
+    const requestId =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    // Auth: Bearer token required
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return c.json(
+        {
+          code: 'unauthorized',
+          message: 'Missing authorization',
+          request_id: requestId,
+        },
+        401,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // BR-RBAC-002: workspace_id from context (injected by auth middleware) or dev fallback
+    const workspaceId =
+      (c.get('workspace_id') as string | undefined) ??
+      (c.env as AppBindings & { DEV_WORKSPACE_ID?: string }).DEV_WORKSPACE_ID;
+
+    if (!workspaceId) {
+      return c.json(
+        {
+          code: 'unauthorized',
+          message: 'Missing workspace context',
+          request_id: requestId,
+        },
+        401,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // Validate query params
+    const rawQuery = {
+      launch_id: c.req.query('launch_id'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+    };
+    // Remove undefined keys so Zod .strict() does not reject them
+    const queryInput = Object.fromEntries(
+      Object.entries(rawQuery).filter(([, v]) => v !== undefined),
+    );
+
+    const parsed = EventsQuerySchema.safeParse(queryInput);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: 'validation_error',
+          message: 'Invalid query parameters',
+          details: parsed.error.flatten().fieldErrors,
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const { launch_id: launchId, limit, cursor } = parsed.data;
+
+    const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+    const dbConn = createDb(connString);
+
+    // Workspace isolation: verify launch belongs to the workspace
+    // BR-RBAC-002: reject with 404 (not 403) to avoid leaking existence
+    const launchRows = await dbConn
+      .select({ id: launches.id })
+      .from(launches)
+      .where(
+        and(eq(launches.id, launchId), eq(launches.workspaceId, workspaceId)),
+      )
+      .limit(1);
+
+    if (!launchRows[0]) {
+      return c.json(
+        {
+          code: 'launch_not_found',
+          message: 'Launch not found',
+          request_id: requestId,
+        },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // Build WHERE conditions: always filter by launchId; add cursor if present
+    const whereConditions = cursor
+      ? and(
+          eq(events.launchId, launchId),
+          lt(events.createdAt, new Date(cursor)),
+        )
+      : eq(events.launchId, launchId);
+
+    // Fetch events (ordered by created_at DESC, cursor-paginated)
+    const rows = await dbConn
+      .select({
+        id: events.id,
+        eventName: events.eventName,
+        createdAt: events.createdAt,
+        leadId: events.leadId,
+        pageId: events.pageId,
+        launchId: events.launchId,
+      })
+      .from(events)
+      .where(whereConditions)
+      .orderBy(sql`${events.createdAt} DESC`)
+      .limit(limit);
+
+    // COUNT total for this launch (without cursor — full count)
+    const [countRow] = await dbConn
+      .select({ total: count() })
+      .from(events)
+      .where(eq(events.launchId, launchId));
+
+    const total = countRow?.total ?? 0;
+
+    // next_cursor: ISO string of createdAt of last row returned when page is full
+    const lastRow = rows[rows.length - 1];
+    const nextCursor =
+      rows.length === limit && lastRow ? lastRow.createdAt.toISOString() : null;
+
+    safeLog('info', {
+      event: 'events_list_queried',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      launch_id: launchId,
+      count: rows.length,
+    });
+
+    // BR-PRIVACY-001: lead_id in response is the internal UUID — not PII in clear
+    return c.json(
+      {
+        events: rows.map((row) => ({
+          id: row.id,
+          event_name: row.eventName,
+          created_at: row.createdAt.toISOString(),
+          lead_public_id: row.leadId ?? null,
+          page_id: row.pageId ?? null,
+          launch_id: row.launchId ?? null,
+        })),
+        total,
+        next_cursor: nextCursor,
+      },
+      200,
+      { 'X-Request-Id': requestId },
+    );
+  });
 
   router.post('/', async (c) => {
     const requestId = c.get('request_id');
@@ -316,17 +498,21 @@ export function createEventsRoute(
     } else {
       // No external insertRawEvent injected — use inline DB (INV-EVENT-005).
       try {
-        const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+        const connString =
+          c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
         const db = createDb(connString);
-        const [inserted] = await db.insert(rawEvents).values({
-          workspaceId,
-          pageId,
-          payload: rawPayload,
-          headersSanitized: {
-            origin: c.req.header('origin') ?? null,
-            cf_ray: c.req.header('cf-ray') ?? null,
-          },
-        }).returning({ id: rawEvents.id });
+        const [inserted] = await db
+          .insert(rawEvents)
+          .values({
+            workspaceId,
+            pageId,
+            payload: rawPayload,
+            headersSanitized: {
+              origin: c.req.header('origin') ?? null,
+              cf_ray: c.req.header('cf-ray') ?? null,
+            },
+          })
+          .returning({ id: rawEvents.id });
         rawEventId = inserted?.id;
       } catch (err) {
         safeLog('error', {
@@ -343,7 +529,8 @@ export function createEventsRoute(
     try {
       const promotePromise = (async () => {
         try {
-          const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+          const connString =
+            c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
           const dbForLaunch = createDb(connString);
           await dbForLaunch.execute(sql`
             UPDATE launches SET status = 'live'
@@ -351,7 +538,11 @@ export function createEventsRoute(
               AND status = 'configuring'
           `);
         } catch (err) {
-          safeLog('warn', { event: 'launch_auto_promote_failed', request_id: requestId, error_type: err instanceof Error ? err.constructor.name : 'unknown' });
+          safeLog('warn', {
+            event: 'launch_auto_promote_failed',
+            request_id: requestId,
+            error_type: err instanceof Error ? err.constructor.name : 'unknown',
+          });
         }
       })();
       c.executionCtx.waitUntil(promotePromise);

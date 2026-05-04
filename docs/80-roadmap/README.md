@@ -15,6 +15,10 @@ Sprints com T-IDs e ondas de paralelização.
 | `06-sprint-6-control-plane.md` | Fase 4 — UI operacional |
 | `07-sprint-7-orchestrator.md` | Fase 5 — Trigger.dev jobs, LP templates, provisioning assistido |
 | `08-sprint-8-ai-dashboard.md` | Fase 6 — Copy/LP Generator + dashboard custom Next.js |
+| `09-sprint-9-funil-ux-hardening.md` | Funil Configurável Fase 1 — UX Hardening: expor page.role, event_config, launch.type pela UI |
+| `10-sprint-10-funil-templates-scaffolding.md` | Funil Configurável Fase 2 — Templates + Scaffolding: 4 presets, blueprint, stages editáveis |
+| `11-sprint-11-funil-webhook-guru.md` | Funil Configurável Fase 3 — Webhook Guru contextualizado por launch + funnel_role |
+| `12-sprint-12-webhooks-hotmart-kiwify-stripe.md` | Webhooks Hotmart, Kiwify, Stripe (realocado após entrega dos funis) |
 | `97-ownership-matrix.md` | Quais arquivos cada módulo possui (consolidado de todos MOD-*) |
 | `98-test-matrix-by-sprint.md` | Quais testes em cada sprint, ligados a BR e FLOW |
 | `99-acceptance-criteria-by-sprint.md` | Critério de aceite global por sprint |

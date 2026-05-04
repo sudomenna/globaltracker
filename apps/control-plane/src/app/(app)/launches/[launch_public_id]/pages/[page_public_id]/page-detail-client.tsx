@@ -21,10 +21,29 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Check, Clipboard, Copy, Eye, EyeOff, RefreshCw } from 'lucide-react';
+import type { EventConfig } from '@/lib/page-role-defaults';
+import {
+  Check,
+  Clipboard,
+  Copy,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Save,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { DiagnosticsPanel } from './diagnostics-panel';
+
+const CANONICAL_EVENT_OPTIONS = [
+  'PageView',
+  'Lead',
+  'ViewContent',
+  'InitiateCheckout',
+  'Purchase',
+  'Contact',
+  'CompleteRegistration',
+] as const;
 
 interface PageStatus {
   page_public_id: string;
@@ -47,6 +66,7 @@ interface Props {
   pagePublicId: string;
   accessToken: string;
   initialStatus: PageStatus | null;
+  initialEventConfig?: EventConfig | null;
 }
 
 function buildHeadSnippet(
@@ -91,6 +111,7 @@ export function PageDetailClient({
   pagePublicId,
   accessToken,
   initialStatus,
+  initialEventConfig,
 }: Props) {
   const [tokenVisible, setTokenVisible] = useState(false);
   // pageToken: loaded from localStorage (saved on creation/rotation) or set after rotation.
@@ -105,6 +126,18 @@ export function PageDetailClient({
   const [rotateConfirmInput, setRotateConfirmInput] = useState('');
   const [isRotating, setIsRotating] = useState(false);
   const [rotateError, setRotateError] = useState<string | null>(null);
+  const [eventConfig, setEventConfig] = useState<EventConfig>(() => ({
+    canonical: initialEventConfig?.canonical ?? [],
+    custom: initialEventConfig?.custom ?? [],
+  }));
+  const [customEventsText, setCustomEventsText] = useState(() =>
+    (initialEventConfig?.custom ?? []).join('\n'),
+  );
+  const [isSavingEventConfig, setIsSavingEventConfig] = useState(false);
+  const [eventConfigSaveError, setEventConfigSaveError] = useState<
+    string | null
+  >(null);
+  const [eventConfigSaved, setEventConfigSaved] = useState(false);
   const statusLiveRegionRef = useRef<HTMLSpanElement>(null);
   const snippetSectionRef = useRef<HTMLDivElement>(null);
 
@@ -192,6 +225,56 @@ export function PageDetailClient({
 
   const rotateConfirmPhrase = `ROTACIONAR ${pagePublicId.toUpperCase()}`;
   const canConfirmRotate = rotateConfirmInput === rotateConfirmPhrase;
+
+  function handleCanonicalToggle(eventName: string) {
+    setEventConfig((prev) => {
+      const has = prev.canonical.includes(eventName);
+      return {
+        ...prev,
+        canonical: has
+          ? prev.canonical.filter((e) => e !== eventName)
+          : [...prev.canonical, eventName],
+      };
+    });
+  }
+
+  function handleCustomEventsChange(text: string) {
+    setCustomEventsText(text);
+    const custom = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => (line.startsWith('custom:') ? line : `custom:${line}`));
+    setEventConfig((prev) => ({ ...prev, custom }));
+  }
+
+  async function handleSaveEventConfig() {
+    setIsSavingEventConfig(true);
+    setEventConfigSaveError(null);
+    setEventConfigSaved(false);
+
+    const res = await fetch(`${baseUrl}/v1/pages/${pagePublicId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ event_config: eventConfig }),
+    });
+
+    setIsSavingEventConfig(false);
+
+    if (!res.ok) {
+      const errorId = res.headers.get('X-Request-Id') ?? 'desconhecido';
+      setEventConfigSaveError(
+        `Falha ao salvar configuração. ID do erro: ${errorId}`,
+      );
+      return;
+    }
+
+    setEventConfigSaved(true);
+    setTimeout(() => setEventConfigSaved(false), 2_000);
+  }
 
   function handleScrollToSnippet() {
     snippetSectionRef.current?.scrollIntoView({
@@ -415,7 +498,9 @@ export function PageDetailClient({
       {/* Snippet do body — captura de leads do formulário */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Captura de leads do formulário</CardTitle>
+          <CardTitle className="text-base">
+            Captura de leads do formulário
+          </CardTitle>
           <CardDescription>
             Cole antes do{' '}
             <code className="font-mono text-xs bg-muted px-1 rounded">
@@ -426,13 +511,18 @@ export function PageDetailClient({
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="space-y-1">
-            <label htmlFor="form-selector-detail" className="text-xs font-medium text-muted-foreground">
+            <label
+              htmlFor="form-selector-detail"
+              className="text-xs font-medium text-muted-foreground"
+            >
               Seletor CSS do formulário
             </label>
             <input
               id="form-selector-detail"
               value={formSelector}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFormSelector(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setFormSelector(e.target.value)
+              }
               placeholder="form, #meu-form, .form-captura"
               className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
@@ -449,7 +539,9 @@ export function PageDetailClient({
             variant="outline"
             size="sm"
             onClick={async () => {
-              await navigator.clipboard.writeText(buildBodySnippet(formSelector));
+              await navigator.clipboard.writeText(
+                buildBodySnippet(formSelector),
+              );
               setBodyCopied(true);
               setTimeout(() => setBodyCopied(false), 2_000);
             }}
@@ -465,6 +557,92 @@ export function PageDetailClient({
               <>
                 <Copy className="h-4 w-4" aria-hidden="true" />
                 Copiar script
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Configuração de eventos */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Configuração de eventos</CardTitle>
+          <CardDescription>
+            Selecione quais eventos canônicos esta página deve disparar e
+            adicione eventos customizados se necessário.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <fieldset>
+            <legend className="text-sm font-medium mb-2">
+              Eventos canônicos
+            </legend>
+            <div className="space-y-2">
+              {CANONICAL_EVENT_OPTIONS.map((eventName) => (
+                <label
+                  key={eventName}
+                  className="flex items-center gap-2 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={eventConfig.canonical.includes(eventName)}
+                    onChange={() => handleCanonicalToggle(eventName)}
+                    className="rounded border-gray-300"
+                  />
+                  <span className="text-sm font-mono">{eventName}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor="custom-events-config"
+              className="text-sm font-medium"
+            >
+              Eventos customizados{' '}
+              <span className="font-normal text-muted-foreground">
+                (opcional)
+              </span>
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Um evento por linha. O prefixo{' '}
+              <code className="font-mono text-xs bg-muted px-1 rounded">
+                custom:
+              </code>{' '}
+              é adicionado automaticamente.
+            </p>
+            <textarea
+              id="custom-events-config"
+              rows={3}
+              value={customEventsText}
+              onChange={(e) => handleCustomEventsChange(e.target.value)}
+              placeholder="watched_class_1&#10;quiz_completed"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none"
+            />
+          </div>
+
+          {eventConfigSaveError && (
+            <p className="text-sm text-destructive">{eventConfigSaveError}</p>
+          )}
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleSaveEventConfig}
+            disabled={isSavingEventConfig}
+            className="gap-1.5"
+          >
+            {eventConfigSaved ? (
+              <>
+                <Check className="h-4 w-4" aria-hidden="true" />
+                Salvo!
+              </>
+            ) : (
+              <>
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {isSavingEventConfig ? 'Salvando...' : 'Salvar configuração'}
               </>
             )}
           </Button>

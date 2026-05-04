@@ -16,6 +16,7 @@ Cada arquivo do repositório pertence a exatamente um módulo. Detalhe por módu
 | `packages/db/src/schema/lead*.ts` | MOD-IDENTITY | qualquer |
 | `packages/db/src/schema/{event,raw_event}.ts` | MOD-EVENT | qualquer |
 | `packages/db/src/schema/lead_stage.ts` | MOD-FUNNEL | qualquer |
+| `packages/db/src/schema/funnel_template.ts` | MOD-FUNNEL | qualquer |
 | `packages/db/src/schema/{link,link_click,lead_attribution}.ts` | MOD-ATTRIBUTION | qualquer |
 | `packages/db/src/schema/dispatch_*.ts` | MOD-DISPATCH | qualquer |
 | `packages/db/src/schema/audience*.ts` | MOD-AUDIENCE | qualquer |
@@ -36,6 +37,13 @@ Cada arquivo do repositório pertence a exatamente um módulo. Detalhe por módu
 | `apps/edge/src/lib/{lead-resolver,lead-token,pii,consent,cookies,erasure}.ts` | MOD-IDENTITY | qualquer |
 | `apps/edge/src/lib/{raw-events-processor,event-time-clamp,replay-protection}.ts` | MOD-EVENT | qualquer |
 | `apps/edge/src/lib/funnel.ts` | MOD-FUNNEL | qualquer |
+| `apps/edge/src/lib/funnel-scaffolder.ts` | MOD-FUNNEL | qualquer |
+| `apps/edge/src/lib/guru-launch-resolver.ts` | MOD-FUNNEL | qualquer |
+| `apps/edge/src/routes/funnel-templates.ts` | MOD-FUNNEL | qualquer |
+| `apps/edge/src/routes/workspace-config.ts` | MOD-WORKSPACE | qualquer |
+| `packages/shared/src/schemas/funnel-blueprint.ts` | MOD-FUNNEL | qualquer |
+| `apps/control-plane/src/lib/page-role-defaults.ts` | MOD-PAGE | qualquer |
+| `apps/control-plane/src/app/(app)/launches/[id]/funnel/**` | MOD-FUNNEL | qualquer |
 | `apps/edge/src/lib/attribution.ts` | MOD-ATTRIBUTION | qualquer |
 | `apps/edge/src/lib/{dispatch,idempotency}.ts` | MOD-DISPATCH | qualquer |
 | `apps/edge/src/lib/fx.ts` | MOD-COST | qualquer |

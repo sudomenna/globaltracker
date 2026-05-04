@@ -81,6 +81,40 @@
 - [ ] LP gerada por IA passa em smoke E2E.
 - [ ] Dashboard custom mostra métricas em tempo real (latência < 5s).
 
+## Sprint 9 — Funil Configurável: UX Hardening (Fase 1)
+
+- [ ] Form de launch expõe `type`, `objective`, `start_date`/`end_date`; valores persistem em `launches.config`.
+- [ ] Form de page expõe seletor `role` com pré-população de `event_config` por role.
+- [ ] Painel "Configuração de eventos" no page detail permite editar e salvar `event_config`.
+- [ ] Launch detail refatorado em tabs (Overview, Pages, Eventos, Audiences, Performance); chip de role visível na tab Pages.
+- [ ] `GET /v1/events?launch_id=` retorna eventos do launch com workspace isolation.
+
+## Sprint 10 — Funil Configurável: Templates + Scaffolding (Fase 2)
+
+- [ ] Migration `0029_funnel_templates` aplicada; tabela `funnel_templates` + colunas `launches.funnel_template_id` e `launches.funnel_blueprint` criadas.
+- [ ] `GET /v1/funnel-templates` retorna os 4 presets globais.
+- [ ] `POST /v1/launches` com `funnel_template_slug` scaffolda pages + audiences automaticamente.
+- [ ] `raw-events-processor` usa `funnel_blueprint.stages` do launch (com fallback hardcoded se blueprint ausente).
+- [ ] `source_event_filters: { funnel_role: 'workshop' }` distingue stage `purchased_workshop` de `purchased_main`.
+- [ ] UI de edição de stages permite renomear label; processor usa o label atualizado.
+
+## Sprint 11 — Funil Configurável: Webhook Guru Contextualizado (Fase 3)
+
+- [ ] `guru-launch-resolver.ts` resolve launch_id + funnel_role por product_id (mapping explícito ou fallback last_attribution).
+- [ ] Cada estratégia de resolução registrada em `audit_log`.
+- [ ] `PATCH /v1/workspace/config` operacional com JSONB merge seguro.
+- [ ] UI de mapeamento Guru no launch detail (tab Overview) permite cadastrar/editar product↔launch+funnel_role.
+- [ ] Webhook Guru Purchase com product mapeado → stage correto (`purchased_workshop` ou `purchased_main`).
+- [ ] Cenário E2E Funil B completo verde (sequência 8 eventos conforme `11-sprint-11-funil-webhook-guru.md §Verificação E2E`).
+
+## Sprint 12 — Webhooks Hotmart, Kiwify, Stripe
+
+- [ ] Adapter Hotmart: `X-Hotmart-Hottok` signature validation + mapper + fixtures.
+- [ ] Adapter Kiwify: HMAC-SHA256 validation (`X-Kiwify-Signature`) + mapper + fixtures.
+- [ ] Adapter Stripe: `constructEvent` raw body + tolerância 5min (ADR-022) + mapper + fixtures.
+- [ ] FLOW-04 (Purchase via webhook) E2E verde para os três provedores.
+- [ ] Smoke em produção com webhook test mode de cada provedor.
+
 ## Política
 
 Sprint não é considerado completo até **todos** os critérios de aceite globais estarem [x]. OPERATOR (ou tech lead) marca após validação. ADR de exceção se algum item for adiado para sprint posterior.

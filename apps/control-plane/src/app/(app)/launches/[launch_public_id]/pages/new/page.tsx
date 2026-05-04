@@ -8,6 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import {
+  type EventConfig,
+  PAGE_ROLES,
+  PAGE_ROLE_DEFAULT_EVENT_CONFIG,
+  type PageRole,
+} from '@/lib/page-role-defaults';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle, Plus, X } from 'lucide-react';
@@ -25,15 +31,31 @@ const newPageSchema = z.object({
     .array(z.object({ value: z.string().min(1, 'Domínio é obrigatório') }))
     .min(1, 'Adicione ao menos um domínio'),
   tracking_mode: z.enum(['all_events', 'purchase_only']),
+  role: z
+    .enum(['capture', 'sales', 'checkout', 'thankyou', 'webinar', 'survey'])
+    .optional(),
   custom_events: z.string().optional(),
 });
 
 type NewPageFormValues = z.infer<typeof newPageSchema>;
 
+const PAGE_ROLE_LABELS: Record<PageRole, string> = {
+  capture: 'Captura',
+  sales: 'Vendas',
+  checkout: 'Checkout',
+  thankyou: 'Obrigado',
+  webinar: 'Webinar',
+  survey: 'Pesquisa',
+};
+
 export default function NewPagePage() {
   const params = useParams<{ launch_public_id: string }>();
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
+  const [eventConfig, setEventConfig] = useState<EventConfig>({
+    canonical: [],
+    custom: [],
+  });
 
   const {
     register,
@@ -52,6 +74,15 @@ export default function NewPagePage() {
     control,
     name: 'allowed_domains',
   });
+
+  function handleRoleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const role = e.target.value as PageRole;
+    if (role && PAGE_ROLE_DEFAULT_EVENT_CONFIG[role]) {
+      setEventConfig(PAGE_ROLE_DEFAULT_EVENT_CONFIG[role]);
+    } else {
+      setEventConfig({ canonical: [], custom: [] });
+    }
+  }
 
   async function onSubmit(values: NewPageFormValues) {
     setServerError(null);
@@ -79,6 +110,8 @@ export default function NewPagePage() {
           name: values.name,
           allowed_domains: values.allowed_domains.map((d) => d.value),
           tracking_mode: values.tracking_mode,
+          role: values.role ?? null,
+          event_config: eventConfig,
           custom_events: values.custom_events
             ? values.custom_events
                 .split('\n')
@@ -118,22 +151,68 @@ export default function NewPagePage() {
           <CardHeader>
             <CardTitle className="text-base">Identificação</CardTitle>
           </CardHeader>
-          <CardContent>
-            <label htmlFor="name" className="block text-sm font-medium mb-1.5">
-              Nome
-            </label>
-            <input
-              id="name"
-              type="text"
-              placeholder="Ex: Captura V1"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              {...register('name')}
-            />
-            {errors.name && (
-              <p className="text-sm text-destructive mt-1.5">
-                {errors.name.message}
-              </p>
-            )}
+          <CardContent className="space-y-4">
+            <div>
+              <label
+                htmlFor="name"
+                className="block text-sm font-medium mb-1.5"
+              >
+                Nome
+              </label>
+              <input
+                id="name"
+                type="text"
+                placeholder="Ex: Captura V1"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                {...register('name')}
+              />
+              {errors.name && (
+                <p className="text-sm text-destructive mt-1.5">
+                  {errors.name.message}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label
+                htmlFor="role"
+                className="block text-sm font-medium mb-1.5"
+              >
+                Tipo de página{' '}
+                <span className="font-normal text-muted-foreground">
+                  (opcional)
+                </span>
+              </label>
+              <select
+                id="role"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                {...register('role')}
+                onChange={(e) => {
+                  register('role').onChange(e);
+                  handleRoleChange(e);
+                }}
+              >
+                <option value="">Selecione um tipo...</option>
+                {PAGE_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {PAGE_ROLE_LABELS[r]}
+                  </option>
+                ))}
+              </select>
+              {errors.role && (
+                <p className="text-sm text-destructive mt-1.5">
+                  {errors.role.message}
+                </p>
+              )}
+              {eventConfig.canonical.length > 0 && (
+                <p className="text-xs text-muted-foreground mt-1.5">
+                  Eventos pré-configurados:{' '}
+                  <span className="font-medium">
+                    {eventConfig.canonical.join(', ')}
+                  </span>
+                </p>
+              )}
+            </div>
           </CardContent>
         </Card>
 
