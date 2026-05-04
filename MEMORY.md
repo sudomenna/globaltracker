@@ -56,40 +56,32 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 
 - **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe. Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
 
-### O que foi entregue nos Sprints 9 e 10
+### O que foi entregue no Sprint 11
 
-**Sprint 9 (T-FUNIL-001..007):**
-- UI de criação de launch com type/objective/dates
-- Page role defaults + EventConfig schema (`{ canonical, custom }`)
-- Tab Eventos no launch detail com GET /v1/events?launch_id + autorefresh
-- Auditoria corrigiu: launch_id aceita slug (não UUID), campo `lead_id` na resposta
+**Sprint 11 (T-FUNIL-020..026):**
+- `guru-launch-resolver.ts`: 3 estratégias de resolução (mapping → last_attribution → none) + safeLog
+- `PATCH /v1/workspace/config`: merge seguro JSONB + fallback `db.insert(auditLog)` em produção
+- `webhooks/guru.ts`: integração do resolver → `launch_id` + `funnel_role` injetados no raw_event.payload
+- CP: painel "Mapeamento Guru" na tab Overview do launch detail (`<dialog>` nativo, CRUD)
+- 30 novos testes (unit + integration fase-3)
+- 4 docs atualizados (guru-webhook, api-contracts, mod-funnel, mod-workspace)
 
-**Sprint 10 (T-FUNIL-010..017):**
-- Migration 0029: tabela `funnel_templates` + `launches.funnel_blueprint` + `launches.funnel_template_id`
-- 4 presets globais (`lancamento_gratuito_3_aulas`, `lancamento_pago_workshop_com_main_offer`, `lancamento_pago_workshop_apenas`, `evergreen_direct_sale`)
-- `GET /v1/funnel-templates` + `GET /v1/funnel-templates/:slug`
-- `funnel-scaffolder.ts`: `scaffoldLaunch()` — pages + audiences em transação, idempotente
-- `POST /v1/launches` aceita `funnel_template_slug` → scaffold via `waitUntil`
-- `PATCH /v1/launches/:id` — atualiza `funnel_blueprint`
-- `GET /v1/launches` agora inclui `funnel_blueprint`
-- `raw-events-processor`: cache de blueprint (60s TTL) + `matchesStageFilters()` + fallback hardcoded
-- CP: seletor de template (4 cards) no form de criação + tab Funil + `/funnel` editor de stages
-
-### Pendências técnicas (não bloqueiam Sprint 11)
+### Pendências técnicas (não bloqueiam Sprint 12)
 
 | Item | Detalhe |
 |---|---|
 | `tracker.js` CDN | Servir `apps/tracker/dist/tracker.js` via CF Worker dedicado |
 | `auth-cp.ts` JWT | `DEV_WORKSPACE_ID` hardcoded em dev. Prod precisa JWT validation |
 | GA4 `no_client_id` | GA4 requer `_ga` cookie — leads sem browser não têm client_id. OQ-012 aberta |
-| TS pré-existentes CP | 3 erros em `layout.tsx` / `use-workspace.ts` (Supabase relation type inference) |
+| TS pré-existentes CP | 2 erros em `layout.tsx` / `use-workspace.ts` (Supabase relation type inference) |
+| Secrets produção | Não deployados — bloqueia prod |
 
 ### Pendências operacionais
 
 | Item | Status |
 |---|---|
-| Secrets produção (todos os sprints) | não deployados — ver lista completa na última sessão |
-| Migration 0029 Supabase | ✅ aplicada (supabase db push 2026-05-04) |
+| Secrets produção (todos os sprints) | não deployados |
+| Migrations 0000–0029 Supabase | ✅ aplicadas |
 
 ### Notas técnicas invariantes
 
@@ -110,10 +102,10 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 
 ```
 1. Ler este §5
-2. git log -5 + git status (confirmar branch main + commit ac93148)
-3. Abrir docs/80-roadmap/11-sprint-11-funil-webhook-guru.md
+2. git log -5 + git status (confirmar branch main + commit 353c18a)
+3. Abrir docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md
 4. pnpm typecheck && pnpm test (verde exceto 1 pré-existente)
-5. Decompor Sprint 11 por onda, conforme CLAUDE.md §3
+5. Decompor Sprint 12 por onda, conforme CLAUDE.md §3
 ```
 
 ## §6 Ambiente operacional
@@ -122,7 +114,7 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `ac93148` |
+| Último commit | `353c18a` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
