@@ -11,6 +11,47 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
+// ─── Template presets ────────────────────────────────────────────────────────
+
+const TEMPLATE_PRESETS = [
+  {
+    slug: 'lancamento_gratuito_3_aulas',
+    name: 'Lançamento Gratuito (3 aulas)',
+    description: 'Lead → WhatsApp → 3 aulas → Checkout → Compra',
+    stages: 7,
+    pages: 3,
+    audiences: 4,
+  },
+  {
+    slug: 'lancamento_pago_workshop_com_main_offer',
+    name: 'Workshop Pago + Main Offer',
+    description: 'Workshop pago com upsell para oferta principal',
+    stages: 10,
+    pages: 4,
+    audiences: 5,
+  },
+  {
+    slug: 'lancamento_pago_workshop_apenas',
+    name: 'Workshop Pago (apenas)',
+    description: 'Lançamento com workshop pago sem main offer',
+    stages: 5,
+    pages: 3,
+    audiences: 3,
+  },
+  {
+    slug: 'evergreen_direct_sale',
+    name: 'Evergreen / Venda Direta',
+    description: 'Funil simples: acesso → checkout → compra',
+    stages: 2,
+    pages: 3,
+    audiences: 2,
+  },
+] as const;
+
+type TemplateSlug = (typeof TEMPLATE_PRESETS)[number]['slug'];
+
+// ─── Slugify ─────────────────────────────────────────────────────────────────
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -22,6 +63,8 @@ function slugify(name: string): string {
     .replace(/-+/g, '-')
     .slice(0, 60);
 }
+
+// ─── Launch types ─────────────────────────────────────────────────────────────
 
 const LAUNCH_TYPES = [
   { value: 'lancamento_gratuito', label: 'Lançamento Gratuito' },
@@ -38,6 +81,8 @@ const TYPE_LABELS: Record<LaunchType, string> = {
   evergreen: 'Evergreen',
   outro: 'Outro',
 };
+
+// ─── Zod schema ───────────────────────────────────────────────────────────────
 
 const launchSchema = z
   .object({
@@ -74,6 +119,8 @@ const launchSchema = z
 
 type LaunchFormValues = z.infer<typeof launchSchema>;
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 interface LaunchConfig {
   type?: LaunchType;
   objective?: string;
@@ -91,6 +138,8 @@ interface Launch {
   config?: LaunchConfig;
 }
 
+// ─── Auth hook ────────────────────────────────────────────────────────────────
+
 function useAccessToken(): string {
   const [token, setToken] = useState('');
   useEffect(() => {
@@ -98,13 +147,15 @@ function useAccessToken(): string {
     if (match) {
       try {
         let raw = match[1];
-        if (raw.startsWith('base64-')) {
+        if (raw?.startsWith('base64-')) {
           raw = atob(raw.slice(7));
-        } else {
+        } else if (raw) {
           raw = decodeURIComponent(raw);
         }
-        const parsed = JSON.parse(raw) as { access_token?: string };
-        setToken(parsed?.access_token ?? '');
+        if (raw) {
+          const parsed = JSON.parse(raw) as { access_token?: string };
+          setToken(parsed?.access_token ?? '');
+        }
       } catch {
         setToken('');
       }
@@ -113,12 +164,89 @@ function useAccessToken(): string {
   return token;
 }
 
+// ─── Template selector (Step 0) ───────────────────────────────────────────────
+
+function TemplateSelector({
+  selected,
+  onSelect,
+  onContinue,
+  onCancel,
+}: {
+  selected: TemplateSlug | null;
+  onSelect: (slug: TemplateSlug | null) => void;
+  onContinue: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Escolha um template para pré-configurar o funil, ou comece em branco.
+      </p>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {/* Em branco */}
+        <button
+          type="button"
+          onClick={() => onSelect(null)}
+          className={`text-left rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            selected === null
+              ? 'border-primary bg-primary/5'
+              : 'border-border hover:border-muted-foreground/50'
+          }`}
+        >
+          <p className="text-sm font-medium">Em branco</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Configure o funil manualmente
+          </p>
+          <p className="text-xs text-muted-foreground mt-2 opacity-0 select-none">
+            ·
+          </p>
+        </button>
+
+        {TEMPLATE_PRESETS.map((t) => (
+          <button
+            key={t.slug}
+            type="button"
+            onClick={() => onSelect(t.slug)}
+            className={`text-left rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              selected === t.slug
+                ? 'border-primary bg-primary/5'
+                : 'border-border hover:border-muted-foreground/50'
+            }`}
+          >
+            <p className="text-sm font-medium">{t.name}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {t.description}
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              {t.stages} stages · {t.pages} pages · {t.audiences} audiências
+            </p>
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2 pt-2">
+        <Button type="button" onClick={onContinue}>
+          Continuar
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancelar
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Launch form (Step 1) ─────────────────────────────────────────────────────
+
 function LaunchForm({
   onSuccess,
   onCancel,
+  templateSlug,
 }: {
   onSuccess: (launch: Launch) => void;
   onCancel: () => void;
+  templateSlug?: TemplateSlug | null;
 }) {
   const accessToken = useAccessToken();
   const form = useForm<LaunchFormValues>({
@@ -165,6 +293,9 @@ function LaunchForm({
       if (Object.keys(config).length > 0) {
         payload.config = config;
       }
+      if (templateSlug) {
+        payload.funnel_template_slug = templateSlug;
+      }
 
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787'}/v1/launches`,
@@ -209,6 +340,16 @@ function LaunchForm({
       noValidate
       className="space-y-4"
     >
+      {templateSlug && (
+        <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+          Template:{' '}
+          <span className="font-medium text-foreground">
+            {TEMPLATE_PRESETS.find((t) => t.slug === templateSlug)?.name ??
+              templateSlug}
+          </span>
+        </div>
+      )}
+
       <div className="space-y-1">
         <label htmlFor="launch_name" className="text-sm font-medium">
           Nome
@@ -389,6 +530,8 @@ function LaunchForm({
   );
 }
 
+// ─── Status labels/colors ─────────────────────────────────────────────────────
+
 const STATUS_LABELS: Record<string, string> = {
   draft: 'Rascunho',
   configuring: 'Configurando',
@@ -401,8 +544,16 @@ const STATUS_COLORS: Record<string, string> = {
   live: 'text-green-700 bg-green-100',
 };
 
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+type DialogStep = 'template' | 'form';
+
 export default function LaunchesPage() {
   const [showForm, setShowForm] = useState(false);
+  const [dialogStep, setDialogStep] = useState<DialogStep>('template');
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateSlug | null>(
+    null,
+  );
   const [launches, setLaunches] = useState<Launch[]>([]);
   const [loading, setLoading] = useState(true);
   const accessToken = useAccessToken();
@@ -435,6 +586,18 @@ export default function LaunchesPage() {
     setShowForm(false);
   }
 
+  function openDialog() {
+    setDialogStep('template');
+    setSelectedTemplate(null);
+    setShowForm(true);
+  }
+
+  function closeDialog() {
+    setShowForm(false);
+    setDialogStep('template');
+    setSelectedTemplate(null);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -444,7 +607,7 @@ export default function LaunchesPage() {
             Gerencie seus lançamentos
           </p>
         </div>
-        <Button onClick={() => setShowForm(true)}>
+        <Button onClick={openDialog}>
           <Plus className="mr-2 h-4 w-4" aria-hidden="true" />
           Novo lançamento
         </Button>
@@ -469,11 +632,7 @@ export default function LaunchesPage() {
               <p className="text-sm text-muted-foreground">
                 Nenhum lançamento cadastrado ainda.
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowForm(true)}
-              >
+              <Button variant="outline" size="sm" onClick={openDialog}>
                 <Plus className="mr-2 h-3.5 w-3.5" aria-hidden="true" />
                 Criar primeiro lançamento
               </Button>
@@ -525,16 +684,16 @@ export default function LaunchesPage() {
           className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm m-0 p-0 w-full h-full max-w-none max-h-none border-0"
           aria-labelledby="new-launch-title"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setShowForm(false);
+            if (e.target === e.currentTarget) closeDialog();
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') setShowForm(false);
+            if (e.key === 'Escape') closeDialog();
           }}
         >
           <div className="relative w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg max-h-[90vh] overflow-y-auto">
             <button
               type="button"
-              onClick={() => setShowForm(false)}
+              onClick={closeDialog}
               className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               aria-label="Fechar"
             >
@@ -545,14 +704,26 @@ export default function LaunchesPage() {
                 Novo lançamento
               </h2>
               <p className="text-sm text-muted-foreground mt-1">
-                Um lançamento agrupa landing pages, links e audiências de uma
-                campanha.
+                {dialogStep === 'template'
+                  ? 'Passo 1 de 2 — Escolha um template de funil'
+                  : 'Passo 2 de 2 — Configure o lançamento'}
               </p>
             </div>
-            <LaunchForm
-              onSuccess={handleSuccess}
-              onCancel={() => setShowForm(false)}
-            />
+
+            {dialogStep === 'template' ? (
+              <TemplateSelector
+                selected={selectedTemplate}
+                onSelect={setSelectedTemplate}
+                onContinue={() => setDialogStep('form')}
+                onCancel={closeDialog}
+              />
+            ) : (
+              <LaunchForm
+                onSuccess={handleSuccess}
+                onCancel={closeDialog}
+                templateSlug={selectedTemplate}
+              />
+            )}
           </div>
         </dialog>
       )}

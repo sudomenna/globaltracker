@@ -54,7 +54,7 @@ type AppVariables = {
 type AppEnv = { Bindings: AppBindings; Variables: AppVariables };
 
 // ---------------------------------------------------------------------------
-// Zod schema for POST body
+// Zod schemas
 // ---------------------------------------------------------------------------
 
 /**
@@ -82,6 +82,19 @@ const CreateLaunchBodySchema = z
   .strict();
 
 type CreateLaunchBody = z.infer<typeof CreateLaunchBodySchema>;
+
+/**
+ * Body schema for PATCH /v1/launches/:id.
+ *
+ * Allows updating funnel_blueprint on an existing launch.
+ */
+const PatchLaunchBodySchema = z
+  .object({
+    funnel_blueprint: z.record(z.unknown()),
+  })
+  .strict();
+
+type PatchLaunchBody = z.infer<typeof PatchLaunchBodySchema>;
 
 // ---------------------------------------------------------------------------
 // Auth helper
@@ -342,7 +355,7 @@ export function createLaunchesRoute(
     }
 
     const rows = await db.execute(
-      sql`SELECT id, public_id, name, status, config, created_at FROM launches WHERE workspace_id = ${workspaceId}::uuid ORDER BY created_at DESC`,
+      sql`SELECT id, public_id, name, status, config, funnel_blueprint, created_at FROM launches WHERE workspace_id = ${workspaceId}::uuid ORDER BY created_at DESC`,
     );
 
     type LaunchRow = {
@@ -351,6 +364,7 @@ export function createLaunchesRoute(
       name: string;
       status: string;
       config: unknown;
+      funnel_blueprint: unknown;
       created_at: string;
     };
     return c.json(
@@ -361,10 +375,119 @@ export function createLaunchesRoute(
           name: r.name,
           status: r.status,
           config: r.config,
+          funnel_blueprint: r.funnel_blueprint ?? null,
           created_at: r.created_at,
         })),
         request_id: requestId,
       },
+      200,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // PATCH /:id — update funnel_blueprint on an existing launch
+  // -------------------------------------------------------------------------
+  router.patch('/:id', async (c) => {
+    const requestId = c.get('request_id');
+    const workspaceId = c.get('workspace_id');
+    const launchId = c.req.param('id');
+
+    // -----------------------------------------------------------------------
+    // Step 1: Parse JSON body
+    // -----------------------------------------------------------------------
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: 'invalid json',
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: Zod validation
+    // -----------------------------------------------------------------------
+    const parsed = PatchLaunchBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: parsed.error.flatten(),
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const body: PatchLaunchBody = parsed.data;
+
+    // -----------------------------------------------------------------------
+    // Step 3: Require DB
+    // -----------------------------------------------------------------------
+    const db = getDb?.(c);
+
+    if (!db) {
+      safeLog('warn', {
+        event: 'launches_patch_no_db',
+        request_id: requestId,
+        workspace_id: workspaceId,
+      });
+      return c.json(
+        {
+          error: 'service_unavailable',
+          message: 'DB not configured',
+          request_id: requestId,
+        },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 4: Update launch — scoped to workspace for isolation (BR-RBAC-002)
+    // -----------------------------------------------------------------------
+    const blueprintJson = JSON.stringify(body.funnel_blueprint);
+
+    const rows = await db.execute(
+      sql`UPDATE launches
+          SET funnel_blueprint = ${blueprintJson}::jsonb
+          WHERE id = ${launchId}::uuid
+            AND workspace_id = ${workspaceId}::uuid
+          RETURNING id, public_id`,
+    );
+
+    type UpdatedRow = { id: string; public_id: string };
+    const updated = (rows as unknown as UpdatedRow[])[0];
+
+    if (!updated) {
+      return c.json(
+        {
+          error: 'not_found',
+          message: 'Launch not found',
+          request_id: requestId,
+        },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    safeLog('info', {
+      event: 'launch_funnel_blueprint_updated',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      launch_id: launchId,
+    });
+
+    return c.json(
+      { launch: { id: updated.id, public_id: updated.public_id } },
       200,
       { 'X-Request-Id': requestId },
     );

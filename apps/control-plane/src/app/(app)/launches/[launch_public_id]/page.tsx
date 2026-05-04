@@ -75,6 +75,7 @@ const VALID_TABS = [
   'eventos',
   'audiences',
   'performance',
+  'funil',
 ] as const;
 type TabValue = (typeof VALID_TABS)[number];
 
@@ -450,6 +451,7 @@ export default function LaunchDetailPage() {
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
           <TabsTrigger value="audiences">Audiences</TabsTrigger>
           <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="funil">Funil</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -478,6 +480,24 @@ export default function LaunchDetailPage() {
           <p className="text-sm text-muted-foreground py-4">
             Métricas disponíveis em breve.
           </p>
+        </TabsContent>
+
+        <TabsContent value="funil">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Funil configurável</CardTitle>
+              <CardDescription>
+                Visualize e edite os estágios do funil deste lançamento.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button asChild variant="outline">
+                <Link href={`/launches/${launchPublicId}/funnel`}>
+                  Abrir editor de funil
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>
