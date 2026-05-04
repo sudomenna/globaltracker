@@ -42,14 +42,14 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 9 ONDA 1 COMPLETA (2026-05-04) — T-FUNIL-001..004 implementados, commit 279e214
-Último commit: 279e214 (branch main)
+Estado:        SPRINT 9 COMPLETO (2026-05-04) — T-FUNIL-001..007 entregues, commit b254b85
+Último commit: b254b85 (branch main)
 Branch:        main (não pushado)
-Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ (arquivos modificados) | test 1352/1353 ✓ (1 falha pré-existente em integrations-test)
-DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id) — sem nova migration nesta onda
+Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ | test 1402/1403 ✓ (1 pré-existente em integrations-test)
+DB Supabase:   migrations 0000–0028 aplicadas ✓ — sem nova migration no Sprint 9
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  SPRINT 9 ONDA 2 — T-FUNIL-005 (testes) + T-FUNIL-006 (docs-sync) em paralelo
-                Ver docs/80-roadmap/09-sprint-9-funil-ux-hardening.md §Onda 2
+Próxima ação:  SPRINT 10 — Funil Templates + Scaffolding (T-FUNIL-010..017)
+                Ver docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md
 ```
 
 ### Plano canônico desta entrega
