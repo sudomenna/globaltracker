@@ -1,4 +1,5 @@
 import { jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { funnelTemplates } from './funnel_template.js';
 import { workspaces } from './workspace.js';
 
 // INV-LAUNCH-001: (workspace_id, public_id) is unique per workspace — constraint uq_launches_workspace_public_id
@@ -38,6 +39,15 @@ export const launches = pgTable('launches', {
   // INV-LAUNCH-005: config.tracking.google.customer_match_strategy ∈ CustomerMatchStrategy enum — Zod validates
   // INV-LAUNCH-003: config.tracking.meta.pixel_policy must be declared before status -> 'live' — service validates
   config: jsonb('config').notNull().default({}),
+
+  // T-FUNIL-010: funnel template applied to this launch (nullable — legacy launches have none)
+  // ON DELETE SET NULL: template deletion does not affect existing launches
+  funnelTemplateId: uuid('funnel_template_id')
+    .references(() => funnelTemplates.id, { onDelete: 'set null' }),
+
+  // T-FUNIL-010: snapshot of the funnel blueprint at the time of launch creation
+  // Decoupled from funnel_templates to allow template evolution without affecting live launches
+  funnelBlueprint: jsonb('funnel_blueprint'),
 
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
