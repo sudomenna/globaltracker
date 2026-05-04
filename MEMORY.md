@@ -34,25 +34,33 @@
 | Sprint 6 | **completed** (2026-05-02, commit e613140) | `docs/80-roadmap/06-sprint-6-control-plane.md` |
 | Sprint 7 | **completed** (2026-05-02, commit bd44b7f) | `docs/80-roadmap/07-sprint-7-orchestrator.md` |
 | Sprint 8 | **completed** (2026-05-02, commit 4c72732) | `docs/80-roadmap/08-sprint-8-ai-dashboard.md` |
-| Sprint 9 | planned | `docs/80-roadmap/09-sprint-9-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 9 | **planned** | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
+| Sprint 10 | **planned** | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
+| Sprint 11 | **planned** | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
+| Sprint 12 | **planned** (realocado) | `docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        PLANO FUNIS APROVADO (2026-05-03 sessão 3) — aguardando início de implementação
-Último commit: 0b4a7e4 (branch main)
+Estado:        SPRINT 9 ONDA 1 COMPLETA (2026-05-04) — T-FUNIL-001..004 implementados, commit 279e214
+Último commit: 279e214 (branch main)
 Branch:        main (não pushado)
-Verificação:   typecheck ✓ (edge/control-plane nas mudanças anteriores)
-DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id)
+Verificação:   typecheck ✓ pré-existentes apenas | lint ✓ (arquivos modificados) | test 1352/1353 ✓ (1 falha pré-existente em integrations-test)
+DB Supabase:   migrations 0000–0028 aplicadas ✓ (0028 = RLS auth_workspace_id) — sem nova migration nesta onda
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  IMPLEMENTAR Fase 1 do plano em docs/80-roadmap/funil-templates-plan.md (T-FUNIL-001..004)
-                Após Fase 1, seguir para Fase 2 (templates + scaffolding) e Fase 3 (webhook Guru contextualizado).
-                Sprint 9 (webhooks Hotmart/Kiwify/Stripe) fica para depois desta entrega.
+Próxima ação:  SPRINT 9 ONDA 2 — T-FUNIL-005 (testes) + T-FUNIL-006 (docs-sync) em paralelo
+                Ver docs/80-roadmap/09-sprint-9-funil-ux-hardening.md §Onda 2
 ```
 
 ### Plano canônico desta entrega
 
-Ver [docs/80-roadmap/funil-templates-plan.md](docs/80-roadmap/funil-templates-plan.md) — plano em 3 fases para suportar Funil A (Lançamento Gratuito 3 Aulas) e Funil B (Lançamento Pago Workshop low ticket + Main Offer high ticket), com templates reutilizáveis, stages customizáveis por launch e webhook Guru contextualizado por launch + funnel_role.
+Sprints 9→11 (Funil Configurável) + Sprint 12 (Webhooks restantes):
+- **Sprint 9** — UX Hardening (Fase 1): expor page.role, event_config, launch.type pela UI. T-FUNIL-001..007. Ver [`09-sprint-9-funil-ux-hardening.md`](docs/80-roadmap/09-sprint-9-funil-ux-hardening.md).
+- **Sprint 10** — Templates + Scaffolding (Fase 2): migration 0029, 4 presets globais, funnel-scaffolder, processor usa blueprint. T-FUNIL-010..017. Ver [`10-sprint-10-funil-templates-scaffolding.md`](docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md).
+- **Sprint 11** — Webhook Guru Contextualizado (Fase 3): guru-launch-resolver, PATCH workspace/config, UI mapping product↔launch. T-FUNIL-020..026. Ver [`11-sprint-11-funil-webhook-guru.md`](docs/80-roadmap/11-sprint-11-funil-webhook-guru.md).
+- **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe (realocado do antigo Sprint 9). Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
+
+Plano original em 3 fases: [docs/80-roadmap/funil-templates-plan.md](docs/80-roadmap/funil-templates-plan.md).
 
 ### Mudanças entregues nesta sessão (2026-05-03 sessão 2)
 
