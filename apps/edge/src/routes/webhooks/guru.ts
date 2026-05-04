@@ -20,15 +20,18 @@
  *   7. transaction/subscription → call mapper
  *   8. Skip result → 202 without insert
  *   9. Error result → persist as failed → 200 (BR-WEBHOOK-003)
- *  10. Success → persist as pending → enqueue → 202
+ *  10. Resolve launch_id + funnel_role via resolveLaunchForGuruEvent (T-FUNIL-022)
+ *  11. Persist as pending with launch_id + funnel_role injected into payload JSONB
+ *  12. Enqueue → 202
  *
  * BRs applied:
  *   BR-WEBHOOK-001: token validated before processing (constant-time comparison)
  *   BR-WEBHOOK-002: event_id derived deterministically
  *   BR-WEBHOOK-003: non-mappable events → raw_events.processing_status='failed' + 200
  *   BR-WEBHOOK-004: lead_hints hierarchy in mapper
- *   BR-PRIVACY-001: api_token, email, phone never logged
+ *   BR-PRIVACY-001: api_token, email, phone never logged; leadHints hashed by resolver
  *   BR-EVENT-001: raw_events insert awaited before 202
+ *   T-FUNIL-022: launch_id + funnel_role resolved and injected into raw_event payload
  */
 
 import type { Db } from '@globaltracker/db';
@@ -43,6 +46,7 @@ import type {
   GuruSubscriptionPayload,
   GuruTransactionPayload,
 } from '../../integrations/guru/types.js';
+import { resolveLaunchForGuruEvent } from '../../lib/guru-launch-resolver.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -311,26 +315,87 @@ export function createGuruWebhookRoute(db?: Db): Hono<AppEnv> {
     }
 
     // -----------------------------------------------------------------------
-    // Step 10: Persist raw_event with processing_status='pending'
+    // Step 10: Resolve launch_id + funnel_role for purchase-type events
+    // T-FUNIL-022: call resolver before insert so processor can use these fields
+    // BR-PRIVACY-001: leadHints are passed to resolver which hashes before any DB
+    // operation; raw PII never stored in raw_events payload beyond what already existed
+    // -----------------------------------------------------------------------
+    const internalEvent = mapResult.value;
+
+    // Extract product_id and lead hints from the typed payload.
+    // Both transaction and subscription events are purchase-type and benefit from
+    // launch resolution. Subscriptions have no product_id (null is accepted by resolver).
+    let resolvedLaunchId: string | null = null;
+    let resolvedFunnelRole: string | null = null;
+
+    if (db) {
+      const productId =
+        webhookType === 'transaction'
+          ? ((body as unknown as GuruTransactionPayload).product?.id ?? null)
+          : null;
+
+      const email =
+        webhookType === 'transaction'
+          ? ((body as unknown as GuruTransactionPayload).contact?.email ?? null)
+          : ((body as unknown as GuruSubscriptionPayload).subscriber?.email ?? null);
+
+      const phone =
+        webhookType === 'transaction'
+          ? ((body as unknown as GuruTransactionPayload).contact?.phone_number ?? null)
+          : null;
+
+      try {
+        const resolved = await resolveLaunchForGuruEvent({
+          workspaceId,
+          productId,
+          leadHints: {
+            email,
+            phone,
+            visitorId: null, // Guru does not send visitor_id
+          },
+          db,
+        });
+
+        resolvedLaunchId = resolved.launch_id;
+        resolvedFunnelRole = resolved.funnel_role;
+      } catch (err) {
+        // Resolution failure is non-fatal — proceed without launch_id enrichment.
+        // The raw_event will still be persisted; the processor can re-attempt resolution.
+        safeLog('warn', {
+          event: 'guru_webhook_launch_resolution_failed',
+          workspace_id: workspaceId,
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 11: Persist raw_event with processing_status='pending'
     // BR-EVENT-001: insert awaited before returning 202
     // INV-EVENT-005: Edge persists in raw_events before returning 202
     // -----------------------------------------------------------------------
-    const internalEvent = mapResult.value;
     let rawEventId: string | undefined;
 
     if (db) {
+      // Build enriched payload: start with sanitized body, then attach derived
+      // fields. funnel_role is injected into JSONB (not a typed column).
+      // BR-PRIVACY-001: funnel_role and launch_id are not PII.
+      const enrichedPayload: Record<string, unknown> = {
+        ...sanitizePayloadForStorage(body),
+        // Attach derived fields for processor convenience
+        _guru_event_id: internalEvent.event_id,
+        _guru_event_type: internalEvent.event_type,
+        // T-FUNIL-022: inject resolved launch context
+        ...(resolvedLaunchId !== null && { launch_id: resolvedLaunchId }),
+        ...(resolvedFunnelRole !== null && { funnel_role: resolvedFunnelRole }),
+      };
+
       try {
         const inserted = await db
           .insert(rawEvents)
           .values({
             workspaceId,
-            // BR-PRIVACY-001: remove api_token before storing
-            payload: {
-              ...sanitizePayloadForStorage(body),
-              // Attach derived fields for processor convenience
-              _guru_event_id: internalEvent.event_id,
-              _guru_event_type: internalEvent.event_type,
-            },
+            payload: enrichedPayload,
             headersSanitized: {},
             processingStatus: 'pending',
           })
@@ -350,7 +415,7 @@ export function createGuruWebhookRoute(db?: Db): Hono<AppEnv> {
     }
 
     // -----------------------------------------------------------------------
-    // Step 11: Enqueue to QUEUE_EVENTS for async ingestion
+    // Step 12: Enqueue to QUEUE_EVENTS for async ingestion
     // -----------------------------------------------------------------------
     try {
       await c.env.QUEUE_EVENTS.send({

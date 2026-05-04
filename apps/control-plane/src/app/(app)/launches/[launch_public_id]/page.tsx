@@ -9,10 +9,18 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Activity, ChevronLeft, FileText, Loader2, Plus } from 'lucide-react';
+import { createSupabaseBrowser } from '@/lib/supabase-browser';
+import {
+  Activity,
+  ChevronLeft,
+  FileText,
+  Loader2,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +54,15 @@ interface Event {
   lead_id?: string;
 }
 
+// ─── Guru Mapping types ───────────────────────────────────────────────────────
+
+interface GuruProductEntry {
+  launch_public_id: string;
+  funnel_role: string;
+}
+
+type GuruProductLaunchMap = Record<string, GuruProductEntry>;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_LABELS: Record<string, string> = {
@@ -68,6 +85,12 @@ const ROLE_COLORS: Record<string, string> = {
   checkout: 'bg-yellow-100 text-yellow-800',
   survey: 'bg-gray-100 text-gray-700',
 };
+
+const GURU_FUNNEL_ROLES = [
+  { value: 'workshop', label: 'Workshop' },
+  { value: 'main_offer', label: 'Oferta principal' },
+  { value: 'outro', label: 'Outro' },
+] as const;
 
 const VALID_TABS = [
   'overview',
@@ -109,57 +132,431 @@ function useAccessToken(): string {
   return token;
 }
 
+// ─── GuruMappingPanel ─────────────────────────────────────────────────────────
+
+/**
+ * T-FUNIL-023: Painel "Mapeamento Guru" — exibido na tab Overview do launch.
+ * Lê workspace.config.integrations.guru.product_launch_map via Supabase,
+ * filtrando apenas entradas associadas a este launch_public_id.
+ * Permite adicionar e remover mapeamentos via PATCH /v1/workspace/config.
+ *
+ * BR-RBAC-002: workspace_id como âncora multi-tenant — o endpoint já verifica
+ *   OPERATOR/ADMIN server-side; botão de edição é sempre visível (sem role CP
+ *   disponível client-side neste momento; segurança garantida no servidor).
+ */
+function GuruMappingPanel({
+  launchPublicId,
+  accessToken,
+  baseUrl,
+}: {
+  launchPublicId: string;
+  accessToken: string;
+  baseUrl: string;
+}) {
+  // Estado do painel
+  const [mappings, setMappings] = useState<
+    Array<{ productId: string; funnel_role: string }>
+  >([]);
+  const [loading, setLoading] = useState(true);
+  // fullMap guarda o mapa completo (todos os launches) para re-emitir sem perder entradas de outros launches
+  const fullMapRef = useRef<GuruProductLaunchMap>({});
+  const [modalOpen, setModalOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [productId, setProductId] = useState('');
+  const [funnelRole, setFunnelRole] = useState<string>('workshop');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  // Lê workspace.config via Supabase (workspaces.config é JSONB acessível via RLS)
+  const loadMappings = useCallback(async () => {
+    try {
+      const supabase = createSupabaseBrowser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Busca workspace_id via workspace_members
+      const { data: memberRow } = await supabase
+        .from('workspace_members')
+        .select('workspace_id')
+        .eq('user_id', user.id)
+        .is('removed_at', null)
+        .order('joined_at', { ascending: true })
+        .limit(1)
+        .single();
+
+      if (!memberRow) return;
+
+      // Busca config do workspace
+      const { data: wsRow } = await supabase
+        .from('workspaces')
+        .select('config')
+        .eq('id', memberRow.workspace_id)
+        .single();
+
+      const config = wsRow?.config as
+        | {
+            integrations?: {
+              guru?: { product_launch_map?: GuruProductLaunchMap };
+            };
+          }
+        | null
+        | undefined;
+
+      const map = config?.integrations?.guru?.product_launch_map ?? {};
+      fullMapRef.current = map;
+
+      // Filtra entradas deste launch
+      const filtered = Object.entries(map)
+        .filter(([, entry]) => entry.launch_public_id === launchPublicId)
+        .map(([pid, entry]) => ({
+          productId: pid,
+          funnel_role: entry.funnel_role,
+        }));
+
+      setMappings(filtered);
+    } catch {
+      // silencioso — painel simplesmente mostra vazio
+    } finally {
+      setLoading(false);
+    }
+  }, [launchPublicId]);
+
+  useEffect(() => {
+    void loadMappings();
+  }, [loadMappings]);
+
+  // Envia o mapa completo atualizado via PATCH /v1/workspace/config
+  async function patchMap(newMap: GuruProductLaunchMap) {
+    const res = await fetch(`${baseUrl}/v1/workspace/config`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        integrations: { guru: { product_launch_map: newMap } },
+      }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as {
+        message?: string;
+      };
+      throw new Error(body.message ?? `HTTP ${res.status}`);
+    }
+  }
+
+  async function handleAdd() {
+    setFormError(null);
+    const trimmed = productId.trim();
+    if (!trimmed) {
+      setFormError('Product ID é obrigatório.');
+      return;
+    }
+    if (fullMapRef.current[trimmed]) {
+      setFormError('Este Product ID já está mapeado.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const newMap: GuruProductLaunchMap = {
+        ...fullMapRef.current,
+        [trimmed]: {
+          launch_public_id: launchPublicId,
+          funnel_role: funnelRole,
+        },
+      };
+      await patchMap(newMap);
+      fullMapRef.current = newMap;
+      setMappings((prev) => [
+        ...prev,
+        { productId: trimmed, funnel_role: funnelRole },
+      ]);
+      setProductId('');
+      setFunnelRole('workshop');
+      setModalOpen(false);
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : 'Erro ao salvar mapeamento.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRemove(pid: string) {
+    if (!window.confirm(`Remover mapeamento do produto "${pid}"?`)) {
+      return;
+    }
+    try {
+      const newMap: GuruProductLaunchMap = { ...fullMapRef.current };
+      delete newMap[pid];
+      await patchMap(newMap);
+      fullMapRef.current = newMap;
+      setMappings((prev) => prev.filter((m) => m.productId !== pid));
+    } catch (err) {
+      window.alert(
+        `Erro ao remover: ${err instanceof Error ? err.message : 'Erro desconhecido'}`,
+      );
+    }
+  }
+
+  function handleModalClose() {
+    setModalOpen(false);
+    setProductId('');
+    setFunnelRole('workshop');
+    setFormError(null);
+  }
+
+  const funnelRoleLabel = (role: string) =>
+    GURU_FUNNEL_ROLES.find((r) => r.value === role)?.label ?? role;
+
+  return (
+    <>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle className="text-base">Mapeamento Guru</CardTitle>
+            <CardDescription>
+              Associe IDs de produto do Digital Manager Guru a este lançamento.
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setModalOpen(true)}
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            Adicionar produto
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Carregando mapeamentos...
+            </div>
+          ) : mappings.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4">
+              Nenhum produto mapeado.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground text-xs">
+                    <th className="text-left py-2 pr-4 font-medium">
+                      Product ID
+                    </th>
+                    <th className="text-left py-2 pr-4 font-medium">
+                      Papel no funil
+                    </th>
+                    <th className="text-left py-2 pr-4 font-medium">Launch</th>
+                    <th className="py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {mappings.map((m) => (
+                    <tr key={m.productId}>
+                      <td className="py-3 pr-4 font-mono text-xs">
+                        {m.productId}
+                      </td>
+                      <td className="py-3 pr-4">
+                        {funnelRoleLabel(m.funnel_role)}
+                      </td>
+                      <td className="py-3 pr-4 font-mono text-xs text-muted-foreground">
+                        {launchPublicId}
+                      </td>
+                      <td className="py-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive h-7 px-2"
+                          onClick={() => void handleRemove(m.productId)}
+                          aria-label={`Remover mapeamento de ${m.productId}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span className="sr-only">Remover</span>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Modal "Adicionar produto" — <dialog> nativo conforme convenção do projeto */}
+      {modalOpen && (
+        <dialog
+          open
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          aria-labelledby="guru-modal-title"
+          aria-modal="true"
+        >
+          <div className="bg-card rounded-lg shadow-lg w-full max-w-sm p-6 space-y-4">
+            <h2 id="guru-modal-title" className="text-base font-semibold">
+              Adicionar produto Guru
+            </h2>
+
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label
+                  htmlFor="guru-product-id"
+                  className="text-sm font-medium"
+                >
+                  Product ID
+                </label>
+                <input
+                  id="guru-product-id"
+                  type="text"
+                  placeholder="prod_workshop_xyz"
+                  value={productId}
+                  onChange={(e) => setProductId(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={saving}
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="guru-funnel-role"
+                  className="text-sm font-medium"
+                >
+                  Papel no funil
+                </label>
+                <select
+                  id="guru-funnel-role"
+                  value={funnelRole}
+                  onChange={(e) => setFunnelRole(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={saving}
+                >
+                  {GURU_FUNNEL_ROLES.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {formError && (
+                <p className="text-sm text-destructive" role="alert">
+                  {formError}
+                </p>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleModalClose}
+                disabled={saving}
+              >
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleAdd()}
+                disabled={saving}
+              >
+                {saving ? (
+                  <>
+                    <Loader2
+                      className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                      aria-hidden="true"
+                    />
+                    Salvando...
+                  </>
+                ) : (
+                  'Confirmar'
+                )}
+              </Button>
+            </div>
+          </div>
+        </dialog>
+      )}
+    </>
+  );
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function TabOverview({ launch }: { launch: Launch }) {
+function TabOverview({
+  launch,
+  accessToken,
+  baseUrl,
+}: {
+  launch: Launch;
+  accessToken: string;
+  baseUrl: string;
+}) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Detalhes do lançamento</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3 text-sm">
-        {launch.config?.type && (
-          <div className="flex gap-2">
-            <span className="text-muted-foreground w-28 shrink-0">Tipo</span>
-            <span className="font-medium capitalize">{launch.config.type}</span>
-          </div>
-        )}
-        {launch.config?.objective && (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Detalhes do lançamento</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {launch.config?.type && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground w-28 shrink-0">Tipo</span>
+              <span className="font-medium capitalize">
+                {launch.config.type}
+              </span>
+            </div>
+          )}
+          {launch.config?.objective && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground w-28 shrink-0">
+                Objetivo
+              </span>
+              <span className="font-medium">{launch.config.objective}</span>
+            </div>
+          )}
+          {launch.config?.timeline?.start_date && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground w-28 shrink-0">
+                Início
+              </span>
+              <span className="font-medium">
+                {new Date(launch.config.timeline.start_date).toLocaleDateString(
+                  'pt-BR',
+                )}
+              </span>
+            </div>
+          )}
+          {launch.config?.timeline?.end_date && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground w-28 shrink-0">Fim</span>
+              <span className="font-medium">
+                {new Date(launch.config.timeline.end_date).toLocaleDateString(
+                  'pt-BR',
+                )}
+              </span>
+            </div>
+          )}
           <div className="flex gap-2">
             <span className="text-muted-foreground w-28 shrink-0">
-              Objetivo
+              Criado em
             </span>
-            <span className="font-medium">{launch.config.objective}</span>
-          </div>
-        )}
-        {launch.config?.timeline?.start_date && (
-          <div className="flex gap-2">
-            <span className="text-muted-foreground w-28 shrink-0">Início</span>
             <span className="font-medium">
-              {new Date(launch.config.timeline.start_date).toLocaleDateString(
-                'pt-BR',
-              )}
+              {new Date(launch.created_at).toLocaleDateString('pt-BR')}
             </span>
           </div>
-        )}
-        {launch.config?.timeline?.end_date && (
-          <div className="flex gap-2">
-            <span className="text-muted-foreground w-28 shrink-0">Fim</span>
-            <span className="font-medium">
-              {new Date(launch.config.timeline.end_date).toLocaleDateString(
-                'pt-BR',
-              )}
-            </span>
-          </div>
-        )}
-        <div className="flex gap-2">
-          <span className="text-muted-foreground w-28 shrink-0">Criado em</span>
-          <span className="font-medium">
-            {new Date(launch.created_at).toLocaleDateString('pt-BR')}
-          </span>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      {/* T-FUNIL-023: Painel de mapeamento Guru — após conteúdo de overview */}
+      <GuruMappingPanel
+        launchPublicId={launch.public_id}
+        accessToken={accessToken}
+        baseUrl={baseUrl}
+      />
+    </div>
   );
 }
 
@@ -455,7 +852,11 @@ export default function LaunchDetailPage() {
         </TabsList>
 
         <TabsContent value="overview">
-          <TabOverview launch={launch} />
+          <TabOverview
+            launch={launch}
+            accessToken={accessToken}
+            baseUrl={baseUrl}
+          />
         </TabsContent>
 
         <TabsContent value="pages">

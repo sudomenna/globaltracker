@@ -287,6 +287,37 @@ Atualiza `funnel_blueprint` de um launch existente (editor manual de stages).
 | **Response 200** | `{ launch: { id, public_id } }` |
 | **Errors** | `400 validation_error`, `401 unauthorized`, `404 not_found` (launch não encontrado ou de outro workspace), `503 service_unavailable` |
 
+### `PATCH /v1/workspace/config` (Sprint 11)
+
+Atualiza subcampos da configuração de integrações do workspace (JSONB `workspace.config`). Merge seguro via SELECT→JS deep-merge→UPDATE (não usa `||` SQL — bug de encoding no CF Worker driver).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-config-patch-v1` |
+| **Auth** | `Authorization: Bearer <token>` (OPERATOR ou ADMIN); `workspace_id` vem do contexto de auth — nunca do body |
+| **Body** | Objeto parcial de `workspace.config`, validado via Zod `.strict()`. Campos aceitos: `integrations.guru.product_launch_map` (objeto `Record<string, { launch_public_id: string, funnel_role: string }>`). Campos extras (não declarados no schema) → 400 |
+| **Merge** | Deep-merge: campos não enviados no body não são sobrescritos. Arrays são substituídos (não mergeados). |
+| **Side effects** | UPDATE em `workspaces.config`; `audit_log` action=`workspace_config_updated`, metadata=`{ fields_updated: string[] }` (apenas chaves do body, sem valores — BR-PRIVACY-001) |
+| **Response 200** | `{ config: <merged_config> }` — retorna o config completo pós-merge |
+| **Errors** | `400 validation_error` (Zod falhou ou campo extra enviado), `401 unauthorized` (Bearer ausente/inválido), `500 internal_error` (falha no DB), `503 service_unavailable` (DB não configurado) |
+
+**Exemplo de body:**
+
+```json
+{
+  "integrations": {
+    "guru": {
+      "product_launch_map": {
+        "prod_workshop_xyz": {
+          "launch_public_id": "lcm-maio-2026",
+          "funnel_role": "workshop"
+        }
+      }
+    }
+  }
+}
+```
+
 ### `DELETE /v1/admin/leads/:lead_id`
 
 SAR/erasure. Auth restrita.

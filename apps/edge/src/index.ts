@@ -93,6 +93,7 @@ import { orchestratorRoute } from './routes/orchestrator.js';
 import { pagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
+import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
 
 // ---------------------------------------------------------------------------
@@ -260,6 +261,7 @@ app.use('/v1/integrations/*', cpCors);
 app.use('/v1/dispatch-jobs/*', cpCors);
 app.use('/v1/help/*', cpCors);
 app.use('/v1/orchestrator/*', cpCors);
+app.use('/v1/workspace/*', cpCors);
 
 // OPTIONS preflight — public tracker routes use public CORS; CP routes handled by cpCors above
 app.options(
@@ -298,6 +300,11 @@ app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);
 app.route('/v1/leads', leadsTimelineRoute);
 app.route('/v1/orchestrator/workflows', orchestratorRoute);
+
+// Workspace config endpoint (Sprint 11 — T-FUNIL-021)
+// Auth: Bearer token; OPERATOR/ADMIN role required (TODO T-AUTH-CP: full JWT RBAC).
+// BR-RBAC-002: workspace_id from auth context, never from body.
+app.route('/v1/workspace', workspaceConfigRoute);
 
 // ---------------------------------------------------------------------------
 // Queue consumer — gt-dispatch

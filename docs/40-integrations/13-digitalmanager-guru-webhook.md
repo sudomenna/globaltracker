@@ -181,6 +181,91 @@ Para `subscription`: `id` = campo `id` da assinatura (ex: `sub_BOAEj2WTKoclmg4X`
 | `overdue` | Ignorar (Fase 4+) |
 | outros | DLQ |
 
+## Resolução de launch e funnel_role (Sprint 11 — T-FUNIL-022)
+
+Antes de persistir o `raw_event`, o handler chama `resolveLaunchForGuruEvent()` (`apps/edge/src/lib/guru-launch-resolver.ts`) **apenas para eventos do tipo `transaction` e `subscription`** (i.e., todos os eventos de Purchase e afins). Eventos `eticket` são descartados antes desse passo.
+
+### Função `resolveLaunchForGuruEvent`
+
+```ts
+resolveLaunchForGuruEvent(params: {
+  workspaceId: string;
+  productId: string | null | undefined;
+  leadHints: { email?: string | null; phone?: string | null; visitorId?: string | null };
+  db: Db;
+}): Promise<{ launch_id: string | null; funnel_role: string | null; strategy: 'mapping' | 'last_attribution' | 'none' }>
+```
+
+### Cadeia de estratégias
+
+| Estratégia | Condição | launch_id | funnel_role |
+|---|---|---|---|
+| `mapping` | `productId` presente no `workspace.config.integrations.guru.product_launch_map` | UUID resolvido via `launch_public_id` | conforme entrada do mapa |
+| `last_attribution` | `productId` ausente no mapa (ou `launch_id` não encontrado) — lead identificado via `leadHints` | `launch_id` da `lead_attribution` mais recente | `null` |
+| `none` | Lead não identificável e sem mapa | `null` | `null` |
+
+**Fallthrough:** se `productId` está no mapa mas o `launch_public_id` correspondente não resolve para um `launch_id` existente no workspace, a estratégia cai para `last_attribution`.
+
+### Shape do `product_launch_map`
+
+Armazenado em `workspace.config.integrations.guru.product_launch_map` (JSONB). Cada chave é o `product.id` recebido no payload Guru; o valor mapeia ao launch e ao papel no funil:
+
+```json
+{
+  "prod_workshop_xyz": {
+    "launch_public_id": "lcm-maio-2026",
+    "funnel_role": "workshop"
+  },
+  "prod_main_xyz": {
+    "launch_public_id": "lcm-maio-2026",
+    "funnel_role": "main_offer"
+  },
+  "prod_evergreen_abc": {
+    "launch_public_id": "evergreen-cs",
+    "funnel_role": "main_offer"
+  }
+}
+```
+
+Configurado via `PATCH /v1/workspace/config` (ver `docs/30-contracts/05-api-server-actions.md`). A UI de mapeamento está na tab Overview do launch detail no Control Plane.
+
+### Injeção no `raw_event.payload`
+
+Os campos `launch_id` e `funnel_role` são injetados no JSONB do `raw_event.payload` quando resolvidos (campos omitidos quando `null`):
+
+```json
+{
+  "webhook_type": "transaction",
+  "...<demais campos sanitizados>...",
+  "_guru_event_id": "<event_id derivado>",
+  "_guru_event_type": "Purchase",
+  "launch_id": "<uuid>",
+  "funnel_role": "workshop"
+}
+```
+
+O `raw-events-processor` já lê `payload.funnel_role` via `source_event_filters` para determinar o stage correto (`purchased_workshop` vs `purchased_main`).
+
+### Audit log por estratégia
+
+Para **todas as estratégias** (mapping, last_attribution, none), o resolver emite um log estruturado via `safeLog`:
+
+```json
+{
+  "event": "guru_launch_resolved",
+  "workspace_id": "<uuid>",
+  "product_id": "<product_id ou null>",
+  "strategy": "mapping | last_attribution | none",
+  "launch_id": "<uuid ou null>",
+  "funnel_role": "<string ou null>"
+}
+```
+
+O campo `strategy` fica disponível em `audit_log.metadata` para consulta pelo painel de mapeamento no CP (`action='guru_launch_resolved' AND metadata->>'product_id' IN (...)`).
+
+**BR-AUDIT-001:** safeLog registrado em todas as estratégias.
+**BR-PRIVACY-001:** `leadHints` (email, phone) são hasheados antes de qualquer consulta ao DB; valores brutos nunca chegam a logs.
+
 ## Referências
 
 - [Webhook para Transações](https://docs.digitalmanager.guru/developers/webhook-para-transacoes)

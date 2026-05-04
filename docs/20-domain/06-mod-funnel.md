@@ -157,6 +157,43 @@ O processor (`raw-events-processor.ts`) resolve stages via blueprint quando `lau
 
 Stages que filtram por `funnel_role` (ex.: `{"funnel_role": "workshop"}`) apenas funcionam quando a Sprint 11 (Fase 3) injeta `funnel_role` no payload do evento. Antes da Sprint 11, eventos `Purchase` sem `funnel_role` no `custom_data` não fazem match nesses stages e caem no fallback genérico `purchased`. Isso é intencional e backward-compatible.
 
+### Distinção Purchase por funnel_role (Sprint 11 — T-FUNIL-022)
+
+Completa o Funil B: permite distinguir `purchased_workshop` de `purchased_main` a partir de webhooks Guru.
+
+**Pipeline completo:**
+
+```
+Webhook Guru Purchase (product.id presente)
+    │
+    ▼
+guru.ts handler
+    │  chama resolveLaunchForGuruEvent()
+    ▼
+guru-launch-resolver.ts
+    ├── Estratégia mapping:    lê workspace.config.integrations.guru.product_launch_map
+    │                          → launch_id (UUID) + funnel_role (ex.: 'workshop')
+    ├── Estratégia last_attribution: busca lead via leadHints → lead_attribution mais recente
+    │                          → launch_id copiado; funnel_role = null
+    └── Estratégia none:       → launch_id = null; funnel_role = null
+    │
+    ▼ injeta no raw_event.payload (JSONB)
+    { ..., launch_id: "<uuid>", funnel_role: "workshop" }
+    │
+    ▼
+raw-events-processor.ts
+    │  getBlueprintForLaunch() → blueprint do launch
+    │  matchesStageFilters(event_name='Purchase', custom_data, stage)
+    │    — stage 'purchased_workshop': source_events=['Purchase'], source_event_filters={funnel_role:'workshop'}
+    │    — stage 'purchased_main':     source_events=['Purchase'], source_event_filters={funnel_role:'main_offer'}
+    ▼
+lead_stages: row com stage correto ('purchased_workshop' ou 'purchased_main')
+```
+
+**Pré-condição:** `workspace.config.integrations.guru.product_launch_map` deve estar configurado com as entradas `product_id → { launch_public_id, funnel_role }`. Configuração via `PATCH /v1/workspace/config`.
+
+**Backward-compatibility:** Se `funnel_role` não está no payload (webhook antigo ou estratégia `last_attribution`/`none`), o stage `purchased_workshop` e `purchased_main` não fazem match. O processor cai no caminho de fallback (`purchased` genérico) se o blueprint não tiver stage sem filtro, ou ignora o evento se nenhum stage do blueprint bater.
+
 ### scaffoldLaunch() (Sprint 10)
 
 Função `apps/edge/src/lib/funnel-scaffolder.ts`. Executada de forma assíncrona via `waitUntil` no `POST /v1/launches` quando `funnel_template_slug` é fornecido.

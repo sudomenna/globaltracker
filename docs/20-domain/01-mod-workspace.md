@@ -45,6 +45,43 @@ Campos conceituais:
 - `scopes` (`text[]`: `events:write`, `leads:erase`, etc.)
 - `created_at`, `last_used_at`, `revoked_at`
 
+### WorkspaceConfig (JSONB — coluna `workspaces.config`)
+
+Configuração livre por workspace. Subcampos conhecidos documentados abaixo; outros campos são preservados pelo merge seguro.
+
+#### `config.integrations.guru.product_launch_map` (Sprint 11)
+
+Mapeamento de `product_id` do Digital Manager Guru para o launch e papel no funil correspondentes. Usado pelo `guru-launch-resolver.ts` como estratégia primária de resolução de `launch_id + funnel_role`.
+
+**Shape:**
+
+```jsonc
+{
+  "integrations": {
+    "guru": {
+      "product_launch_map": {
+        // Chave: product.id recebido no webhook Guru (string arbitrária)
+        // Valor: { launch_public_id, funnel_role }
+        "prod_workshop_xyz": {
+          "launch_public_id": "lcm-maio-2026",  // public_id do launch no workspace
+          "funnel_role": "workshop"              // papel no funil; alimenta source_event_filters
+        },
+        "prod_main_xyz": {
+          "launch_public_id": "lcm-maio-2026",
+          "funnel_role": "main_offer"
+        }
+      }
+    }
+  }
+}
+```
+
+**Como é atualizado:** via `PATCH /v1/workspace/config` (auth: OPERATOR/ADMIN). O endpoint realiza deep-merge seguro (SELECT→JS spread→UPDATE) — campos não enviados no body não são sobrescritos.
+
+**Quem lê:** `apps/edge/src/lib/guru-launch-resolver.ts` — função `resolveLaunchForGuruEvent()`, estratégia `mapping`. Lê `workspaces.config` diretamente via Drizzle com escopo por `workspaceId`.
+
+**Invariante:** não há constraint de DB sobre a estrutura interna do JSONB; a validação é feita na camada Edge via Zod (`PatchWorkspaceConfigBodySchema`) antes de qualquer escrita.
+
 ## 4. Relações
 
 - `Workspace 1—N WorkspaceMember`

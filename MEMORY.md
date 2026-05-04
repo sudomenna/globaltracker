@@ -15,7 +15,7 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-(vazio)
+- `PATCH /v1/workspace/config` implementado (T-FUNIL-021) mas não documentado em `docs/30-contracts/05-api-server-actions.md`. Sync via T-FUNIL-025 (Onda 3).
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
