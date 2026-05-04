@@ -1,4 +1,6 @@
-# Sprint 12 — Webhook adapters Hotmart, Kiwify, Stripe
+# Sprint 13 — Webhook adapters Hotmart, Kiwify, Stripe
+
+> **Nota**: Este sprint era originalmente Sprint 12, foi realocado para Sprint 13 em 2026-05-04 para abrir espaço ao Sprint 12 (realinhamento do template `lancamento_pago_workshop_com_main_offer` com fluxo operacional real, descoberto durante o E2E usability test do `wkshop-cs-jun26`).
 
 ## Duração estimada
 A definir.
@@ -7,6 +9,7 @@ A definir.
 Adicionar suporte a webhooks inbound das principais plataformas BR/global: Hotmart, Kiwify e Stripe. Completa o suporte multi-plataforma de purchase events para FLOW-04.
 
 ## Pré-requisitos
+- Sprint 12 completo (template paid_workshop realinhado e funil B validado E2E em produção real).
 - Sprint 11 completo (Funil Configurável Fase 3 — webhook Guru contextualizado já serve de referência de implementação).
 - Sprint 3 completo (Meta CAPI + Guru webhook base).
 
@@ -20,10 +23,10 @@ Adicionar suporte a webhooks inbound das principais plataformas BR/global: Hotma
 
 ## T-IDs (alto nível)
 
-- T-9-001: adapter Hotmart (handler + mapper).
-- T-9-002: adapter Kiwify (handler + mapper).
-- T-9-003: adapter Stripe (handler + mapper, raw body obrigatório).
-- T-9-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe.
+- T-13-001: adapter Hotmart (handler + mapper).
+- T-13-002: adapter Kiwify (handler + mapper).
+- T-13-003: adapter Stripe (handler + mapper, raw body obrigatório).
+- T-13-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe.
 
 ## Referências de integração
 

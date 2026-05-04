@@ -40,28 +40,33 @@
 | Sprint 9 | **completed** (2026-05-04, commit ded8fd2) | `docs/80-roadmap/09-sprint-9-funil-ux-hardening.md` |
 | Sprint 10 | **completed** (2026-05-04, commit ac93148) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
 | Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
-| Sprint 12 | **planned** (realocado) | `docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 12 | **planned** (próximo) | `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` |
+| Sprint 13 | **planned** (realocado de 12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        E2E USABILITY TEST EM PRODUÇÃO REAL (2026-05-04)
-               Sprint 12 PAUSADO. Edge Worker DEPLOYED em Cloudflare
-               Workers; tracker.js no R2 público; LP Framer real
-               (cneeducacao.com) instrumentada e capturando leads.
-               Pipeline ponta-a-ponta validado.
-Branch:        main (ahead com commits desta sessão pendentes)
-DB Supabase:   migrations 0000–0030 aplicadas ✓
+Estado:        SPRINT 12 PLANEJADO (2026-05-04) — realinhamento do template
+               paid_workshop com fluxo operacional real do wkshop-cs-jun26.
+               Edge Worker DEPLOYED; tracker.js no R2; LP Framer
+               (cneeducacao.com) instrumentada. Pipeline E2E funcional,
+               mas template precisa de update para refletir fluxo real
+               (popup Lead, IC via Guru, pesquisa, aula binária, sem
+               popup na main_offer).
+Branch:        main (working tree com docs Sprint 12+13 a commitar)
+DB Supabase:   migrations 0000–0030 aplicadas ✓ (0031 a aplicar em T-FUNIL-030)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
 Tracker CDN:   https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js
-Próxima ação:  Aplicar template de funil no launch wkshop-cs-jun26
-               para que eventos virem stages.
+Próxima ação:  Iniciar Sprint 12 — Onda 1 (T-FUNIL-030 schema + T-FUNIL-031
+               body scripts em paralelo + T-FUNIL-032 page aula-workshop).
+               Ver docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md
 ```
 
 ### Plano canônico de sprints restantes
 
-- **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe. Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v2 (popup Lead, custom events de intent, page aula-workshop, pesquisa na thankyou). Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
+- **Sprint 13** — Webhooks Hotmart/Kiwify/Stripe (era Sprint 12, realocado). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md).
 
 ### O que foi entregue nesta sessão (E2E hardening real)
 
@@ -122,14 +127,65 @@ E2E validado em produção real (2026-05-04 19:37-19:38 UTC):
 ### Como retomar em nova sessão
 
 ```
-1. Ler §5 + §7 inteiro
-2. git log -5 + git status (working tree limpa nesta sessão pós-commit)
+1. Ler §5 + §7 + §8 (checkpoint Sprint 12) inteiros
+2. git log -5 + git status — working tree tem 3 arquivos pendentes não-commitados:
+   - docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md (NEW)
+   - docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md (renomeado de 12)
+   - MEMORY.md (atualizações desta sessão)
 3. Edge prod já está rodando — não precisa subir wrangler dev local
 4. Verificar saúde: curl https://globaltracker-edge.globaltracker.workers.dev/health
-5. Próxima ação: aplicar template de funil em wkshop-cs-jun26 OU configurar
-   pages oferta-principal/obrigado-principal seguindo a mesma receita.
-6. Body scripts canônicos (Framer) estão no §7.
+5. Próxima ação: iniciar Sprint 12 Onda 1 (despachar T-FUNIL-030 sequencial,
+   T-FUNIL-031 e T-FUNIL-032 em paralelo após T-030 confirmado).
+6. Body scripts canônicos (Framer) atuais estão no §7. Sprint 12 substitui-os por
+   versões versionadas em apps/tracker/snippets/paid-workshop/ (T-FUNIL-031/032).
 ```
+
+## §8 Checkpoint Sprint 12 — Realinhamento template paid_workshop (2026-05-04)
+
+> Decisões já fechadas com Tiago. **Não re-debater** ao retomar — partir direto para execução.
+
+### Decisões D1–D6 (alvo de ADR-026 em T-FUNIL-036)
+
+| ID | Decisão | Implicação técnica |
+|---|---|---|
+| D1 | IC do workshop e do main vêm do **Guru** (load do checkout ou webhook intermediário, **investigar pós-sprint**) | Stages de IC ficam **fora** do template Sprint 12. Stages de "clicou comprar" são custom events client-side. Investigação Guru = potencial Sprint 14. |
+| D2 | `obrigado-workshop` muda de papel: vira **página de pesquisa** + botão WhatsApp ao final | Fluxo: Purchase → redirect → preencher pesquisa (`custom:survey_responded`) → botão wpp (`Contact`). |
+| D3 | Aula em page nova `aula-workshop` (role=`webinar`); MVP **binário** com botão "Já assisti" | Evolução planejada: Zoom webhook attendance OU Vimeo heartbeat. Backlog. |
+| D4 | Tracking aula = binário (`custom:watched_workshop`) | 1 stage. Sem `_25/_50/_90`. |
+| D5 | Click "Quero Comprar" antes da popup vira `custom:click_buy_workshop` | Custom client-side. iOS funciona via first-party fetch ao Edge (cookie `__ftk` cross-origin já resolvido SameSite=None). |
+| D6 | `oferta-principal` **sem popup**; `clicked_buy_main` via `custom:click_buy_main` no botão | Page main perde Lead do event_config. |
+
+### Forma canônica v2 (alvo)
+
+**Stages (8)**: `lead_workshop` (Lead) → `clicked_buy_workshop` (custom:click_buy_workshop) → `purchased_workshop` (Purchase + funnel_role=workshop) → `survey_responded` (custom:survey_responded) → `wpp_joined` (Contact) → `watched_workshop` (custom:watched_workshop) → `clicked_buy_main` (custom:click_buy_main) → `purchased_main` (Purchase + funnel_role=main_offer)
+
+**Pages (5)**:
+- `workshop` (sales/workshop): canonical `[PageView, Lead]` + custom `[click_buy_workshop]`
+- `obrigado-workshop` (thankyou/workshop): canonical `[PageView, Purchase, Contact]` + custom `[survey_responded]`
+- `aula-workshop` (webinar/workshop) **NOVA**: canonical `[PageView]` + custom `[watched_workshop]`
+- `oferta-principal` (sales/main_offer): canonical `[PageView, ViewContent]` + custom `[click_buy_main]`
+- `obrigado-principal` (thankyou/main_offer): canonical `[PageView, Purchase]`
+
+**Audiences (6)**: `compradores_workshop_aquecimento`, `respondeu_pesquisa_sem_comprar_main`, `engajados_workshop` (gte=watched_workshop), `abandono_main_offer`, `compradores_main`, `nao_compradores_workshop_engajados`. Removidas: `compradores_apenas_workshop` (duplicata), `watched_class_1/2/3` (substituídos).
+
+### T-IDs Sprint 12 (planejados, sem execução nesta sessão)
+
+```
+Onda 1: T-FUNIL-030 (schema, serial) → T-FUNIL-031 + T-FUNIL-032 (tracker, paralelo)
+Onda 2: T-FUNIL-033 + T-FUNIL-034 (test) + T-FUNIL-035 + T-FUNIL-036 (docs/ADR), 4 paralelos
+Onda 3: T-FUNIL-037 (E2E real humano)
+Onda 4: T-FUNIL-038 (br-auditor)
+```
+
+Detalhe completo em [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
+
+### Verificação técnica feita nesta sessão (não re-fazer)
+
+- `raw-events-processor.ts:330` faz match exato por `event_name` — body scripts devem chamar `Funil.track('custom:click_buy_workshop')` com prefixo. Sem normalização.
+- `funnel_template` schema (Drizzle) em `packages/db/src/schema/funnel_template.ts`; blueprint Zod em `packages/shared/src/schemas/funnel-blueprint.ts`. Suporta `source_event_filters` (já usado por workshop/main_offer atual).
+- Migration `0029_funnel_templates.sql` usa `ON CONFLICT DO NOTHING` — re-rodar não atualiza. Sprint 12 cria `0031` com `UPDATE`.
+- Webhook Guru já injeta `funnel_role` no payload (Sprint 11). Mapping product_id→launch+funnel_role já cadastrado pelo Tiago.
+- Custom events (`custom:foo`) existem desde Sprint 10 (template original tem `watched_class_1` etc).
 
 ## §6 Ambiente operacional
 
