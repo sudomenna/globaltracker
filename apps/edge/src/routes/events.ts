@@ -56,7 +56,8 @@ import { EventPayloadSchema } from './schemas/event-payload.js';
 
 const EventsQuerySchema = z
   .object({
-    launch_id: z.string().uuid(),
+    // launch_public_id (slug text) — resolved to internal UUID before DB query
+    launch_id: z.string().min(1),
     limit: z.coerce.number().min(1).max(200).default(50),
     cursor: z.string().optional(), // ISO timestamp of last item from previous page
   })
@@ -201,13 +202,16 @@ export function createEventsRoute(
     const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
     const dbConn = createDb(connString);
 
-    // Workspace isolation: verify launch belongs to the workspace
+    // Workspace isolation: resolve public_id slug → internal UUID and verify workspace ownership
     // BR-RBAC-002: reject with 404 (not 403) to avoid leaking existence
     const launchRows = await dbConn
       .select({ id: launches.id })
       .from(launches)
       .where(
-        and(eq(launches.id, launchId), eq(launches.workspaceId, workspaceId)),
+        and(
+          eq(launches.publicId, launchId),
+          eq(launches.workspaceId, workspaceId),
+        ),
       )
       .limit(1);
 
@@ -223,13 +227,15 @@ export function createEventsRoute(
       );
     }
 
-    // Build WHERE conditions: always filter by launchId; add cursor if present
+    const launchInternalId = launchRows[0].id;
+
+    // Build WHERE conditions: use internal UUID; add cursor if present
     const whereConditions = cursor
       ? and(
-          eq(events.launchId, launchId),
+          eq(events.launchId, launchInternalId),
           lt(events.createdAt, new Date(cursor)),
         )
-      : eq(events.launchId, launchId);
+      : eq(events.launchId, launchInternalId);
 
     // Fetch events (ordered by created_at DESC, cursor-paginated)
     const rows = await dbConn
@@ -250,7 +256,7 @@ export function createEventsRoute(
     const [countRow] = await dbConn
       .select({ total: count() })
       .from(events)
-      .where(eq(events.launchId, launchId));
+      .where(eq(events.launchId, launchInternalId));
 
     const total = countRow?.total ?? 0;
 
@@ -274,7 +280,7 @@ export function createEventsRoute(
           id: row.id,
           event_name: row.eventName,
           created_at: row.createdAt.toISOString(),
-          lead_public_id: row.leadId ?? null,
+          lead_id: row.leadId ?? null,
           page_id: row.pageId ?? null,
           launch_id: row.launchId ?? null,
         })),

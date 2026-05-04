@@ -303,19 +303,22 @@ describe('GET /v1/events — T-FUNIL-004', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 3: 400 when launch_id is not a valid UUID
+  // Test 3: 404 when launch_id is a text slug (not UUID) that doesn't exist
+  //
+  // Schema accepts any non-empty string (slugs like 'lancamento-maio-2026').
+  // Workspace isolation then returns 404 when launch is not found.
   // -------------------------------------------------------------------------
-  it('400: returns validation_error when launch_id is not a UUID', async () => {
+  it('404: returns launch_not_found when launch_id is a text slug with no matching launch', async () => {
     launchFound = false;
     const app = await buildGetEventsApp({ workspaceId: WS_A });
 
-    const res = await app.fetch(`${EVENTS_URL}?launch_id=not-a-uuid`, {
+    const res = await app.fetch(`${EVENTS_URL}?launch_id=lancamento-maio-2026`, {
       headers: { Authorization: 'Bearer test-token' },
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.code).toBe('validation_error');
+    expect(body.code).toBe('launch_not_found');
   });
 
   // -------------------------------------------------------------------------
@@ -497,7 +500,7 @@ describe('GET /v1/events — T-FUNIL-004', () => {
     expect(firstEvent).toHaveProperty('created_at');
     expect(firstEvent).toHaveProperty('launch_id');
     expect(firstEvent).toHaveProperty('page_id');
-    expect(firstEvent).toHaveProperty('lead_public_id');
+    expect(firstEvent).toHaveProperty('lead_id');
   });
 
   // -------------------------------------------------------------------------

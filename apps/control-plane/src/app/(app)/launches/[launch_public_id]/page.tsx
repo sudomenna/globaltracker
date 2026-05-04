@@ -43,7 +43,7 @@ interface Event {
   public_id?: string;
   event_name: string;
   created_at: string;
-  lead_public_id?: string;
+  lead_id?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -307,9 +307,9 @@ function TabEventos({
             >
               <div>
                 <p className="font-medium">{e.event_name}</p>
-                {e.lead_public_id && (
+                {e.lead_id && (
                   <p className="text-xs text-muted-foreground font-mono">
-                    {e.lead_public_id}
+                    {e.lead_id}
                   </p>
                 )}
               </div>
