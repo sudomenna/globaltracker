@@ -25,6 +25,7 @@ import type { Db } from '@globaltracker/db';
 import { events, launches, leadStages, rawEvents } from '@globaltracker/db';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { safeLog } from '../middleware/sanitize-logs.js';
 import { type AttributionParams, recordTouches } from './attribution.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
@@ -180,6 +181,7 @@ const SourceEventFiltersSchema = z.record(z.string(), z.unknown()).optional();
  * source_event_filters: optional payload key=value predicates (AND logic).
  */
 const BlueprintStageSchema = z.object({
+  // INV-FUNNEL-003: stage slug is non-empty and ≤ 64 chars
   slug: z.string().min(1).max(64),
   label: z.string().optional(),
   source_events: z.array(z.string().min(1).max(128)),
@@ -276,9 +278,11 @@ async function getBlueprintForLaunch(
 
   if (!parsed.success) {
     // BR-PRIVACY-001: no PII in logs — launchId is a UUID, safe to log.
-    console.warn(
-      `[raw-events-processor] Invalid funnel_blueprint for launch ${launchId}: ${parsed.error.message.slice(0, 200)}`,
-    );
+    safeLog('warn', {
+      event: 'invalid_funnel_blueprint',
+      launch_id: launchId,
+      error: parsed.error.message.slice(0, 200),
+    });
     blueprintCache.set(launchId, { blueprint: null, fetchedAt: now });
     return null;
   }
@@ -693,9 +697,11 @@ export async function processRawEvent(
           ? backfillErr.message
           : String(backfillErr);
       // BR-PRIVACY-001: log only non-PII context — no visitor_id or lead_id values in message
-      console.error(
-        `[visitor_id backfill failed] raw_event_id=${raw_event_id} err=${backfillMsg.slice(0, 200)}`,
-      );
+      safeLog('error', {
+        event: 'visitor_id_backfill_failed',
+        raw_event_id,
+        error: backfillMsg.slice(0, 200),
+      });
     }
   }
 

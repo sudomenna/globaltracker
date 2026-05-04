@@ -222,11 +222,13 @@ export async function scaffoldLaunch(
     // Blueprint stored as snapshot — changes to template do not affect existing launches.
     // -----------------------------------------------------------------------
     await tx.execute(
+      // BR-RBAC-001: workspace isolation — only update launch belonging to authenticated workspace
       sql`UPDATE launches
           SET funnel_blueprint = ${JSON.stringify(blueprint)}::jsonb,
               funnel_template_id = ${templateRow.id}::uuid,
               updated_at = now()
-          WHERE id = ${launchId}::uuid`,
+          WHERE id = ${launchId}::uuid
+            AND workspace_id = ${workspaceId}::uuid`,
     );
 
     safeLog('info', {
