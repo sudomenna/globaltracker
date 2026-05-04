@@ -27,6 +27,7 @@ export interface AuthPublicTokenEnv {
   Variables: {
     workspace_id: string;
     page_id: string;
+    launch_id: string | null;
     request_id: string;
   };
   Bindings: {
@@ -39,6 +40,7 @@ export interface AuthPublicTokenEnv {
 export interface PageTokenRow {
   workspaceId: string;
   pageId: string;
+  launchId: string | null;
   status: 'active' | 'rotating' | 'revoked';
 }
 
@@ -107,6 +109,9 @@ export function authPublicToken(
   lookupPageToken: LookupPageTokenFn,
 ): MiddlewareHandler {
   return createMiddleware(async (c, next) => {
+    // OPTIONS preflight must not be blocked by auth — CORS headers are set by corsMiddleware
+    if (c.req.method === 'OPTIONS') return next();
+
     const requestId = c.get('request_id') ?? crypto.randomUUID();
 
     const rawToken = extractToken(c);
@@ -192,6 +197,7 @@ export function authPublicToken(
     // INV-PAGE-007: token binds request to this workspace/page — enforces isolation
     c.set('workspace_id', row.workspaceId);
     c.set('page_id', row.pageId);
+    c.set('launch_id', row.launchId ?? null);
 
     await next();
   });

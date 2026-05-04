@@ -1,0 +1,31 @@
+{
+  "event_type": "order.refunded",
+  "order": {
+    "id": "ord-kiwify-0002-refund",
+    "status": "refunded",
+    "total_value_cents": 19700,
+    "currency": "BRL",
+    "client_ref": "ldr_test0000000000000000000000002",
+    "tracking": {
+      "utm_source": "google",
+      "utm_medium": "cpc",
+      "utm_campaign": "camp_kiwify_002",
+      "utm_content": null,
+      "utm_term": "curso online"
+    }
+  },
+  "customer": {
+    "name": "Comprador Reembolso",
+    "email": "reembolso@example.com",
+    "phone": "+5521988880002",
+    "mobile": null
+  },
+  "product": {
+    "id": "prod-kiwify-0002",
+    "name": "Mentoria Teste"
+  },
+  "subscription": null,
+  "metadata": {
+    "lead_public_id": null
+  }
+}

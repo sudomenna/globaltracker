@@ -1,0 +1,38 @@
+{
+  "event": "PURCHASE_CHARGEBACK",
+  "id": "evt_hotmart_003_chargeback",
+  "creation_date": 1705489200000,
+  "version": "2.0.0",
+  "data": {
+    "purchase": {
+      "transaction": "HP99887766554433",
+      "status": "chargeback",
+      "price": {
+        "value": 49700,
+        "currency_value": "BRL"
+      },
+      "tracking": {
+        "source": "google",
+        "source_sck": null,
+        "external_reference": "gclid_xyz789"
+      },
+      "utms": {
+        "utm_source": "google",
+        "utm_medium": "cpc",
+        "utm_campaign": "camp_search_brand",
+        "utm_content": null,
+        "utm_term": "curso online"
+      }
+    },
+    "buyer": {
+      "name": "Comprador Chargeback",
+      "email": "chargeback@example.com",
+      "checkout_phone": null
+    },
+    "product": {
+      "id": 9876543,
+      "name": "Mentoria Premium"
+    }
+  },
+  "metadata": null
+}

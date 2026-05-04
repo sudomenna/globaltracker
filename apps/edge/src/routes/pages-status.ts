@@ -31,6 +31,9 @@
  *   page.workspace_id (row-level). Auth middleware will bind workspace_id in Sprint 6.
  */
 
+import type { Db } from '@globaltracker/db';
+import { and, eq, gte, max, or, sql } from 'drizzle-orm';
+import { createDb, pages, pageTokens, rawEvents } from '@globaltracker/db';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
@@ -42,6 +45,7 @@ import { safeLog } from '../middleware/sanitize-logs.js';
 type AppBindings = {
   HYPERDRIVE: Hyperdrive;
   ENVIRONMENT: string;
+  DATABASE_URL?: string;
 };
 
 type AppVariables = {
@@ -216,6 +220,7 @@ export function computeHealthState(
  * @param deps.getPageEventStats - async function to fetch event counts and last_ping_at.
  */
 export function createPagesStatusRoute(deps?: {
+  getDb?: (env: AppBindings) => Db;
   getPageByPublicId?: GetPageByPublicIdFn;
   getActivePageToken?: GetActivePageTokenFn;
   getPageEventStats?: GetPageEventStatsFn;
@@ -292,9 +297,28 @@ export function createPagesStatusRoute(deps?: {
     // -----------------------------------------------------------------------
     let page: PageStatusRow | null = null;
 
-    if (deps?.getPageByPublicId) {
+    const db: Db | null = deps?.getDb
+      ? deps.getDb(c.env)
+      : deps?.getPageByPublicId
+        ? null
+        : null;
+
+    const resolvedGetPageByPublicId: GetPageByPublicIdFn | undefined =
+      deps?.getPageByPublicId ??
+      (db
+        ? async (pid) => {
+            const row = await db
+              .select({ id: pages.id, publicId: pages.publicId, workspaceId: pages.workspaceId })
+              .from(pages)
+              .where(eq(pages.publicId, pid))
+              .limit(1);
+            return row[0] ?? null;
+          }
+        : undefined);
+
+    if (resolvedGetPageByPublicId) {
       try {
-        page = await deps.getPageByPublicId(publicId);
+        page = await resolvedGetPageByPublicId(publicId);
       } catch (err) {
         // BR-PRIVACY-001: no PII in log — only opaque IDs
         safeLog('error', {
@@ -337,9 +361,39 @@ export function createPagesStatusRoute(deps?: {
     let tokenStatus: PageTokenStatus | 'expired' = 'expired';
     let tokenRotatesAt: string | null = null;
 
-    if (deps?.getActivePageToken) {
+    const resolvedGetActivePageToken: GetActivePageTokenFn | undefined =
+      deps?.getActivePageToken ??
+      (db
+        ? async (pageId) => {
+            const row = await db
+              .select({
+                status: pageTokens.status,
+                createdAt: pageTokens.createdAt,
+                rotatedAt: pageTokens.rotatedAt,
+                revokedAt: pageTokens.revokedAt,
+              })
+              .from(pageTokens)
+              .where(
+                and(
+                  eq(pageTokens.pageId, pageId),
+                  or(eq(pageTokens.status, 'active'), eq(pageTokens.status, 'rotating')),
+                ),
+              )
+              .orderBy(pageTokens.createdAt)
+              .limit(1);
+            if (!row[0]) return null;
+            return {
+              status: row[0].status as PageTokenStatus,
+              createdAt: row[0].createdAt,
+              rotatedAt: row[0].rotatedAt,
+              revokedAt: row[0].revokedAt,
+            };
+          }
+        : undefined);
+
+    if (resolvedGetActivePageToken) {
       try {
-        token = await deps.getActivePageToken(page.id);
+        token = await resolvedGetActivePageToken(page.id);
       } catch (err) {
         safeLog('error', {
           event: 'pages_status_db_token_error',
@@ -374,9 +428,40 @@ export function createPagesStatusRoute(deps?: {
       lastPingAt: null,
     };
 
-    if (deps?.getPageEventStats) {
+    const resolvedGetPageEventStats: GetPageEventStatsFn | undefined =
+      deps?.getPageEventStats ??
+      (db
+        ? async (pageId) => {
+            const now = new Date();
+            const startOfDay = new Date(now);
+            startOfDay.setUTCHours(0, 0, 0, 0);
+            const ago24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+            const [todayRow, last24hRow] = await Promise.all([
+              db
+                .select({ count: sql<number>`cast(count(*) as int)` })
+                .from(rawEvents)
+                .where(and(eq(rawEvents.pageId, pageId), gte(rawEvents.receivedAt, startOfDay))),
+              db
+                .select({
+                  count: sql<number>`cast(count(*) as int)`,
+                  lastPingAt: max(rawEvents.receivedAt),
+                })
+                .from(rawEvents)
+                .where(and(eq(rawEvents.pageId, pageId), gte(rawEvents.receivedAt, ago24h))),
+            ]);
+
+            return {
+              eventsToday: todayRow[0]?.count ?? 0,
+              eventsLast24h: last24hRow[0]?.count ?? 0,
+              lastPingAt: last24hRow[0]?.lastPingAt ?? null,
+            };
+          }
+        : undefined);
+
+    if (resolvedGetPageEventStats) {
       try {
-        stats = await deps.getPageEventStats(page.id);
+        stats = await resolvedGetPageEventStats(page.id);
       } catch (err) {
         safeLog('error', {
           event: 'pages_status_db_stats_error',

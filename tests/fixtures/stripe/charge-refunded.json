@@ -1,0 +1,23 @@
+{
+  "id": "evt_1OeL3aKG2eZvKYloRfNmQpWx",
+  "object": "event",
+  "type": "charge.refunded",
+  "created": 1706087400,
+  "data": {
+    "object": {
+      "id": "ch_test_3OeL3aKG2eZvKYloRfNmQpWx",
+      "object": "charge",
+      "amount_refunded": 29700,
+      "currency": "brl",
+      "billing_details": {
+        "email": "reembolso@example.com",
+        "name": "Cliente Reembolso",
+        "phone": null
+      },
+      "metadata": {
+        "lead_public_id": "ldr_test_ghi789rst",
+        "utm_source": "instagram"
+      }
+    }
+  }
+}

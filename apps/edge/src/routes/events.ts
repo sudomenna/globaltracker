@@ -296,6 +296,7 @@ export function createEventsRoute(
     const requestId = c.get('request_id');
     const workspaceId = c.get('workspace_id');
     const pageId = c.get('page_id');
+    const launchId = (c.get('launch_id') as string | null | undefined) ?? null;
 
     // -----------------------------------------------------------------------
     // Step 1: Parse JSON body
@@ -472,6 +473,8 @@ export function createEventsRoute(
       event_time: effectiveEventTime,
       // BR-TEST-MODE: propagate test flag to processor for events.is_test
       is_test: isTest,
+      // Inject resolved launch_id (UUID) from token auth — processor needs this for blueprint lookup
+      ...(launchId ? { launch_id: launchId } : {}),
     };
 
     let rawEventId: string | undefined;

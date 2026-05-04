@@ -60,6 +60,7 @@ interface FunnelTemplateRow {
   description: string | null;
   blueprint: unknown;
   is_system: boolean;
+  status: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +169,7 @@ export function createFunnelTemplatesRoute(
 
     try {
       const result = await db.execute(
-        sql`SELECT id, slug, name, description, blueprint, is_system
+        sql`SELECT id, slug, name, description, blueprint, is_system, status
             FROM funnel_templates
             WHERE workspace_id IS NULL OR workspace_id = ${workspaceId}::uuid
             ORDER BY is_system DESC, name ASC`,
@@ -195,6 +196,7 @@ export function createFunnelTemplatesRoute(
           description: r.description ?? null,
           blueprint: r.blueprint,
           is_system: r.is_system,
+          status: r.status,
         })),
       },
       200,

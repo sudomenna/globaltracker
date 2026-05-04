@@ -70,7 +70,14 @@ const UserDataSchema = z
   })
   .strict(); // BR-EVENT-005: reject unknown keys (including email, phone, name in clear)
 
-const ConsentValueSchema = z.enum(['granted', 'denied', 'unknown']);
+const ConsentValueSchema = z.preprocess(
+  (val) => {
+    if (val === true) return 'granted';
+    if (val === false) return 'denied';
+    return val;
+  },
+  z.enum(['granted', 'denied', 'unknown']),
+);
 
 /**
  * consent_snapshot shape — 5 finalidades.
@@ -194,7 +201,7 @@ const BlueprintStageSchema = z.object({
  * Added by migration 0029.
  */
 const FunnelBlueprintSchema = z.object({
-  version: z.number().int().positive().default(1),
+  version: z.preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().positive()).default(1),
   stages: z.array(BlueprintStageSchema),
 });
 
@@ -274,7 +281,12 @@ async function getBlueprintForLaunch(
     return null;
   }
 
-  const parsed = FunnelBlueprintSchema.safeParse(row.funnelBlueprint);
+  // jsonb via sql`` template may come back as a string — parse if needed.
+  const bpValue =
+    typeof row.funnelBlueprint === 'string'
+      ? (() => { try { return JSON.parse(row.funnelBlueprint); } catch { return row.funnelBlueprint; } })()
+      : row.funnelBlueprint;
+  const parsed = FunnelBlueprintSchema.safeParse(bpValue);
 
   if (!parsed.success) {
     // BR-PRIVACY-001: no PII in logs — launchId is a UUID, safe to log.
@@ -377,7 +389,7 @@ export async function processRawEvent(
   db: Db,
   _kv?: KvStore,
 ): Promise<
-  Result<{ event_id: string; dispatch_jobs_created: number }, ProcessingError>
+  Result<{ event_id: string; dispatch_jobs_created: number; dispatch_job_ids: Array<{ id: string; destination: string }> }, ProcessingError>
 > {
   // -------------------------------------------------------------------------
   // Step 1: Fetch raw_events row
@@ -409,6 +421,7 @@ export async function processRawEvent(
       value: {
         event_id: payloadEventId ?? raw_event_id,
         dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
       },
     };
   }
@@ -588,6 +601,7 @@ export async function processRawEvent(
         value: {
           event_id: payload.event_id,
           dispatch_jobs_created: 0,
+          dispatch_job_ids: [],
         },
       };
     }
@@ -724,6 +738,7 @@ export async function processRawEvent(
     value: {
       event_id: payload.event_id,
       dispatch_jobs_created: dispatchJobsCreated,
+      dispatch_job_ids: [],
     },
   };
 }

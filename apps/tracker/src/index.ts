@@ -50,8 +50,8 @@ import type {
   PlatformCookies,
 } from './types';
 
-/** Base URL for Edge API — can be overridden for testing. */
-const EDGE_BASE_URL = '';
+/** Base URL for Edge API — overridden at init from data-edge-url attribute. */
+let EDGE_BASE_URL = '';
 
 /** Default consent snapshot — returned when config is unavailable. */
 const DEFAULT_CONSENT: ConsentSnapshot = {
@@ -86,15 +86,17 @@ function readDataAttributes(): {
   siteToken: string | null;
   launchPublicId: string | null;
   pagePublicId: string | null;
+  edgeUrl: string | null;
 } {
   const script = getCurrentScript();
   if (!script) {
-    return { siteToken: null, launchPublicId: null, pagePublicId: null };
+    return { siteToken: null, launchPublicId: null, pagePublicId: null, edgeUrl: null };
   }
   return {
     siteToken: script.dataset.siteToken ?? null,
     launchPublicId: script.dataset.launchPublicId ?? null,
     pagePublicId: script.dataset.pagePublicId ?? null,
+    edgeUrl: script.dataset.edgeUrl ?? null,
   };
 }
 
@@ -140,7 +142,9 @@ function buildUserDataRecord(
  */
 async function init(): Promise<void> {
   try {
-    const { siteToken, launchPublicId, pagePublicId } = readDataAttributes();
+    const { siteToken, launchPublicId, pagePublicId, edgeUrl } = readDataAttributes();
+
+    if (edgeUrl) EDGE_BASE_URL = edgeUrl.replace(/\/$/, '');
 
     setState({ siteToken, launchPublicId, pagePublicId });
 

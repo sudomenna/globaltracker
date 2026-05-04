@@ -1,0 +1,31 @@
+{
+  "event_type": "order.paid",
+  "order": {
+    "id": "ord-kiwify-0001-paid",
+    "status": "paid",
+    "total_value_cents": 29700,
+    "currency": "BRL",
+    "client_ref": null,
+    "tracking": {
+      "utm_source": "facebook",
+      "utm_medium": "paid",
+      "utm_campaign": "camp_kiwify_001",
+      "utm_content": "ad_creative_42",
+      "utm_term": null
+    }
+  },
+  "customer": {
+    "name": "Comprador Kiwify",
+    "email": "comprador@example.com",
+    "phone": null,
+    "mobile": "+5511999990001"
+  },
+  "product": {
+    "id": "prod-kiwify-0001",
+    "name": "Curso Teste GlobalTracker"
+  },
+  "subscription": null,
+  "metadata": {
+    "lead_public_id": "ldr_test0000000000000000000000001"
+  }
+}

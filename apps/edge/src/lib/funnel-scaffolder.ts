@@ -32,6 +32,8 @@ const FunnelBlueprintPageSchema = z.object({
   role: z.string().min(1),
   /** Suggested public_id slug. Falls back to `${launchPublicId}-${role}-${idx}` */
   suggested_public_id: z.string().min(1).max(64).optional(),
+  /** Funnel role tag (e.g. 'workshop', 'main_offer') — injected into events for stage filters */
+  suggested_funnel_role: z.string().min(1).max(64).optional(),
   /** Optional initial event_config partial (merged into page defaults at scaffolding time) */
   event_config: z.record(z.unknown()).optional(),
 });
@@ -47,9 +49,18 @@ const FunnelBlueprintAudienceSchema = z.object({
   query_template: z.record(z.unknown()).optional(),
 });
 
+const FunnelBlueprintStageSchema = z.object({
+  slug: z.string().min(1).max(64),
+  label: z.string().optional(),
+  is_recurring: z.boolean().default(false),
+  source_events: z.array(z.string()).default([]),
+  source_event_filters: z.record(z.string()).optional(),
+});
+
 const FunnelBlueprintSchema = z.object({
   version: z.string().default('1'),
   pages: z.array(FunnelBlueprintPageSchema).default([]),
+  stages: z.array(FunnelBlueprintStageSchema).default([]),
   audiences: z.array(FunnelBlueprintAudienceSchema).default([]),
 });
 

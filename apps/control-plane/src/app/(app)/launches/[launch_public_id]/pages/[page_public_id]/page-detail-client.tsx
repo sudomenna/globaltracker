@@ -24,13 +24,16 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { EventConfig } from '@/lib/page-role-defaults';
 import {
   Check,
+  ChevronLeft,
   Clipboard,
   Copy,
   Eye,
   EyeOff,
   RefreshCw,
   Save,
+  X,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useSWR from 'swr';
 import { DiagnosticsPanel } from './diagnostics-panel';
@@ -67,18 +70,26 @@ interface Props {
   accessToken: string;
   initialStatus: PageStatus | null;
   initialEventConfig?: EventConfig | null;
+  initialUrl?: string | null;
+  initialAllowedDomains?: string[];
 }
+
+const TRACKER_CDN_URL =
+  process.env.NEXT_PUBLIC_TRACKER_CDN_URL ??
+  'https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js';
 
 function buildHeadSnippet(
   pageToken: string,
   pagePublicId: string,
   launchPublicId: string,
+  edgeUrl?: string,
 ) {
+  const edgeAttr = edgeUrl ? `\n  data-edge-url="${edgeUrl}"` : '';
   return `<script
-  src="https://cdn.globaltracker.io/tracker.js"
+  src="${TRACKER_CDN_URL}"
   data-site-token="${pageToken}"
   data-launch-public-id="${launchPublicId}"
-  data-page-public-id="${pagePublicId}">
+  data-page-public-id="${pagePublicId}"${edgeAttr}>
 </script>`;
 }
 
@@ -112,6 +123,8 @@ export function PageDetailClient({
   accessToken,
   initialStatus,
   initialEventConfig,
+  initialUrl,
+  initialAllowedDomains = [],
 }: Props) {
   const [tokenVisible, setTokenVisible] = useState(false);
   // pageToken: loaded from localStorage (saved on creation/rotation) or set after rotation.
@@ -138,6 +151,15 @@ export function PageDetailClient({
     string | null
   >(null);
   const [eventConfigSaved, setEventConfigSaved] = useState(false);
+
+  // Page configuration (url + allowed_domains)
+  const [pageUrl, setPageUrl] = useState(initialUrl ?? '');
+  const [allowedDomains, setAllowedDomains] = useState<string[]>(initialAllowedDomains);
+  const [newDomain, setNewDomain] = useState('');
+  const [isSavingPageConfig, setIsSavingPageConfig] = useState(false);
+  const [pageConfigSaveError, setPageConfigSaveError] = useState<string | null>(null);
+  const [pageConfigSaved, setPageConfigSaved] = useState(false);
+
   const statusLiveRegionRef = useRef<HTMLSpanElement>(null);
   const snippetSectionRef = useRef<HTMLDivElement>(null);
 
@@ -253,7 +275,7 @@ export function PageDetailClient({
     setEventConfigSaveError(null);
     setEventConfigSaved(false);
 
-    const res = await fetch(`${baseUrl}/v1/pages/${pagePublicId}`, {
+    const res = await fetch(`${baseUrl}/v1/pages/${pagePublicId}?launch_public_id=${launchPublicId}`, {
       method: 'PATCH',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -283,9 +305,48 @@ export function PageDetailClient({
     });
   }
 
-  function handleAddDomain(_domain: string) {
-    // TODO: call PATCH /v1/launches/:launchPublicId/pages/:pagePublicId
-    // to append domain to allowed_domains once endpoint is available
+  function handleAddDomain() {
+    const domain = newDomain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (!domain || allowedDomains.includes(domain)) return;
+    setAllowedDomains((prev) => [...prev, domain]);
+    setNewDomain('');
+  }
+
+  function handleRemoveDomain(domain: string) {
+    setAllowedDomains((prev) => prev.filter((d) => d !== domain));
+  }
+
+  async function handleSavePageConfig() {
+    setIsSavingPageConfig(true);
+    setPageConfigSaveError(null);
+    setPageConfigSaved(false);
+
+    const body: Record<string, unknown> = { allowed_domains: allowedDomains };
+    if (pageUrl.trim()) body.url = pageUrl.trim();
+    else body.url = null;
+
+    const res = await fetch(
+      `${baseUrl}/v1/pages/${pagePublicId}?launch_public_id=${launchPublicId}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+
+    setIsSavingPageConfig(false);
+
+    if (!res.ok) {
+      const errorId = res.headers.get('X-Request-Id') ?? 'desconhecido';
+      setPageConfigSaveError(`Falha ao salvar. ID do erro: ${errorId}`);
+      return;
+    }
+
+    setPageConfigSaved(true);
+    setTimeout(() => setPageConfigSaved(false), 2_000);
   }
 
   const displayToken = tokenVisible && pageToken ? pageToken : MASKED_TOKEN;
@@ -300,6 +361,14 @@ export function PageDetailClient({
 
   return (
     <div className="space-y-6 max-w-2xl">
+      <Link
+        href={`/launches/${launchPublicId}?tab=pages`}
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+        Voltar para o lançamento
+      </Link>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -396,6 +465,105 @@ export function PageDetailClient({
         </CardContent>
       </Card>
 
+      {/* Configuração da página */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Configuração da página</CardTitle>
+          <CardDescription>
+            URL da landing page e domínios autorizados a disparar eventos.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <label htmlFor="page-url" className="text-sm font-medium">
+              URL da página
+            </label>
+            <input
+              id="page-url"
+              type="url"
+              value={pageUrl}
+              onChange={(e) => setPageUrl(e.target.value)}
+              placeholder="https://seudominio.com/captura"
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Domínios autorizados</p>
+            <p className="text-xs text-muted-foreground">
+              Apenas requisições originadas desses domínios serão aceitas. Cole sem protocolo (ex:{' '}
+              <code className="font-mono text-xs bg-muted px-1 rounded">cneeducacao.com</code>).
+            </p>
+
+            {allowedDomains.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {allowedDomains.map((d) => (
+                  <span
+                    key={d}
+                    className="inline-flex items-center gap-1 rounded-md border bg-muted px-2 py-0.5 text-xs font-mono"
+                  >
+                    {d}
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveDomain(d)}
+                      aria-label={`Remover domínio ${d}`}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-3 w-3" aria-hidden="true" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newDomain}
+                onChange={(e) => setNewDomain(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddDomain(); } }}
+                placeholder="cneeducacao.com"
+                className="flex h-8 flex-1 rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleAddDomain}
+                disabled={!newDomain.trim()}
+              >
+                Adicionar
+              </Button>
+            </div>
+          </div>
+
+          {pageConfigSaveError && (
+            <p className="text-sm text-destructive">{pageConfigSaveError}</p>
+          )}
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleSavePageConfig}
+            disabled={isSavingPageConfig}
+            className="gap-1.5"
+          >
+            {pageConfigSaved ? (
+              <>
+                <Check className="h-4 w-4" aria-hidden="true" />
+                Salvo!
+              </>
+            ) : (
+              <>
+                <Save className="h-4 w-4" aria-hidden="true" />
+                {isSavingPageConfig ? 'Salvando...' : 'Salvar configuração'}
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Diagnostics panel — A.4: contextual diagnosis for origin_not_allowed, invalid_token, no recent ping */}
       {status != null && (
         <DiagnosticsPanel
@@ -403,7 +571,9 @@ export function PageDetailClient({
           lastPingAt={status.last_ping_at}
           healthState={status.health_state}
           onScrollToSnippet={handleScrollToSnippet}
-          onAddDomain={handleAddDomain}
+          onAddDomain={(domain) => {
+            setAllowedDomains((prev) => prev.includes(domain) ? prev : [...prev, domain]);
+          }}
         />
       )}
 

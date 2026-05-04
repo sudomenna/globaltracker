@@ -13,16 +13,31 @@ import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import {
   Activity,
   ChevronLeft,
+  ExternalLink,
   FileText,
   Loader2,
   Plus,
   Trash2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+interface BlueprintPage {
+  role?: string;
+  suggested_public_id?: string;
+  suggested_funnel_role?: string;
+}
+
+interface FunnelBlueprint {
+  pages?: BlueprintPage[];
+  stages?: unknown[];
+  audiences?: unknown[];
+  [key: string]: unknown;
+}
 
 interface Launch {
   public_id: string;
@@ -37,6 +52,7 @@ interface Launch {
       end_date?: string;
     };
   };
+  funnel_blueprint?: FunnelBlueprint | null;
 }
 
 interface Page {
@@ -44,6 +60,8 @@ interface Page {
   name: string;
   status: string;
   role?: string;
+  url?: string | null;
+  allowed_domains?: string[];
   created_at: string;
 }
 
@@ -94,11 +112,11 @@ const GURU_FUNNEL_ROLES = [
 
 const VALID_TABS = [
   'overview',
+  'funil',
   'pages',
   'eventos',
   'audiences',
   'performance',
-  'funil',
 ] as const;
 type TabValue = (typeof VALID_TABS)[number];
 
@@ -194,7 +212,12 @@ function GuruMappingPanel({
         .eq('id', memberRow.workspace_id)
         .single();
 
-      const config = wsRow?.config as
+      // Supabase may return jsonb as a string if stored incorrectly — parse defensively
+      let rawConfig = wsRow?.config;
+      if (typeof rawConfig === 'string') {
+        try { rawConfig = JSON.parse(rawConfig); } catch { rawConfig = undefined; }
+      }
+      const config = rawConfig as
         | {
             integrations?: {
               guru?: { product_launch_map?: GuruProductLaunchMap };
@@ -390,13 +413,10 @@ function GuruMappingPanel({
 
       {/* Modal "Adicionar produto" — <dialog> nativo conforme convenção do projeto */}
       {modalOpen && (
-        <dialog
-          open
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          aria-labelledby="guru-modal-title"
-          aria-modal="true"
-        >
-          <div className="bg-card rounded-lg shadow-lg w-full max-w-sm p-6 space-y-4">
+        <div className="fixed inset-0 z-50" role="dialog" aria-labelledby="guru-modal-title" aria-modal="true">
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg w-full max-w-sm p-6 space-y-4 relative">
             <h2 id="guru-modal-title" className="text-base font-semibold">
               Adicionar produto Guru
             </h2>
@@ -477,7 +497,8 @@ function GuruMappingPanel({
               </Button>
             </div>
           </div>
-        </dialog>
+          </div>
+        </div>
       )}
     </>
   );
@@ -563,10 +584,52 @@ function TabOverview({
 function TabPages({
   pages,
   launchPublicId,
+  blueprint,
+  accessToken,
+  baseUrl,
+  onPageDeleted,
 }: {
   pages: Page[];
   launchPublicId: string;
+  blueprint: FunnelBlueprint | null;
+  accessToken: string;
+  baseUrl: string;
+  onPageDeleted: () => void;
 }) {
+  const [deleteTarget, setDeleteTarget] = useState<Page | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const funnelRoleByPublicId = new Map<string, string>();
+  for (const bp of blueprint?.pages ?? []) {
+    if (bp.suggested_public_id && bp.suggested_funnel_role) {
+      funnelRoleByPublicId.set(bp.suggested_public_id, bp.suggested_funnel_role);
+    }
+  }
+
+  async function handleDelete(p: Page) {
+    setDeleting(true);
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/pages/${encodeURIComponent(p.public_id)}?launch_public_id=${encodeURIComponent(launchPublicId)}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      if (res.ok) {
+        toast.success(`Página "${p.public_id}" excluída`);
+        setDeleteTarget(null);
+        onPageDeleted();
+      } else {
+        toast.error('Erro ao excluir página');
+      }
+    } catch {
+      toast.error('Erro ao excluir página');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -596,33 +659,114 @@ function TabPages({
           </div>
         ) : (
           <ul className="divide-y">
-            {pages.map((p) => (
-              <li key={p.public_id}>
+            {pages.map((p) => {
+              const funnelRole = funnelRoleByPublicId.get(p.public_id);
+              const domains = p.allowed_domains ?? [];
+              return (
+              <li key={p.public_id} className="group flex items-center gap-2 py-3 -mx-2 px-2 rounded-md hover:bg-accent/50 transition-colors">
                 <Link
                   href={`/launches/${launchPublicId}/pages/${p.public_id}`}
-                  className="flex items-center justify-between py-3 -mx-2 px-2 rounded-md hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex-1 flex items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                 >
-                  <div>
-                    <p className="text-sm font-medium font-mono">
-                      {p.public_id}
-                    </p>
-                    <p className="text-xs text-muted-foreground capitalize">
-                      {p.status}
-                    </p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium font-mono truncate">
+                        {p.public_id}
+                      </p>
+                      {p.role && (
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded-full ${ROLE_COLORS[p.role] ?? 'bg-gray-100 text-gray-700'}`}
+                        >
+                          {p.role}
+                        </span>
+                      )}
+                      {funnelRole && (
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-violet-100 text-violet-800">
+                          {funnelRole}
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground capitalize">
+                        {p.status}
+                      </span>
+                    </div>
+                    {(p.url || domains.length > 0) && (
+                      <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                        {p.url && (
+                          <span className="inline-flex items-center gap-1 truncate">
+                            <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            {p.url}
+                          </span>
+                        )}
+                        {domains.length > 0 && (
+                          <span className="truncate">
+                            {domains.length === 1
+                              ? domains[0]
+                              : `${domains[0]} +${domains.length - 1}`}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {p.role && (
-                    <span
-                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${ROLE_COLORS[p.role] ?? 'bg-gray-100 text-gray-700'}`}
-                    >
-                      {p.role}
-                    </span>
-                  )}
                 </Link>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity h-8 w-8"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDeleteTarget(p);
+                  }}
+                  aria-label={`Excluir página ${p.public_id}`}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
+                </Button>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </CardContent>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !deleting && setDeleteTarget(null)} />
+          <div className="absolute inset-0 flex items-center justify-center p-4 pointer-events-none">
+            <div className="bg-white dark:bg-zinc-900 rounded-lg border p-6 shadow-lg max-w-sm w-full space-y-4 pointer-events-auto">
+              <div>
+                <h3 className="text-lg font-semibold">Excluir página</h3>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Tem certeza que deseja excluir <span className="font-mono">{deleteTarget.public_id}</span>?
+                  Esta ação não pode ser desfeita e revoga todos os tokens da página.
+                </p>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <Button
+                  variant="outline"
+                  onClick={() => setDeleteTarget(null)}
+                  disabled={deleting}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => void handleDelete(deleteTarget)}
+                  disabled={deleting}
+                >
+                  {deleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" aria-hidden="true" />
+                      Excluindo...
+                    </>
+                  ) : (
+                    'Excluir'
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -737,9 +881,27 @@ export default function LaunchDetailPage() {
   const [launch, setLaunch] = useState<Launch | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const baseUrl =
     process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
+
+  const refreshPages = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/pages?launch_public_id=${encodeURIComponent(launchPublicId)}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (res.ok) {
+        const body = (await res.json()) as { pages?: Page[] };
+        setPages(body.pages ?? []);
+      }
+    } catch {
+      // silent
+    }
+  }, [accessToken, baseUrl, launchPublicId]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -776,6 +938,20 @@ export default function LaunchDetailPage() {
       cancelled = true;
     };
   }, [accessToken, baseUrl, launchPublicId]);
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await fetch(`${baseUrl}/v1/launches/${launchPublicId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      router.push('/launches');
+    } catch {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  }
 
   function handleTabChange(value: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -833,22 +1009,49 @@ export default function LaunchDetailPage() {
             {launch.public_id}
           </p>
         </div>
-        <Button asChild>
-          <Link href={`/launches/${launchPublicId}/events/live`}>
-            <Activity className="mr-2 h-4 w-4" aria-hidden="true" />
-            Eventos ao vivo
-          </Link>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button asChild>
+            <Link href={`/launches/${launchPublicId}/events/live`}>
+              <Activity className="mr-2 h-4 w-4" aria-hidden="true" />
+              Eventos ao vivo
+            </Link>
+          </Button>
+          <Button variant="outline" size="icon" onClick={() => setDeleteOpen(true)} aria-label="Excluir lançamento">
+            <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
+          </Button>
+        </div>
       </div>
+
+      {deleteOpen && (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-lg border p-6 shadow-lg max-w-sm w-full space-y-4 relative">
+            <h2 className="text-lg font-semibold">Excluir lançamento?</h2>
+            <p className="text-sm text-muted-foreground">
+              Esta ação é irreversível. O lançamento <span className="font-medium text-foreground">{launch.name}</span> e todos os seus dados serão removidos permanentemente.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleting}>
+                Cancelar
+              </Button>
+              <Button variant="destructive" onClick={() => void handleDelete()} disabled={deleting}>
+                {deleting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : 'Excluir'}
+              </Button>
+            </div>
+          </div>
+          </div>
+        </div>
+      )}
 
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList aria-label="Navegação do launch">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="funil">Funil</TabsTrigger>
           <TabsTrigger value="pages">Pages</TabsTrigger>
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
           <TabsTrigger value="audiences">Audiences</TabsTrigger>
           <TabsTrigger value="performance">Performance</TabsTrigger>
-          <TabsTrigger value="funil">Funil</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -860,7 +1063,14 @@ export default function LaunchDetailPage() {
         </TabsContent>
 
         <TabsContent value="pages">
-          <TabPages pages={pages} launchPublicId={launchPublicId} />
+          <TabPages
+            pages={pages}
+            launchPublicId={launchPublicId}
+            blueprint={launch?.funnel_blueprint ?? null}
+            accessToken={accessToken}
+            baseUrl={baseUrl}
+            onPageDeleted={() => void refreshPages()}
+          />
         </TabsContent>
 
         <TabsContent value="eventos">

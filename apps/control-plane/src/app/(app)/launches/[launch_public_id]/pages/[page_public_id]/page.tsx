@@ -18,6 +18,11 @@ interface PageStatus {
   }>;
 }
 
+interface PageDetail {
+  url: string | null;
+  allowed_domains: string[];
+}
+
 interface Props {
   params: Promise<{ launch_public_id: string; page_public_id: string }>;
 }
@@ -36,23 +41,25 @@ export default async function PageDetailPage({ params }: Props) {
 
   const baseUrl = process.env.EDGE_WORKER_URL ?? 'http://localhost:8787';
 
-  // Initial status fetch — Server Component pre-populates data to avoid
-  // a client-side loading flash on first render.
-  let initialStatus: PageStatus | null = null;
-  try {
-    const res = await fetch(`${baseUrl}/v1/pages/${page_public_id}/status`, {
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      // Do not cache — status changes frequently
+  const [initialStatus, initialPageDetail] = await Promise.all([
+    fetch(`${baseUrl}/v1/pages/${page_public_id}/status`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
       cache: 'no-store',
-    });
-    if (res.ok) {
-      initialStatus = (await res.json()) as PageStatus;
-    }
-  } catch {
-    // Client will handle retries via SWR polling
-  }
+    })
+      .then((r) => r.ok ? r.json() as Promise<PageStatus> : null)
+      .catch((): null => null),
+
+    fetch(
+      `${baseUrl}/v1/pages?launch_public_id=${launch_public_id}`,
+      { headers: { Authorization: `Bearer ${session.access_token}` }, cache: 'no-store' },
+    )
+      .then((r) => r.ok ? r.json() as Promise<{ pages: Array<{ public_id: string; url: string | null; allowed_domains: string[] }> }> : null)
+      .then((d): PageDetail | null => {
+        const found = d?.pages.find((p) => p.public_id === page_public_id);
+        return found ? { url: found.url, allowed_domains: found.allowed_domains } : null;
+      })
+      .catch((): null => null),
+  ]);
 
   return (
     <PageDetailClient
@@ -60,6 +67,8 @@ export default async function PageDetailPage({ params }: Props) {
       pagePublicId={page_public_id}
       accessToken={session.access_token}
       initialStatus={initialStatus}
+      initialUrl={initialPageDetail?.url ?? null}
+      initialAllowedDomains={initialPageDetail?.allowed_domains ?? []}
     />
   );
 }

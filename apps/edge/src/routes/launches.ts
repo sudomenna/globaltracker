@@ -375,7 +375,9 @@ export function createLaunchesRoute(
           name: r.name,
           status: r.status,
           config: r.config,
-          funnel_blueprint: r.funnel_blueprint ?? null,
+          funnel_blueprint: typeof r.funnel_blueprint === 'string'
+            ? (() => { try { return JSON.parse(r.funnel_blueprint as string); } catch { return null; } })()
+            : r.funnel_blueprint ?? null,
           created_at: r.created_at,
         })),
         request_id: requestId,
@@ -491,6 +493,232 @@ export function createLaunchesRoute(
       200,
       { 'X-Request-Id': requestId },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /:public_id/scaffold — synchronously scaffold pages + audiences for
+  // an existing launch using a funnel template.
+  //
+  // Unlike the fire-and-forget scaffold on POST /, this endpoint awaits the
+  // scaffold operation and returns only after it completes (synchronous).
+  //
+  // BR-RBAC-002: launch lookup scoped to workspace_id.
+  // BR-PRIVACY-001: no PII in logs or error responses.
+  // -------------------------------------------------------------------------
+  router.post('/:public_id/scaffold', async (c) => {
+    const requestId = c.get('request_id');
+    const workspaceId = c.get('workspace_id');
+    const publicId = c.req.param('public_id');
+
+    // -----------------------------------------------------------------------
+    // Step 1: Parse JSON body
+    // -----------------------------------------------------------------------
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: 'invalid json',
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 2: Zod validation
+    // -----------------------------------------------------------------------
+    const ScaffoldBodySchema = z
+      .object({ funnel_template_slug: z.string().min(1) })
+      .strict();
+
+    const parsed = ScaffoldBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: 'validation_error',
+          details: parsed.error.flatten(),
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const { funnel_template_slug: templateSlug } = parsed.data;
+
+    // -----------------------------------------------------------------------
+    // Step 3: Require DB
+    // -----------------------------------------------------------------------
+    const db = getDb?.(c);
+
+    if (!db) {
+      safeLog('warn', {
+        event: 'launches_scaffold_no_db',
+        request_id: requestId,
+        workspace_id: workspaceId,
+      });
+      return c.json(
+        {
+          error: 'service_unavailable',
+          message: 'DB not configured',
+          request_id: requestId,
+        },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 4: Fetch launch by public_id scoped to workspace (BR-RBAC-002)
+    // -----------------------------------------------------------------------
+    type LaunchLookupRow = { id: string; public_id: string };
+    let launchRow: LaunchLookupRow | undefined;
+
+    try {
+      const rows = await db.execute(
+        sql`SELECT id, public_id FROM launches
+            WHERE public_id = ${publicId}
+              AND workspace_id = ${workspaceId}::uuid
+            LIMIT 1`,
+      );
+      launchRow = (rows as unknown as LaunchLookupRow[])[0];
+    } catch (err) {
+      safeLog('error', {
+        event: 'launches_scaffold_lookup_error',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+      return c.json(
+        { error: 'internal_error', request_id: requestId },
+        500,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    if (!launchRow) {
+      return c.json(
+        {
+          error: 'not_found',
+          message: 'Launch not found',
+          request_id: requestId,
+        },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 5: Scaffold synchronously — await before responding
+    // -----------------------------------------------------------------------
+    safeLog('info', {
+      event: 'scaffold_launch_started',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      launch_id: launchRow.id,
+    });
+
+    let pagesCreated: number;
+    let audiencesCreated: number;
+
+    try {
+      const result = await scaffoldLaunch({
+        templateSlug,
+        launchId: launchRow.id,
+        launchPublicId: publicId,
+        workspaceId,
+        db,
+      });
+      pagesCreated = result.pagesCreated;
+      audiencesCreated = result.audiencesCreated;
+    } catch (err) {
+      safeLog('error', {
+        event: 'scaffold_launch_error',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        launch_id: launchRow.id,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+      return c.json(
+        { error: 'internal_error', request_id: requestId },
+        500,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    safeLog('info', {
+      event: 'scaffold_launch_completed',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      launch_id: launchRow.id,
+      pages_created: pagesCreated,
+      audiences_created: audiencesCreated,
+    });
+
+    // -----------------------------------------------------------------------
+    // Step 6: Return 200 with scaffold summary
+    // -----------------------------------------------------------------------
+    return c.json(
+      {
+        scaffolded: true,
+        pages_created: pagesCreated,
+        audiences_created: audiencesCreated,
+        request_id: requestId,
+      },
+      200,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // DELETE /:public_id — remove a launch scoped to the authenticated workspace
+  // -------------------------------------------------------------------------
+  router.delete('/:public_id', async (c) => {
+    const requestId = c.get('request_id');
+    const workspaceId = c.get('workspace_id');
+    const publicId = c.req.param('public_id');
+
+    const db = getDb?.(c);
+    if (!db) {
+      return c.json(
+        { error: 'service_unavailable', message: 'DB not configured', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const rows = await db.execute(
+      sql`DELETE FROM launches
+          WHERE public_id = ${publicId}
+            AND workspace_id = ${workspaceId}::uuid
+          RETURNING id, public_id`,
+    );
+
+    type DeletedRow = { id: string; public_id: string };
+    const deleted = (rows as unknown as DeletedRow[])[0];
+
+    if (!deleted) {
+      return c.json(
+        { error: 'not_found', message: 'Launch not found', request_id: requestId },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    safeLog('info', {
+      event: 'launch_deleted',
+      request_id: requestId,
+      workspace_id: workspaceId,
+      launch_public_id: publicId,
+    });
+
+    return c.json({ deleted: { public_id: deleted.public_id }, request_id: requestId }, 200, {
+      'X-Request-Id': requestId,
+    });
   });
 
   return router;

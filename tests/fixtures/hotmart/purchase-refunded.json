@@ -1,0 +1,30 @@
+{
+  "event": "PURCHASE_REFUNDED",
+  "id": "evt_hotmart_002_refunded",
+  "creation_date": 1705402800000,
+  "version": "2.0.0",
+  "data": {
+    "purchase": {
+      "transaction": "HP11223344556677",
+      "status": "refunded",
+      "price": {
+        "value": 29700,
+        "currency_value": "BRL"
+      },
+      "tracking": null,
+      "utms": null
+    },
+    "buyer": {
+      "name": "Comprador Teste",
+      "email": "comprador@example.com",
+      "checkout_phone": "+5511999990001"
+    },
+    "product": {
+      "id": 1234567,
+      "name": "Curso Teste XYZ"
+    }
+  },
+  "metadata": {
+    "lead_public_id": "lead_pub_aabbccdd1122"
+  }
+}

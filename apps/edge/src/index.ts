@@ -34,6 +34,7 @@ import {
   createDb,
   launches,
   leads,
+  pages,
   pageTokens,
   workspaces,
 } from '@globaltracker/db';
@@ -69,6 +70,7 @@ import {
   type DispatchResult,
   processDispatchJob,
 } from './lib/dispatch.js';
+import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
 import {
   type LookupPageTokenFn,
@@ -81,7 +83,7 @@ import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
 import { configRoute } from './routes/config.js';
 import { dispatchReplayRoute } from './routes/dispatch-replay.js';
 import { eventsRoute } from './routes/events.js';
-import { funnelTemplatesRoute } from './routes/funnel-templates.js';
+import { createFunnelTemplatesRoute } from './routes/funnel-templates.js';
 import { healthCpRoute } from './routes/health-cp.js';
 import { helpRoute } from './routes/help.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
@@ -90,7 +92,7 @@ import { leadRoute } from './routes/lead.js';
 import { leadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
 import { orchestratorRoute } from './routes/orchestrator.js';
-import { pagesStatusRoute } from './routes/pages-status.js';
+import { createPagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
@@ -142,6 +144,10 @@ type DispatchQueueMessage = {
 type EventsQueueMessage = {
   raw_event_id: string;
   workspace_id: string;
+  /** Optional: platform that produced the raw_event. Used to route to the correct processor. */
+  event_id?: string;
+  event_type?: string;
+  platform?: string;
 };
 
 type AnyQueueMessage = DispatchQueueMessage | EventsQueueMessage;
@@ -197,15 +203,18 @@ const lookupPageToken: LookupPageTokenFn = async (tokenHash, bindings) => {
     .select({
       workspaceId: pageTokens.workspaceId,
       pageId: pageTokens.pageId,
+      launchId: pages.launchId,
       status: pageTokens.status,
     })
     .from(pageTokens)
+    .innerJoin(pages, eq(pages.id, pageTokens.pageId))
     .where(eq(pageTokens.tokenHash, tokenHash))
     .limit(1);
   if (!rows[0]) return null;
   return {
     workspaceId: rows[0].workspaceId,
     pageId: rows[0].pageId,
+    launchId: rows[0].launchId ?? null,
     status: rows[0].status as 'active' | 'rotating' | 'revoked',
   };
 };
@@ -224,12 +233,50 @@ const getAllowedDomains: GetAllowedDomainsFn = async (_pageId) => {
 // Middleware order per path: auth → cors → rate-limit
 // ---------------------------------------------------------------------------
 
-app.use(
-  '/v1/events',
-  authPublicToken(lookupPageToken),
-  corsMiddleware({ mode: 'public', getAllowedDomains }),
-  rateLimit({ routeGroup: 'events' }),
-);
+// Control Plane allowed origins — shared between cpCors and /v1/events dispatch
+const CP_ORIGINS = [
+  'http://localhost:3000',
+  'https://control.globaltracker.io',
+];
+
+// Control Plane CORS — must be defined before /v1/events dispatch middleware
+const cpCors = corsMiddleware({
+  mode: 'admin',
+  adminAllowedOrigins: CP_ORIGINS,
+});
+
+// /v1/events serves two audiences on different methods:
+//   GET     → CP query (Bearer auth in handler, admin CORS needed for Authorization header)
+//   POST    → tracker.js ingest (X-Funil-Site auth, public CORS, rate-limit)
+//   OPTIONS → preflight routed by origin (admin vs public CORS)
+//
+// corsMiddleware returns a Response directly for OPTIONS (not via next), so OPTIONS
+// must be handled separately from POST to avoid discarding the Response in composition.
+app.use('/v1/events', async (c, next) => {
+  const method = c.req.method;
+  const origin = c.req.header('Origin') ?? '';
+  const isAdminOrigin = CP_ORIGINS.includes(origin);
+
+  if (method === 'OPTIONS') {
+    // Route preflight to the appropriate CORS handler — each returns 204 directly
+    return isAdminOrigin
+      ? cpCors(c, next)
+      : corsMiddleware({ mode: 'public', getAllowedDomains })(c, next);
+  }
+
+  if (method === 'GET') {
+    // CP query — admin CORS only; handler has its own Bearer auth
+    return cpCors(c, next);
+  }
+
+  // POST from tracker.js — full public middleware chain
+  return authPublicToken(lookupPageToken)(c, async () => {
+    await corsMiddleware({ mode: 'public', getAllowedDomains })(c, async () => {
+      await rateLimit({ routeGroup: 'events' })(c, next);
+    });
+  });
+});
+
 app.use(
   '/v1/lead',
   authPublicToken(lookupPageToken),
@@ -243,14 +290,6 @@ app.use(
   rateLimit({ routeGroup: 'config' }),
 );
 
-// Control Plane CORS — must be registered before route mounts (Hono middleware order)
-const cpCors = corsMiddleware({
-  mode: 'admin',
-  adminAllowedOrigins: [
-    'http://localhost:3000',
-    'https://control.globaltracker.io',
-  ],
-});
 app.use('/v1/health/*', cpCors);
 app.use('/v1/onboarding/*', cpCors);
 app.use('/v1/launches/*', cpCors);
@@ -263,7 +302,8 @@ app.use('/v1/help/*', cpCors);
 app.use('/v1/orchestrator/*', cpCors);
 app.use('/v1/workspace/*', cpCors);
 
-// OPTIONS preflight — public tracker routes use public CORS; CP routes handled by cpCors above
+// OPTIONS preflight for public tracker routes (/v1/lead, /v1/config, etc.)
+// /v1/events OPTIONS is handled by the method-dispatch middleware above.
 app.options(
   '/v1/*',
   corsMiddleware({ mode: 'public', getAllowedDomains }),
@@ -282,19 +322,38 @@ app.route('/v1/admin/leads', adminLeadsEraseRoute);
 
 // Guru webhook — server-to-server; no authPublicToken, no corsMiddleware
 // Token auth is validated inside the handler (BR-WEBHOOK-001: constant-time comparison).
-// DB is wired lazily via Hyperdrive on first request.
-app.route('/v1/webhook/guru', createGuruWebhookRoute());
+app.route(
+  '/v1/webhook/guru',
+  createGuruWebhookRoute((env) =>
+    createDb(
+      (env as unknown as Bindings).DATABASE_URL ??
+        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        '',
+    ),
+  ),
+);
 
 // Control Plane endpoints (Sprint 6 — Wave 1: T-6-003, T-6-004, T-6-007)
 // Auth: Bearer token placeholder — JWT validation via auth-cp.ts in next pass.
 app.route('/v1/pages', pagesRoute);
-app.route('/v1/pages', pagesStatusRoute);
+app.route(
+  '/v1/pages',
+  createPagesStatusRoute({
+    getDb: (env) =>
+      createDb(env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? ''),
+  }),
+);
 app.route('/v1/health', healthCpRoute);
 app.route('/v1/integrations', integrationsTestRoute);
 
 // Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
 app.route('/v1/launches', launchesRoute);
-app.route('/v1/funnel-templates', funnelTemplatesRoute);
+app.route(
+  '/v1/funnel-templates',
+  createFunnelTemplatesRoute((c) =>
+    createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString),
+  ),
+);
 app.route('/v1/onboarding', onboardingStateRoute);
 app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);
@@ -327,19 +386,27 @@ async function queueHandler(
 
     // Route by message shape: raw_event_id → gt-events ingestion path.
     if ('raw_event_id' in body) {
-      const { raw_event_id } = body as EventsQueueMessage;
+      const { raw_event_id, platform } = body as EventsQueueMessage;
       try {
-        const result = await processRawEvent(raw_event_id, db);
+        // Route to the correct processor based on the originating platform.
+        // BR-EVENT-002: each processor enforces idempotency on (workspace_id, event_id).
+        const result =
+          platform === 'guru'
+            ? await processGuruRawEvent(raw_event_id, db)
+            : await processRawEvent(raw_event_id, db);
+
         if (!result.ok) {
           safeLog('warn', {
             event: 'ingestion_failed',
             raw_event_id,
+            platform: platform ?? 'tracker',
             error_code: result.error.code,
           });
         } else {
           safeLog('info', {
             event: 'ingestion_processed',
             raw_event_id,
+            platform: platform ?? 'tracker',
             dispatch_jobs_created: result.value.dispatch_jobs_created,
           });
           // Enqueue each created dispatch_job to gt-dispatch for external calls.
@@ -365,6 +432,7 @@ async function queueHandler(
         safeLog('error', {
           event: 'ingestion_unhandled_error',
           raw_event_id,
+          platform: platform ?? 'tracker',
           error_type: err instanceof Error ? err.constructor.name : 'unknown',
         });
         message.retry();

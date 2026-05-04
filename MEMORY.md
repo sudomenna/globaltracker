@@ -42,14 +42,15 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 11 COMPLETO (2026-05-04)
-Último commit: 165855c (branch main, não pushado)
+Estado:        E2E USABILITY TEST EM ANDAMENTO (2026-05-04)
+               Sprint 12 PAUSADO — Tiago testa Sprint 0–11 ponta-a-ponta
+               como usuário. Pipeline Guru E2E está funcional (bugs corrigidos nesta sessão).
+Último commit: ver §7 — working tree inteira commitada nesta sessão
 Branch:        main
-Verificação:   typecheck ✓ (só pré-existentes CP) | test 1508/1509 ✓ (1 pré-existente)
-DB Supabase:   migrations 0000–0029 aplicadas ✓ (sem migration nova no Sprint 11)
+DB Supabase:   migrations 0000–0030 aplicadas ✓ (0030 = chk_events_event_source + webhook:guru)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
-                Ver docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md
+Servidores:    Wrangler dev :8787 + Next.js dev :3000
+Próxima ação:  Fase 0 do teste E2E — disparar eventos via curl; ver §7
 ```
 
 ### Plano canônico de sprints restantes
@@ -66,6 +67,20 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 - 30 novos testes (unit + integration fase-3)
 - 4 docs atualizados (guru-webhook, api-contracts, mod-funnel, mod-workspace)
 
+### Bugs corrigidos no E2E usability test (sessão anterior + esta sessão)
+
+| # | Bug | Status |
+|---|---|---|
+| B1 | `GET /v1/pages/:id/status` retorna 404 | ✅ FALSO — retorna 200 (token_status=expired para pages scaffoldadas sem token) |
+| B2 | `OPTIONS /v1/events` retorna 401 | ✅ CORRIGIDO — `authPublicToken` passa OPTIONS sem autenticar |
+| B3 | Header da page detail mostra slug | pendente (polish) |
+| B4 | Tracker `EDGE_BASE_URL = ''` | ✅ CORRIGIDO — lê `data-edge-url` do script tag |
+| B5 | Snippet apontava para CDN inexistente | ✅ CORRIGIDO (R2 público) |
+| B6 | Phone Guru: `normalizePhone("999999999")` inválido | ✅ CORRIGIDO — composição `+${localCode}${number}` em `guru-raw-events-processor.ts` |
+| B7 | `chk_events_event_source` não incluía `webhook:guru` | ✅ CORRIGIDO — migration `0030_add_guru_event_source.sql` aplicada |
+| B8 | `workspace.config` gravado como JSONB string em vez de object | ✅ CORRIGIDO — `(config #>> '{}')::jsonb` + parsing defensivo em edge + CP |
+| B9 | `GET /v1/events` bloqueado por CORS (Aba "Eventos" mostrava "Endpoint indisponível") | ✅ CORRIGIDO — middleware method-dispatch em `index.ts`: OPTIONS/GET usam admin CORS; POST usa public CORS |
+
 ### Pendências técnicas (não bloqueiam Sprint 12)
 
 | Item | Detalhe |
@@ -74,14 +89,8 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 | `auth-cp.ts` JWT | `DEV_WORKSPACE_ID` hardcoded em dev. Prod precisa JWT validation |
 | GA4 `no_client_id` | GA4 requer `_ga` cookie — leads sem browser não têm client_id. OQ-012 aberta |
 | TS pré-existentes CP | 2 erros em `layout.tsx` / `use-workspace.ts` (Supabase relation type inference) |
+| TS pré-existentes edge | 5 erros pré-existentes (HYPERDRIVE?, guru null types, events.ts launch_id var) |
 | Secrets produção | Não deployados — bloqueia prod |
-
-### Pendências operacionais
-
-| Item | Status |
-|---|---|
-| Secrets produção (todos os sprints) | não deployados |
-| Migrations 0000–0029 Supabase | ✅ aplicadas |
 
 ### Notas técnicas invariantes
 
@@ -91,6 +100,8 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 - Biome varre `.claude/worktrees/` — limpar com `git worktree remove -f <path>` após uso
 - `<dialog open>` nativo (não `div role="dialog"`) nos componentes CP
 - OXC parse error em type aliases multi-linha → usar `Record<string, unknown>`
+- JSONB no driver Cloudflare Workers Postgres pode chegar como string → sempre parsear defensivamente
+- `/v1/events` é dual-mode: POST = tracker.js (public auth+CORS), GET = CP (admin CORS, Bearer auth no handler)
 
 ### Decisões já tomadas (não reabrir)
 
@@ -101,11 +112,11 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 ### Como retomar em nova sessão
 
 ```
-1. Ler este §5
-2. git log -5 + git status (confirmar branch main + commit 353c18a)
-3. Abrir docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md
-4. pnpm typecheck && pnpm test (verde exceto 1 pré-existente)
-5. Decompor Sprint 12 por onda, conforme CLAUDE.md §3
+1. Ler este §5 + §7 inteiro
+2. git log -5 + git status (confirmar branch main, working tree limpa)
+3. curl localhost:8787/health + curl localhost:3000 (relevantar servidores se necessário)
+4. Próxima ação concreta: Fase 0 do teste E2E (§7) — disparar eventos via curl
+5. Pipeline Guru E2E está funcional — testar com curl antes de instalar snippet real
 ```
 
 ## §6 Ambiente operacional
@@ -114,7 +125,6 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 |---|---|
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
-| Último commit | `353c18a` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE) |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
@@ -125,6 +135,73 @@ Próxima ação:  SPRINT 12 — Webhooks Hotmart/Kiwify/Stripe
 | Supabase CLI | 2.90.0 (logado na conta CNE) |
 | Node | 24.x (v24.10.0) |
 | pnpm | 10.x |
+
+## §7 E2E Usability Test — Lançamento real `wkshop-cs-jun26` [EM ANDAMENTO]
+
+### Por que existe esse teste
+
+Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes de seguir. Objetivo duplo:
+
+1. **Funcional**: provar que o pipeline ponta-a-ponta funciona — captura → identidade → stages → audiences → dispatch (Meta CAPI / GA4 / Google Ads) → webhook (Guru).
+2. **Usabilidade**: a cada atrito que aparece (campo confuso, fluxo travado, copy ruim, falta de validação), corrigir antes de seguir. O teste é também um exercício de UX hardening.
+
+### Estado do lançamento sob teste
+
+- **Launch**: `wkshop-cs-jun26` ("CS Junho 26") — id `d0a4e10e-b1bd-437a-98e6-266d61accd04`
+- **Template aplicado**: `lancamento_pago_workshop_com_main_offer` (workshop pago + oferta principal)
+- **Pages scaffoldadas (4)**: `workshop` (sales/workshop), `obrigado-workshop` (thankyou/workshop), `oferta-principal` (sales/main_offer), `obrigado-principal` (thankyou/main_offer).
+- **Stages no funnel_blueprint (9)**: `lead_workshop` → `clicked_buy_workshop` (recurring) → `purchased_workshop` → `wpp_joined` → `watched_class_1..3` → `clicked_buy_main` (recurring) → `purchased_main`
+- **Audiences scaffoldadas (5)**: compradores_workshop_aquecimento, engajados_workshop, abandono_main_offer, compradores_main, compradores_apenas_workshop
+- **Webhook Guru**: pipeline E2E funcional — `purchased_workshop` stage criado com sucesso no DB
+- **GuruMappingPanel**: produto mapeado em `workspace.config.integrations.guru.product_launch_map` (CRUD funcionando)
+- **Aba "Eventos"**: `GET /v1/events` funcionando com CORS admin (Authorization header permitido)
+
+### O que foi corrigido nesta sessão especificamente
+
+1. **Phone Guru** (`guru-raw-events-processor.ts`): Guru envia `phone_number` e `phone_local_code` separados. `normalizePhone("999999999")` falhava. Fix: compor `+${localCode}${number}` antes de passar para o resolver.
+
+2. **constraint `chk_events_event_source`** (`packages/db/migrations/0030_add_guru_event_source.sql`): constraint não incluía `webhook:guru`. Criada migration e aplicada via Supabase CLI.
+
+3. **JSONB string** em `workspace.config`: UPDATE anterior havia criado array JSONB inválido. Corrigido com `UPDATE workspaces SET config = (config #>> '{}')::jsonb`. Adicionado parsing defensivo em:
+   - `apps/edge/src/routes/workspace-config.ts` (SELECT → deepMerge → UPDATE)
+   - `apps/control-plane/.../page.tsx` (loadMappings)
+
+4. **CORS `GET /v1/events`** (`apps/edge/src/index.ts`): Aba "Eventos" mostrava "Endpoint indisponível" porque OPTIONS preflight retornava headers públicos (sem `Authorization`). Fix: middleware method-dispatch — OPTIONS de origem admin usa cpCors, OPTIONS de outra origem usa publicCors, GET usa cpCors, POST usa chain pública completa.
+
+### Plano de teste em 3 fases
+
+**Fase 0 — Mock total via curl** *(PRÓXIMA AÇÃO)*
+
+Sem instalar snippet ainda. Testa 80% do pipeline:
+
+1. Verificar que as 4 pages têm `url` e `event_config` configurados (via UI Pages tab)
+2. Disparar eventos via `curl POST /v1/events` simulando o tracker:
+   - `PageView` em `workshop` → vê PageView na Aba Eventos
+   - `Lead` (popup workshop) → resolver de identidade cria lead, `lead_workshop` stage
+   - `InitiateCheckout` → `clicked_buy_workshop` (recurring)
+   - Webhook Guru real `Purchase` → `purchased_workshop`
+   - Repetir para main_offer
+3. Validar:
+   - Lead progride pelos 9 stages na timeline
+   - Audiences populam
+   - Dispatchers disparam (logs do worker)
+   - Webhook Guru resolve `launch_id` + `funnel_role` corretamente
+
+**Fase 1 — Captura client-side real (Cloudflared Tunnel)**
+
+Quando Fase 0 estiver verde: instalar snippet via cloudflared tunnel.
+
+**Fase 2 — Validação completa**
+
+Compra Guru real → confirmar pipeline completo end-to-end.
+
+### Preferências do operador (Tiago) durante este teste
+
+- Atua como par, prefere debate antes de código grande
+- Quer ver UX issues escaladas explicitamente, não silenciadas
+- Prefere caminho recomendado quando há trade-off claro
+- Aceita "começar mais simples e subir" (Fase 0 antes de Fase 1)
+- Quer credenciais reais validadas (não mockar dispatchers)
 
 ## Política de uso
 

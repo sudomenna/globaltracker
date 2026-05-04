@@ -106,12 +106,16 @@ async function timingSafeTokenEqual(a: string, b: string): Promise<boolean> {
 /**
  * Creates the Guru webhook sub-router.
  *
- * @param db - Drizzle DB instance; undefined in tests without DB
+ * @param getDb - Factory that receives env bindings and returns a Drizzle DB instance.
+ *                Undefined in tests without DB (all DB operations are skipped).
  */
-export function createGuruWebhookRoute(db?: Db): Hono<AppEnv> {
+export function createGuruWebhookRoute(
+  getDb?: (env: AppBindings) => Db,
+): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
   router.post('/', async (c) => {
+    const db = getDb?.(c.env);
     // -----------------------------------------------------------------------
     // Step 1: Read raw body text BEFORE parse
     // BR-WEBHOOK-001: raw body must be read first (pattern established for
@@ -467,8 +471,4 @@ function sanitizePayloadForStorage(
   return rest;
 }
 
-/**
- * Default export for mounting in index.ts.
- * To wire DB, use createGuruWebhookRoute(db) instead.
- */
 export const guruWebhookRoute = createGuruWebhookRoute();

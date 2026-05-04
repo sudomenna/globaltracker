@@ -73,40 +73,89 @@ export default function FunnelPage() {
   const [stages, setStages] = useState<Stage[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [templates, setTemplates] = useState<Array<{ slug: string; name: string }>>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [scaffolding, setScaffolding] = useState(false);
 
   const baseUrl =
     process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
 
+  async function fetchLaunches(cancelled: { value: boolean }) {
+    const res = await fetch(`${baseUrl}/v1/launches`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return;
+    const body = (await res.json()) as { launches?: LaunchRow[] };
+    const found = (body.launches ?? []).find(
+      (l) => l.public_id === launchPublicId,
+    );
+    if (!cancelled.value && found) {
+      setLaunchId(found.id);
+      setLaunchName(found.name);
+      const bp = found.funnel_blueprint ?? null;
+      setBlueprint(bp);
+      setStages(bp?.stages ?? []);
+    }
+  }
+
   useEffect(() => {
     if (!accessToken) return;
-    let cancelled = false;
+    const cancelled = { value: false };
     (async () => {
       try {
-        const res = await fetch(`${baseUrl}/v1/launches`, {
+        await fetchLaunches(cancelled);
+
+        const tplRes = await fetch(`${baseUrl}/v1/funnel-templates`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
-        if (!res.ok) return;
-        const body = (await res.json()) as { launches?: LaunchRow[] };
-        const found = (body.launches ?? []).find(
-          (l) => l.public_id === launchPublicId,
-        );
-        if (!cancelled && found) {
-          setLaunchId(found.id);
-          setLaunchName(found.name);
-          const bp = found.funnel_blueprint ?? null;
-          setBlueprint(bp);
-          setStages(bp?.stages ?? []);
+        if (tplRes.ok) {
+          const tplBody = (await tplRes.json()) as {
+            templates?: Array<{ slug: string; name: string; status: string }>;
+          };
+          const active = (tplBody.templates ?? [])
+            .filter((t) => t.status === 'active')
+            .map(({ slug, name }) => ({ slug, name }));
+          if (!cancelled.value) setTemplates(active);
         }
       } catch {
         // silent
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled.value) setLoading(false);
       }
     })();
     return () => {
-      cancelled = true;
+      cancelled.value = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, baseUrl, launchPublicId]);
+
+  async function handleScaffold() {
+    if (!selectedTemplate) return;
+    setScaffolding(true);
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/launches/${launchPublicId}/scaffold`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ funnel_template_slug: selectedTemplate }),
+        },
+      );
+      if (res.ok) {
+        await fetchLaunches({ value: false });
+        toast.success('Template aplicado com sucesso');
+      } else {
+        toast.error('Erro ao aplicar template');
+      }
+    } catch {
+      toast.error('Erro ao aplicar template');
+    } finally {
+      setScaffolding(false);
+    }
+  }
 
   function handleLabelChange(index: number, value: string) {
     setStages((prev) =>
@@ -179,11 +228,39 @@ export default function FunnelPage() {
 
       {stages.length === 0 ? (
         <Card>
-          <CardContent className="py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              Este lançamento não tem um funil configurado. Crie um novo
-              lançamento com um template para começar.
+          <CardContent className="py-8 space-y-4">
+            <p className="text-sm text-muted-foreground text-center">
+              Este lançamento ainda não tem estágios de funil configurados.
             </p>
+            {templates.length > 0 && (
+              <div className="flex flex-col gap-3 max-w-sm mx-auto">
+                <select
+                  value={selectedTemplate}
+                  onChange={(e) => setSelectedTemplate(e.target.value)}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
+                  <option value="">Selecione um template</option>
+                  {templates.map((t) => (
+                    <option key={t.slug} value={t.slug}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  onClick={() => void handleScaffold()}
+                  disabled={!selectedTemplate || scaffolding}
+                >
+                  {scaffolding ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" aria-hidden="true" />
+                      Aplicando...
+                    </>
+                  ) : (
+                    'Aplicar template'
+                  )}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -244,17 +321,30 @@ export default function FunnelPage() {
                       </div>
                     )}
 
-                  <label className="flex items-center gap-2 cursor-pointer">
+                  <div className="flex items-start gap-2">
                     <input
+                      id={`stage-recurring-${idx}`}
                       type="checkbox"
                       checked={stage.is_recurring}
                       onChange={(e) =>
                         handleRecurringChange(idx, e.target.checked)
                       }
-                      className="h-4 w-4"
+                      className="h-4 w-4 mt-0.5 cursor-pointer"
                     />
-                    <span className="text-sm">Recorrente</span>
-                  </label>
+                    <div>
+                      <label
+                        htmlFor={`stage-recurring-${idx}`}
+                        className="text-sm cursor-pointer"
+                      >
+                        Recorrente
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        {stage.is_recurring
+                          ? 'O lead pode entrar neste estágio múltiplas vezes.'
+                          : 'O lead entra neste estágio apenas uma vez.'}
+                      </p>
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             ))}

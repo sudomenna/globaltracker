@@ -11,7 +11,7 @@
  * INV-PAGE-003: token_hash is globally unique (SHA-256 hex, 64 chars).
  */
 
-import { createDb, launches, pageTokens, pages } from '@globaltracker/db';
+import { createDb, events, launches, pageTokens, pages, rawEvents } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -212,7 +212,16 @@ pagesRoute.get('/', async (c) => {
   const launchPublicId = c.req.query('launch_public_id');
   const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
 
-  let rows: { publicId: string; name: string; status: string; createdAt: Date }[];
+  type PageRow = {
+    publicId: string;
+    role: string;
+    url: string | null;
+    allowedDomains: string[];
+    status: string;
+    createdAt: Date;
+  };
+
+  let rows: PageRow[];
 
   if (launchPublicId) {
     const launchRows = await db
@@ -224,13 +233,27 @@ pagesRoute.get('/', async (c) => {
       return c.json({ pages: [], request_id: requestId }, 200);
     }
     rows = await db
-      .select({ publicId: pages.publicId, name: pages.publicId, status: pages.status, createdAt: pages.createdAt })
+      .select({
+        publicId: pages.publicId,
+        role: pages.role,
+        url: pages.url,
+        allowedDomains: pages.allowedDomains,
+        status: pages.status,
+        createdAt: pages.createdAt,
+      })
       .from(pages)
       .where(and(eq(pages.workspaceId, workspaceId), eq(pages.launchId, launchRows[0].id)))
       .orderBy(pages.createdAt);
   } else {
     rows = await db
-      .select({ publicId: pages.publicId, name: pages.publicId, status: pages.status, createdAt: pages.createdAt })
+      .select({
+        publicId: pages.publicId,
+        role: pages.role,
+        url: pages.url,
+        allowedDomains: pages.allowedDomains,
+        status: pages.status,
+        createdAt: pages.createdAt,
+      })
       .from(pages)
       .where(eq(pages.workspaceId, workspaceId))
       .orderBy(pages.createdAt);
@@ -240,11 +263,164 @@ pagesRoute.get('/', async (c) => {
     pages: rows.map((r) => ({
       public_id: r.publicId,
       name: r.publicId,
+      role: r.role,
+      url: r.url,
+      allowed_domains: r.allowedDomains,
       status: r.status,
       created_at: r.createdAt.toISOString(),
     })),
     request_id: requestId,
   }, 200);
+});
+
+// PATCH /v1/pages/:page_public_id?launch_public_id=xxx
+// Updates url, allowed_domains, status. Workspace-scoped.
+const PatchPageSchema = z
+  .object({
+    url: z.string().url().nullable().optional(),
+    allowed_domains: z.array(z.string().min(1)).optional(),
+    status: z.enum(['draft', 'active', 'paused', 'archived']).optional(),
+    event_config: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+pagesRoute.patch('/:page_public_id', async (c) => {
+  const requestId =
+    (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+  const workspaceId =
+    (c.get('workspace_id') as string | undefined) ??
+    c.env.DEV_WORKSPACE_ID ??
+    'placeholder-workspace-id';
+  const pagePublicId = c.req.param('page_public_id');
+  const launchPublicId = c.req.query('launch_public_id');
+
+  if (!launchPublicId) {
+    return c.json(
+      { code: 'bad_request', message: 'launch_public_id query required', request_id: requestId },
+      400,
+    );
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const parsed = PatchPageSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      { code: 'bad_request', message: parsed.error.message, request_id: requestId },
+      400,
+    );
+  }
+
+  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+
+  const launchRows = await db
+    .select({ id: launches.id })
+    .from(launches)
+    .where(and(eq(launches.workspaceId, workspaceId), eq(launches.publicId, launchPublicId)))
+    .limit(1);
+  if (!launchRows[0]) {
+    return c.json({ code: 'not_found', message: 'Launch not found', request_id: requestId }, 404);
+  }
+
+  const updates: Record<string, unknown> = {};
+  if (parsed.data.url !== undefined) updates.url = parsed.data.url;
+  if (parsed.data.allowed_domains !== undefined) updates.allowedDomains = parsed.data.allowed_domains;
+  if (parsed.data.status !== undefined) updates.status = parsed.data.status;
+  if (parsed.data.event_config !== undefined) updates.eventConfig = parsed.data.event_config;
+
+  if (Object.keys(updates).length === 0) {
+    return c.json({ updated: false, request_id: requestId }, 200);
+  }
+
+  updates.updatedAt = new Date();
+
+  const result = await db
+    .update(pages)
+    .set(updates)
+    .where(
+      and(
+        eq(pages.workspaceId, workspaceId),
+        eq(pages.launchId, launchRows[0].id),
+        eq(pages.publicId, pagePublicId),
+      ),
+    )
+    .returning({ id: pages.id });
+
+  if (!result[0]) {
+    return c.json({ code: 'not_found', message: 'Page not found', request_id: requestId }, 404);
+  }
+
+  safeLog('info', {
+    event: 'page_updated',
+    request_id: requestId,
+    workspace_id: workspaceId,
+    page_public_id: pagePublicId,
+    launch_public_id: launchPublicId,
+    fields: Object.keys(updates),
+  });
+
+  return c.json({ updated: true, request_id: requestId }, 200);
+});
+
+// DELETE /v1/pages/:page_public_id?launch_public_id=xxx
+// Revokes all page_tokens then deletes the page. Workspace-scoped.
+pagesRoute.delete('/:page_public_id', async (c) => {
+  const requestId =
+    (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+  const workspaceId =
+    (c.get('workspace_id') as string | undefined) ??
+    c.env.DEV_WORKSPACE_ID ??
+    'placeholder-workspace-id';
+  const pagePublicId = c.req.param('page_public_id');
+  const launchPublicId = c.req.query('launch_public_id');
+
+  if (!launchPublicId) {
+    return c.json(
+      { code: 'bad_request', message: 'launch_public_id query required', request_id: requestId },
+      400,
+    );
+  }
+
+  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+
+  const launchRows = await db
+    .select({ id: launches.id })
+    .from(launches)
+    .where(and(eq(launches.workspaceId, workspaceId), eq(launches.publicId, launchPublicId)))
+    .limit(1);
+  if (!launchRows[0]) {
+    return c.json({ code: 'not_found', message: 'Launch not found', request_id: requestId }, 404);
+  }
+
+  const pageRows = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(
+      and(
+        eq(pages.workspaceId, workspaceId),
+        eq(pages.launchId, launchRows[0].id),
+        eq(pages.publicId, pagePublicId),
+      ),
+    )
+    .limit(1);
+  if (!pageRows[0]) {
+    return c.json({ code: 'not_found', message: 'Page not found', request_id: requestId }, 404);
+  }
+  const pageId = pageRows[0].id;
+
+  await db.delete(rawEvents).where(eq(rawEvents.pageId, pageId));
+  await db.delete(events).where(eq(events.pageId, pageId));
+  await db.delete(pageTokens).where(eq(pageTokens.pageId, pageId));
+  await db.delete(pages).where(eq(pages.id, pageId));
+
+  safeLog('info', {
+    event: 'page_deleted',
+    request_id: requestId,
+    workspace_id: workspaceId,
+    page_public_id: pagePublicId,
+    launch_public_id: launchPublicId,
+  });
+
+  return c.json({ deleted: true, request_id: requestId }, 200);
 });
 
 // POST /v1/pages/:page_public_id/tokens — generate a new token for an existing page
@@ -292,4 +468,58 @@ pagesRoute.post('/:page_public_id/tokens', async (c) => {
   }
 
   return c.json({ page_token: tokenRaw, page_public_id: pagePublicId, request_id: requestId }, 201);
+});
+
+// POST /v1/pages/:page_public_id/rotate-token
+// ADR-023: marks current active token as 'rotating' (still valid 14d), creates new 'active' token.
+pagesRoute.post('/:page_public_id/rotate-token', async (c) => {
+  const requestId =
+    (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+  const workspaceId =
+    (c.get('workspace_id') as string | undefined) ??
+    c.env.DEV_WORKSPACE_ID ??
+    'placeholder-workspace-id';
+
+  const pagePublicId = c.req.param('page_public_id');
+  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+
+  const pageRows = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(and(eq(pages.workspaceId, workspaceId), eq(pages.publicId, pagePublicId)))
+    .limit(1);
+
+  if (!pageRows[0]) {
+    return c.json({ code: 'not_found', message: 'Page not found', request_id: requestId }, 404);
+  }
+
+  const pageId = pageRows[0].id;
+
+  // Mark all active tokens as rotating
+  await db
+    .update(pageTokens)
+    .set({ status: 'rotating', rotatedAt: new Date() })
+    .where(and(eq(pageTokens.pageId, pageId), eq(pageTokens.status, 'active')));
+
+  // Generate new token
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const tokenRaw = Array.from(tokenBytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(tokenRaw));
+  const tokenHash = Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  await db.insert(pageTokens).values({
+    workspaceId,
+    pageId,
+    tokenHash,
+    label: 'rotated',
+    status: 'active',
+  });
+
+  safeLog('info', { event: 'page_token_rotated', request_id: requestId, page_public_id: pagePublicId });
+
+  return c.json({ page_token: tokenRaw, page_public_id: pagePublicId, request_id: requestId }, 200);
 });

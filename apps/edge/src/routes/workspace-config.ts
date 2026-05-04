@@ -287,7 +287,12 @@ export function createWorkspaceConfigRoute(deps?: {
         .where(eq(workspaces.id, workspaceId))
         .limit(1);
 
-      const currentConfig = (rows[0]?.config as Record<string, unknown>) ?? {};
+      // Parse defensively — jsonb may arrive as string from some driver versions
+      const rawCfg = rows[0]?.config;
+      const currentConfig: Record<string, unknown> =
+        typeof rawCfg === 'string'
+          ? (() => { try { return JSON.parse(rawCfg) as Record<string, unknown>; } catch { return {}; } })()
+          : (rawCfg as Record<string, unknown>) ?? {};
       mergedConfig = deepMerge(currentConfig, body as Record<string, unknown>);
 
       await db

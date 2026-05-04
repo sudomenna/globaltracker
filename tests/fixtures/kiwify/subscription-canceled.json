@@ -1,0 +1,21 @@
+{
+  "event_type": "subscription.canceled",
+  "order": null,
+  "customer": {
+    "name": "Assinante Cancelado",
+    "email": "assinante@example.com",
+    "phone": "+5531977770003",
+    "mobile": null
+  },
+  "product": {
+    "id": "prod-kiwify-0003",
+    "name": "Assinatura Mensal Teste"
+  },
+  "subscription": {
+    "id": "sub-kiwify-0001-canceled",
+    "status": "canceled"
+  },
+  "metadata": {
+    "lead_public_id": null
+  }
+}
