@@ -396,23 +396,15 @@ export function createEventsRoute(
     // BR-EVENT-004: lead_token HMAC must be valid; invalid → 401.
     // INV-IDENTITY-006: verifyLeadToken is timing-safe (crypto.subtle.verify).
     // -----------------------------------------------------------------------
+    let leadIdFromToken: string | undefined;
     if (payload.lead_token) {
       const token = payload.lead_token;
-      const secret = c.env.LEAD_TOKEN_SECRET;
-
-      if (!secret) {
-        // Secret not configured — cannot validate; reject to be safe
-        safeLog('error', {
-          event: 'lead_token_secret_missing',
-          request_id: requestId,
-          workspace_id: workspaceId,
-        });
-        return c.json(
-          { error: 'invalid_lead_token', request_id: requestId },
-          401,
-          { 'X-Request-Id': requestId },
-        );
-      }
+      // Accept both env var names (lead.ts uses LEAD_TOKEN_HMAC_SECRET) plus
+      // the same dev fallback so tokens issued by /v1/lead validate here.
+      const secret =
+        c.env.LEAD_TOKEN_SECRET ??
+        (c.env as { LEAD_TOKEN_HMAC_SECRET?: string }).LEAD_TOKEN_HMAC_SECRET ??
+        'dev-only-insecure-secret-do-not-use-in-prod';
 
       // Parse token to extract leadId for HMAC verification
       const tokenPayload = parseLeadToken(token);
@@ -456,6 +448,10 @@ export function createEventsRoute(
           { 'X-Request-Id': requestId },
         );
       }
+
+      // BR-EVENT-004: token is valid — adopt lead_id from token payload so
+      // the queued event can be linked even without the __ftk cookie.
+      leadIdFromToken = tokenPayload.leadId;
     }
 
     // -----------------------------------------------------------------------
@@ -475,6 +471,9 @@ export function createEventsRoute(
       is_test: isTest,
       // Inject resolved launch_id (UUID) from token auth — processor needs this for blueprint lookup
       ...(launchId ? { launch_id: launchId } : {}),
+      // INV-EVENT-007: lead_id from verified lead_token survives the queue hop
+      // so the processor can link the event without depending on the __ftk cookie.
+      ...(leadIdFromToken ? { lead_id: leadIdFromToken } : {}),
     };
 
     let rawEventId: string | undefined;
@@ -572,9 +571,11 @@ export function createEventsRoute(
     // Ingestion processor normalises raw_events → events + dispatch_jobs.
     // T-2-010: include lead_id when injected by lead-token-validate middleware
     // -----------------------------------------------------------------------
-    // lead_id is set by lead-token-validate middleware when __ftk is valid.
-    // When absent the event is anonymous — still enqueued (valid path).
-    const resolvedLeadId = c.get('lead_id');
+    // lead_id is set by lead-token-validate middleware when __ftk is valid,
+    // or extracted from a verified payload.lead_token (preferred — survives
+    // cross-origin fetch without credentials). When absent the event is
+    // anonymous — still enqueued (valid path).
+    const resolvedLeadId = c.get('lead_id') ?? leadIdFromToken;
 
     try {
       await c.env.QUEUE_EVENTS.send({

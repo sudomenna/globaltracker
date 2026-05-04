@@ -80,7 +80,8 @@ import { type GetAllowedDomainsFn, corsMiddleware } from './middleware/cors.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { safeLog, sanitizeLogs } from './middleware/sanitize-logs.js';
 import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
-import { configRoute } from './routes/config.js';
+import { createConfigRoute } from './routes/config.js';
+import type { GetPageConfigFn } from './routes/config.js';
 import { dispatchReplayRoute } from './routes/dispatch-replay.js';
 import { eventsRoute } from './routes/events.js';
 import { createFunnelTemplatesRoute } from './routes/funnel-templates.js';
@@ -228,6 +229,42 @@ const getAllowedDomains: GetAllowedDomainsFn = async (_pageId) => {
   return [];
 };
 
+/**
+ * Lookup page config for /v1/config — queries pages.event_config via Hyperdrive.
+ * Auth middleware has already validated workspace ownership via page token.
+ */
+const getPageConfig: GetPageConfigFn = async (_workspaceId, pageId, env) => {
+  const e = env as Bindings;
+  const connString = e.DATABASE_URL ?? e.HYPERDRIVE.connectionString;
+  const db = createDb(connString);
+  const rows = await db
+    .select({
+      status: pages.status,
+      eventConfig: pages.eventConfig,
+    })
+    .from(pages)
+    .where(eq(pages.id, pageId))
+    .limit(1);
+  if (!rows[0]) return null;
+  const ec = (rows[0].eventConfig ?? {}) as Record<string, unknown>;
+  return {
+    status: rows[0].status as 'draft' | 'active' | 'paused' | 'archived',
+    eventConfig: ec,
+    allowedEventNames: Array.isArray(ec.allowed_event_names)
+      ? (ec.allowed_event_names as string[])
+      : [],
+    customDataSchema:
+      typeof ec.custom_data_schema === 'object' && ec.custom_data_schema !== null
+        ? (ec.custom_data_schema as Record<string, unknown>)
+        : {},
+    autoPageView: ec.auto_page_view === true,
+    metaPixelId: typeof ec.meta_pixel_id === 'string' ? ec.meta_pixel_id : null,
+    ga4MeasurementId:
+      typeof ec.ga4_measurement_id === 'string' ? ec.ga4_measurement_id : null,
+    leadTokenTtlDays: typeof ec.lead_token_ttl_days === 'number' ? ec.lead_token_ttl_days : 60,
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Public route middleware — applied before sub-router handlers via .use()
 // Middleware order per path: auth → cors → rate-limit
@@ -316,7 +353,7 @@ app.options(
 
 app.route('/v1/events', eventsRoute);
 app.route('/v1/lead', leadRoute);
-app.route('/v1/config', configRoute);
+app.route('/v1/config', createConfigRoute(getPageConfig));
 app.route('/r', redirectRoute);
 app.route('/v1/admin/leads', adminLeadsEraseRoute);
 

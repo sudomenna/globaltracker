@@ -15,7 +15,10 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
-(vazio)
+- **CONTRACT-api-events-v1**: `event-payload.ts` agora aceita `user_data`, `attribution.nullish()` e consent string-or-bool. Doc canônica em `docs/30-contracts/05-api-server-actions.md` ainda descreve a forma antiga. Atualizar antes do próximo sprint.
+- **CONTRACT-api-config-v1**: response inclui `event_config.auto_page_view`. Não estava na doc. Atualizar.
+- **BR-IDENTITY-005**: cookie `__ftk` mudou de `HttpOnly; SameSite=Lax` para `SameSite=None; Secure` sem HttpOnly (tracker lê via JS para propagar identidade cross-page). Atualizar BR e ADR.
+- **CORS público**: quando `pages.allowed_domains` está vazio, libera todas as origens (security via page token). Atualizar `docs/10-architecture/06-auth-rbac-audit.md`.
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -42,66 +45,73 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        E2E USABILITY TEST EM ANDAMENTO (2026-05-04)
-               Sprint 12 PAUSADO — Tiago testa Sprint 0–11 ponta-a-ponta
-               como usuário. Pipeline Guru E2E está funcional (bugs corrigidos nesta sessão).
-Último commit: ver §7 — working tree inteira commitada nesta sessão
-Branch:        main
-DB Supabase:   migrations 0000–0030 aplicadas ✓ (0030 = chk_events_event_source + webhook:guru)
+Estado:        E2E USABILITY TEST EM PRODUÇÃO REAL (2026-05-04)
+               Sprint 12 PAUSADO. Edge Worker DEPLOYED em Cloudflare
+               Workers; tracker.js no R2 público; LP Framer real
+               (cneeducacao.com) instrumentada e capturando leads.
+               Pipeline ponta-a-ponta validado.
+Branch:        main (ahead com commits desta sessão pendentes)
+DB Supabase:   migrations 0000–0030 aplicadas ✓
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
-Servidores:    Wrangler dev :8787 + Next.js dev :3000
-Próxima ação:  Fase 0 do teste E2E — disparar eventos via curl; ver §7
+Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
+Tracker CDN:   https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js
+Próxima ação:  Aplicar template de funil no launch wkshop-cs-jun26
+               para que eventos virem stages.
 ```
 
 ### Plano canônico de sprints restantes
 
 - **Sprint 12** — Webhooks Hotmart/Kiwify/Stripe. Ver [`12-sprint-12-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/12-sprint-12-webhooks-hotmart-kiwify-stripe.md).
 
-### O que foi entregue no Sprint 11
+### O que foi entregue nesta sessão (E2E hardening real)
 
-**Sprint 11 (T-FUNIL-020..026):**
-- `guru-launch-resolver.ts`: 3 estratégias de resolução (mapping → last_attribution → none) + safeLog
-- `PATCH /v1/workspace/config`: merge seguro JSONB + fallback `db.insert(auditLog)` em produção
-- `webhooks/guru.ts`: integração do resolver → `launch_id` + `funnel_role` injetados no raw_event.payload
-- CP: painel "Mapeamento Guru" na tab Overview do launch detail (`<dialog>` nativo, CRUD)
-- 30 novos testes (unit + integration fase-3)
-- 4 docs atualizados (guru-webhook, api-contracts, mod-funnel, mod-workspace)
+Deploy operacional:
+- Worker Cloudflare deployado em `globaltracker-edge.globaltracker.workers.dev`
+- Subdomínio workers.dev `globaltracker` registrado no account `118836e4d3020f5666b2b8e5ddfdb222`
+- Tracker.js rebuildado e republicado no R2 com `credentials: 'include'`
 
-### Bugs corrigidos no E2E usability test (sessão anterior + esta sessão)
+Bugs corrigidos no Edge (ver §7 para detalhe):
+1. CORS bloqueava todas origens quando `pages.allowed_domains` vazio → liberada por padrão (security é page token)
+2. `/v1/config` era stub — wired real `getPageConfig` que lê DB; resposta inclui `auto_page_view`
+3. `EventPayloadSchema` não aceitava `user_data`, `attribution null`, consent string → adicionados
+4. `/v1/events` validava HMAC mas não extraía `lead_id` do token → `leadIdFromToken` flui pro raw_events
+5. `LEAD_TOKEN_SECRET` (events) ≠ `LEAD_TOKEN_HMAC_SECRET` (lead) → unificado com fallback dev
+6. `AttributionPayloadSchema` no processor rejeitava `null` → trocado para `.nullish()`
+7. CORS faltava `Access-Control-Allow-Credentials` → adicionado
+8. Cookie `__ftk` era `HttpOnly; SameSite=Lax` (tracker não lê, cross-origin não envia) → trocado para `SameSite=None; Secure` sem HttpOnly
 
-| # | Bug | Status |
-|---|---|---|
-| B1 | `GET /v1/pages/:id/status` retorna 404 | ✅ FALSO — retorna 200 (token_status=expired para pages scaffoldadas sem token) |
-| B2 | `OPTIONS /v1/events` retorna 401 | ✅ CORRIGIDO — `authPublicToken` passa OPTIONS sem autenticar |
-| B3 | Header da page detail mostra slug | pendente (polish) |
-| B4 | Tracker `EDGE_BASE_URL = ''` | ✅ CORRIGIDO — lê `data-edge-url` do script tag |
-| B5 | Snippet apontava para CDN inexistente | ✅ CORRIGIDO (R2 público) |
-| B6 | Phone Guru: `normalizePhone("999999999")` inválido | ✅ CORRIGIDO — composição `+${localCode}${number}` em `guru-raw-events-processor.ts` |
-| B7 | `chk_events_event_source` não incluía `webhook:guru` | ✅ CORRIGIDO — migration `0030_add_guru_event_source.sql` aplicada |
-| B8 | `workspace.config` gravado como JSONB string em vez de object | ✅ CORRIGIDO — `(config #>> '{}')::jsonb` + parsing defensivo em edge + CP |
-| B9 | `GET /v1/events` bloqueado por CORS (Aba "Eventos" mostrava "Endpoint indisponível") | ✅ CORRIGIDO — middleware method-dispatch em `index.ts`: OPTIONS/GET usam admin CORS; POST usa public CORS |
+Cross-page identity propagation:
+- Decidido usar **localStorage** ao invés de cookie cross-origin (workers.dev ≠ cneeducacao.com)
+- Body script de page sales armazena `__gt_ftk` em localStorage após `/v1/lead`
+- Body script de thankyou lê `__gt_ftk` e chama `Funil.identify` antes de `Funil.page()`
+
+E2E validado em produção real (2026-05-04 19:37-19:38 UTC):
+- captura-v1: PageView (anon) → submit → lead_identify (lead 683d6833) → Lead (lead 683d6833) ✅
+- obrigado-workshop: navega → reads localStorage → wpp_joined com lead 683d6833 ✅
 
 ### Pendências técnicas (não bloqueiam Sprint 12)
 
 | Item | Detalhe |
 |---|---|
-| `tracker.js` CDN | Servir `apps/tracker/dist/tracker.js` via CF Worker dedicado |
+| `tracker.js` CDN | OK por enquanto via R2 público; considerar Worker dedicado para CDN headers |
 | `auth-cp.ts` JWT | `DEV_WORKSPACE_ID` hardcoded em dev. Prod precisa JWT validation |
-| GA4 `no_client_id` | GA4 requer `_ga` cookie — leads sem browser não têm client_id. OQ-012 aberta |
-| TS pré-existentes CP | 2 erros em `layout.tsx` / `use-workspace.ts` (Supabase relation type inference) |
-| TS pré-existentes edge | 5 erros pré-existentes (HYPERDRIVE?, guru null types, events.ts launch_id var) |
-| Secrets produção | Não deployados — bloqueia prod |
+| GA4 `no_client_id` | OQ-012 aberta |
+| `lead-token-validate` middleware | Não wired em index.ts. Atualmente `lead_id` resolve só via `payload.lead_token` (HMAC) |
+| Secrets produção | `LEAD_TOKEN_HMAC_SECRET` usa fallback dev — definir secret real antes de prod-real |
+| TS pré-existentes CP | 2 erros em `layout.tsx` / `use-workspace.ts` |
+| TS pré-existentes edge | Vários erros pré-existentes |
+| Doc-sync | §2 lista contratos atualizados que precisam refletir no doc canônico |
 
-### Notas técnicas invariantes
+### Ambiente operacional desta sessão (não mudar sem motivo)
 
-- `DATABASE_URL ?? HYPERDRIVE?.connectionString ?? ''` — padrão obrigatório em todas as rotas
-- Duas pastas de migrations: `packages/db/migrations/0NNN_*.sql` E `supabase/migrations/20260502000NNN_*.sql`
-- RLS dual-mode: `NULLIF(current_setting('app.current_workspace_id', true), '')::uuid OR public.auth_workspace_id()`
-- Biome varre `.claude/worktrees/` — limpar com `git worktree remove -f <path>` após uso
-- `<dialog open>` nativo (não `div role="dialog"`) nos componentes CP
-- OXC parse error em type aliases multi-linha → usar `Record<string, unknown>`
-- JSONB no driver Cloudflare Workers Postgres pode chegar como string → sempre parsear defensivamente
-- `/v1/events` é dual-mode: POST = tracker.js (public auth+CORS), GET = CP (admin CORS, Bearer auth no handler)
+- Worker name: `globaltracker-edge`
+- Worker URL: `https://globaltracker-edge.globaltracker.workers.dev`
+- Subdomain CF: `globaltracker.workers.dev` (registrado nesta sessão)
+- R2 bucket: `gt-tracker-cdn`, public URL `pub-e224c543d78644699af01a135279a5e2.r2.dev`
+- Wrangler OAuth token em `~/Library/Preferences/.wrangler/config/default.toml` (expira 2026-05-04T18:36:08Z — renovar com `npx wrangler login`)
+- Page tokens ativos:
+  - workshop: `e5ebb594e9f1169165c08169edfbaa49cf3ddc923549bcd57d4f61e6136f576a`
+  - obrigado-workshop: `bfed23ef8117c7b9cf89b77c67ccff3814c15542b370d99e505eca97a16adc27`
 
 ### Decisões já tomadas (não reabrir)
 
@@ -112,11 +122,13 @@ Próxima ação:  Fase 0 do teste E2E — disparar eventos via curl; ver §7
 ### Como retomar em nova sessão
 
 ```
-1. Ler este §5 + §7 inteiro
-2. git log -5 + git status (confirmar branch main, working tree limpa)
-3. curl localhost:8787/health + curl localhost:3000 (relevantar servidores se necessário)
-4. Próxima ação concreta: Fase 0 do teste E2E (§7) — disparar eventos via curl
-5. Pipeline Guru E2E está funcional — testar com curl antes de instalar snippet real
+1. Ler §5 + §7 inteiro
+2. git log -5 + git status (working tree limpa nesta sessão pós-commit)
+3. Edge prod já está rodando — não precisa subir wrangler dev local
+4. Verificar saúde: curl https://globaltracker-edge.globaltracker.workers.dev/health
+5. Próxima ação: aplicar template de funil em wkshop-cs-jun26 OU configurar
+   pages oferta-principal/obrigado-principal seguindo a mesma receita.
+6. Body scripts canônicos (Framer) estão no §7.
 ```
 
 ## §6 Ambiente operacional
@@ -131,8 +143,10 @@ Próxima ação:  Fase 0 do teste E2E — disparar eventos via curl; ver §7
 | CF KV (preview) | `59d0cf1570ca499eb4597fc5218504c2` |
 | CF Queues | `gt-events`, `gt-dispatch` |
 | Hyperdrive | config `globaltracker-db`, id `39156b974a274f969ca96d4e0c32bce1` |
+| Worker prod | `globaltracker-edge.globaltracker.workers.dev` |
+| R2 bucket | `gt-tracker-cdn` (público) |
 | Wrangler | 4.87.0 (via npx) |
-| Supabase CLI | 2.90.0 (logado na conta CNE) |
+| Supabase CLI | 2.90.0 |
 | Node | 24.x (v24.10.0) |
 | pnpm | 10.x |
 
@@ -145,62 +159,94 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 1. **Funcional**: provar que o pipeline ponta-a-ponta funciona — captura → identidade → stages → audiences → dispatch (Meta CAPI / GA4 / Google Ads) → webhook (Guru).
 2. **Usabilidade**: a cada atrito que aparece (campo confuso, fluxo travado, copy ruim, falta de validação), corrigir antes de seguir. O teste é também um exercício de UX hardening.
 
-### Estado do lançamento sob teste
+### Estado atual do lançamento sob teste
 
 - **Launch**: `wkshop-cs-jun26` ("CS Junho 26") — id `d0a4e10e-b1bd-437a-98e6-266d61accd04`
-- **Template aplicado**: `lancamento_pago_workshop_com_main_offer` (workshop pago + oferta principal)
-- **Pages scaffoldadas (4)**: `workshop` (sales/workshop), `obrigado-workshop` (thankyou/workshop), `oferta-principal` (sales/main_offer), `obrigado-principal` (thankyou/main_offer).
-- **Stages no funnel_blueprint (9)**: `lead_workshop` → `clicked_buy_workshop` (recurring) → `purchased_workshop` → `wpp_joined` → `watched_class_1..3` → `clicked_buy_main` (recurring) → `purchased_main`
-- **Audiences scaffoldadas (5)**: compradores_workshop_aquecimento, engajados_workshop, abandono_main_offer, compradores_main, compradores_apenas_workshop
-- **Webhook Guru**: pipeline E2E funcional — `purchased_workshop` stage criado com sucesso no DB
-- **GuruMappingPanel**: produto mapeado em `workspace.config.integrations.guru.product_launch_map` (CRUD funcionando)
-- **Aba "Eventos"**: `GET /v1/events` funcionando com CORS admin (Authorization header permitido)
+- **Pages com URL real e snippet instalado:**
+  - `workshop` (sales/workshop) → `https://cneeducacao.com/captura-v1` (status: draft, mas event_config ativo com `auto_page_view: true`)
+  - `obrigado-workshop` (thankyou/workshop) → `https://cneeducacao.com/obrigado-workshop` (status: active, `auto_page_view: false`)
+- **Pages ainda sem URL/snippet:**
+  - `oferta-principal` (sales/main_offer)
+  - `obrigado-principal` (thankyou/main_offer)
+- **Funnel blueprint**: foi limpo na sessão anterior — **template novo ainda não foi aplicado** (próxima ação)
+- **Audiences**: scaffoldadas anteriormente, ainda não testadas com eventos reais
+- **Webhook Guru**: pipeline E2E funcional desde sessão anterior (`product_launch_map` em `workspace.config`)
 
-### O que foi corrigido nesta sessão especificamente
+### Snippets canônicos (Framer) instalados nas pages
 
-1. **Phone Guru** (`guru-raw-events-processor.ts`): Guru envia `phone_number` e `phone_local_code` separados. `normalizePhone("999999999")` falhava. Fix: compor `+${localCode}${number}` antes de passar para o resolver.
+**Page workshop — `<head>`:**
+```html
+<script
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
+  data-site-token="e5ebb594e9f1169165c08169edfbaa49cf3ddc923549bcd57d4f61e6136f576a"
+  data-launch-public-id="wkshop-cs-jun26"
+  data-page-public-id="workshop"
+  data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
+  async
+></script>
+```
 
-2. **constraint `chk_events_event_source`** (`packages/db/migrations/0030_add_guru_event_source.sql`): constraint não incluía `webhook:guru`. Criada migration e aplicada via Supabase CLI.
+**Page workshop — `<body>`:** (form selector `.framer-150ieha`, inputs `[name="Name"]`, `[name="Phone"]`)
+- Captura submit/click do form, POST `/v1/lead` com `credentials:'include'`
+- Armazena `lead_token` em `localStorage('__gt_ftk')`
+- Chama `Funil.identify(token)` + `Funil.track('Lead')`
+- Dedup: flag `firing` por 3s
 
-3. **JSONB string** em `workspace.config`: UPDATE anterior havia criado array JSONB inválido. Corrigido com `UPDATE workspaces SET config = (config #>> '{}')::jsonb`. Adicionado parsing defensivo em:
-   - `apps/edge/src/routes/workspace-config.ts` (SELECT → deepMerge → UPDATE)
-   - `apps/control-plane/.../page.tsx` (loadMappings)
+**Page obrigado-workshop — `<head>`:**
+```html
+<script
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
+  data-site-token="bfed23ef8117c7b9cf89b77c67ccff3814c15542b370d99e505eca97a16adc27"
+  data-launch-public-id="wkshop-cs-jun26"
+  data-page-public-id="obrigado-workshop"
+  data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
+  async
+></script>
+```
 
-4. **CORS `GET /v1/events`** (`apps/edge/src/index.ts`): Aba "Eventos" mostrava "Endpoint indisponível" porque OPTIONS preflight retornava headers públicos (sem `Authorization`). Fix: middleware method-dispatch — OPTIONS de origem admin usa cpCors, OPTIONS de outra origem usa publicCors, GET usa cpCors, POST usa chain pública completa.
+**Page obrigado-workshop — `<body>`:** (link selector `a.framer-17w9gs4[href*="whatsapp"]`)
+- Lê `localStorage('__gt_ftk')` → `Funil.identify(token)` → `Funil.page()`
+- No clique do link WhatsApp → `Funil.track('wpp_joined')`
 
-### Plano de teste em 3 fases
+### Bugs corrigidos nesta sessão (timeline da onda)
 
-**Fase 0 — Mock total via curl** *(PRÓXIMA AÇÃO)*
+| # | Bug | Arquivo | Status |
+|---|---|---|---|
+| C1 | Worker not deployed (only wrangler dev) | wrangler.toml + register subdomain | ✅ deployed em `globaltracker-edge.globaltracker.workers.dev` |
+| C2 | CORS bloqueia todas origens (allowed_domains vazio) | middleware/cors.ts | ✅ permissivo se vazio |
+| C3 | `/v1/config` retornava stub fallback | routes/config.ts + index.ts | ✅ wired real getPageConfig |
+| C4 | `auto_page_view` ausente da response /v1/config | config.ts schema/buildResponseBody | ✅ incluído |
+| C5 | EventPayloadSchema rejeita `user_data` (strict + unknown) | schemas/event-payload.ts | ✅ UserDataSchema aceito |
+| C6 | EventPayloadSchema rejeita `null` em attribution | schemas/event-payload.ts | ✅ `.nullish()` |
+| C7 | EventPayloadSchema rejeita consent string ('granted') | schemas/event-payload.ts | ✅ union+transform |
+| C8 | RawEventPayloadSchema rejeita `null` em attribution | lib/raw-events-processor.ts | ✅ `.nullish()` |
+| C9 | `/v1/events` 401 — `LEAD_TOKEN_SECRET` ausente | routes/events.ts | ✅ aceita `LEAD_TOKEN_HMAC_SECRET` + dev fallback |
+| C10 | `/v1/events` 500 race condition (submit+click paralelos) | client body script | ✅ flag `firing` por 3s |
+| C11 | `lead_id` não fluía do `payload.lead_token` para events row | routes/events.ts | ✅ `leadIdFromToken` injetado em raw_payload |
+| C12 | Cross-page identity não funcionava (cookie cross-origin bloqueado) | lib/cookies.ts + tracker + body scripts | ✅ localStorage como mecanismo |
+| C13 | Tracker fetch sem `credentials:'include'` | apps/tracker/src/api-client.ts | ✅ adicionado, rebuild + R2 |
+| C14 | CORS sem `Access-Control-Allow-Credentials` | middleware/cors.ts | ✅ adicionado |
 
-Sem instalar snippet ainda. Testa 80% do pipeline:
+### Notas técnicas invariantes (atualizadas)
 
-1. Verificar que as 4 pages têm `url` e `event_config` configurados (via UI Pages tab)
-2. Disparar eventos via `curl POST /v1/events` simulando o tracker:
-   - `PageView` em `workshop` → vê PageView na Aba Eventos
-   - `Lead` (popup workshop) → resolver de identidade cria lead, `lead_workshop` stage
-   - `InitiateCheckout` → `clicked_buy_workshop` (recurring)
-   - Webhook Guru real `Purchase` → `purchased_workshop`
-   - Repetir para main_offer
-3. Validar:
-   - Lead progride pelos 9 stages na timeline
-   - Audiences populam
-   - Dispatchers disparam (logs do worker)
-   - Webhook Guru resolve `launch_id` + `funnel_role` corretamente
-
-**Fase 1 — Captura client-side real (Cloudflared Tunnel)**
-
-Quando Fase 0 estiver verde: instalar snippet via cloudflared tunnel.
-
-**Fase 2 — Validação completa**
-
-Compra Guru real → confirmar pipeline completo end-to-end.
+- `DATABASE_URL ?? HYPERDRIVE.connectionString ?? ''` — padrão obrigatório em todas as rotas
+- Duas pastas de migrations: `packages/db/migrations/0NNN_*.sql` E `supabase/migrations/20260502000NNN_*.sql`
+- RLS dual-mode: `NULLIF(current_setting('app.current_workspace_id', true), '')::uuid OR public.auth_workspace_id()`
+- Biome varre `.claude/worktrees/` — limpar com `git worktree remove -f <path>` após uso
+- `<dialog open>` nativo (não `div role="dialog"`) nos componentes CP
+- OXC parse error em type aliases multi-linha → usar `Record<string, unknown>`
+- JSONB no driver Cloudflare Workers Postgres pode chegar como string → sempre parsear defensivamente
+- `/v1/events` é dual-mode: POST = tracker.js (public auth+CORS), GET = CP (admin CORS, Bearer auth no handler)
+- **NEW**: tracker.js dist é gitignored — após mudar `apps/tracker/src/`, rebuild com `node build.config.js` e upload `npx wrangler r2 object put gt-tracker-cdn/tracker.js --remote --file=./dist/tracker.js --content-type=application/javascript`
+- **NEW**: redeploy edge com `cd apps/edge && npx wrangler deploy` (NÃO da raiz do monorepo)
+- **NEW**: tracker dedupa event_id por nome de evento via sessionStorage (TTL 5min) — segundo Lead/PageView na mesma sessão é `event_duplicate_accepted` (esperado)
 
 ### Preferências do operador (Tiago) durante este teste
 
 - Atua como par, prefere debate antes de código grande
 - Quer ver UX issues escaladas explicitamente, não silenciadas
 - Prefere caminho recomendado quando há trade-off claro
-- Aceita "começar mais simples e subir" (Fase 0 antes de Fase 1)
+- Aceita "começar mais simples e subir"
 - Quer credenciais reais validadas (não mockar dispatchers)
 
 ## Política de uso

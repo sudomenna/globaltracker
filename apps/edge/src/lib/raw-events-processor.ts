@@ -102,28 +102,30 @@ const ConsentSnapshotSchema = z
 /**
  * Attribution snapshot from payload.
  */
+// tracker.js sends null for unset fields; accept both string|null|undefined.
 const AttributionPayloadSchema = z
   .object({
-    utm_source: z.string().optional(),
-    utm_medium: z.string().optional(),
-    utm_campaign: z.string().optional(),
-    utm_content: z.string().optional(),
-    utm_term: z.string().optional(),
-    fbclid: z.string().optional(),
-    gclid: z.string().optional(),
-    gbraid: z.string().optional(),
-    wbraid: z.string().optional(),
-    fbc: z.string().optional(),
-    fbp: z.string().optional(),
-    _gcl_au: z.string().optional(),
-    _ga: z.string().optional(),
-    referrer_domain: z.string().optional(),
-    link_id: z.string().optional(),
-    ad_account_id: z.string().optional(),
-    campaign_id: z.string().optional(),
-    adset_id: z.string().optional(),
-    ad_id: z.string().optional(),
-    creative_id: z.string().optional(),
+    utm_source: z.string().nullish(),
+    utm_medium: z.string().nullish(),
+    utm_campaign: z.string().nullish(),
+    utm_content: z.string().nullish(),
+    utm_term: z.string().nullish(),
+    fbclid: z.string().nullish(),
+    gclid: z.string().nullish(),
+    gbraid: z.string().nullish(),
+    wbraid: z.string().nullish(),
+    fbc: z.string().nullish(),
+    fbp: z.string().nullish(),
+    _gcl_au: z.string().nullish(),
+    _ga: z.string().nullish(),
+    referrer: z.string().nullish(),
+    referrer_domain: z.string().nullish(),
+    link_id: z.string().nullish(),
+    ad_account_id: z.string().nullish(),
+    campaign_id: z.string().nullish(),
+    adset_id: z.string().nullish(),
+    ad_id: z.string().nullish(),
+    creative_id: z.string().nullish(),
   })
   .optional()
   .default({});

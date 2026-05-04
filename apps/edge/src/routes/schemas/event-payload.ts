@@ -14,24 +14,48 @@ import { z } from 'zod';
 // Sub-schemas
 // ---------------------------------------------------------------------------
 
+// tracker.js sends null (not undefined) for unset fields; accept both.
 const AttributionSchema = z
   .object({
-    utm_source: z.string().optional(),
-    utm_medium: z.string().optional(),
-    utm_campaign: z.string().optional(),
-    utm_content: z.string().optional(),
-    utm_term: z.string().optional(),
-    fbclid: z.string().optional(),
-    gclid: z.string().optional(),
-    referrer: z.string().optional(),
+    utm_source: z.string().nullish(),
+    utm_medium: z.string().nullish(),
+    utm_campaign: z.string().nullish(),
+    utm_content: z.string().nullish(),
+    utm_term: z.string().nullish(),
+    fbclid: z.string().nullish(),
+    gclid: z.string().nullish(),
+    referrer: z.string().nullish(),
   })
   .default({});
 
+// analytics/marketing accept either boolean (legacy/CP) or GA-style string
+// ('granted'/'denied'/'unknown'). tracker.js sends strings; we normalize to boolean
+// so downstream consumers (consent.ts, lead.ts, raw-events-processor) stay simple.
+const BoolOrConsentString = z
+  .union([z.boolean(), z.enum(['granted', 'denied', 'unknown'])])
+  .transform((v) => (typeof v === 'boolean' ? v : v === 'granted'));
+
 const ConsentSchema = z.object({
-  analytics: z.boolean().default(false),
-  marketing: z.boolean().default(false),
+  analytics: BoolOrConsentString.default(false),
+  marketing: BoolOrConsentString.default(false),
   functional: z.boolean().default(true),
+  ad_user_data: z.enum(['granted', 'denied', 'unknown']).optional(),
+  ad_personalization: z.enum(['granted', 'denied', 'unknown']).optional(),
+  customer_match: z.enum(['granted', 'denied', 'unknown']).optional(),
 });
+
+/**
+ * Platform cookies forwarded from the tracker to the Edge for Meta CAPI / GA4 / Google Ads.
+ * BR-PRIVACY-001: contains only opaque platform identifiers (fbp, fbc, _ga, _gcl_au) — no PII.
+ */
+const UserDataSchema = z
+  .object({
+    _gcl_au: z.string().nullable().optional(),
+    _ga: z.string().nullable().optional(),
+    fbc: z.string().nullable().optional(),
+    fbp: z.string().nullable().optional(),
+  })
+  .default({});
 
 // ---------------------------------------------------------------------------
 // Main payload schema
@@ -62,6 +86,7 @@ export const EventPayloadSchema = z
     phone: z.string().optional(),
     external_id: z.string().optional(),
     attribution: AttributionSchema,
+    user_data: UserDataSchema,
     custom_data: z.record(z.unknown()).default({}),
     consent: ConsentSchema,
   })

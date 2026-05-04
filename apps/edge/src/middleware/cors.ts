@@ -92,6 +92,7 @@ function setCorsHeaders(
   return {
     ...headers,
     'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders,
     'Access-Control-Max-Age': MAX_AGE,
@@ -155,8 +156,14 @@ export function corsMiddleware(options: CorsOptions): MiddlewareHandler {
         }
       } else {
         const allowedDomains = await options.getAllowedDomains(pageId);
-        // INV-PAGE-007: origin validation — suffix match
-        isAllowed = originMatchesDomains(origin, allowedDomains);
+        // Empty allowed_domains → permissive (tracker security comes from page token auth).
+        // Operators restrict by populating pages.allowed_domains.
+        if (allowedDomains.length === 0) {
+          isAllowed = true;
+        } else {
+          // INV-PAGE-007: origin validation — suffix match
+          isAllowed = originMatchesDomains(origin, allowedDomains);
+        }
       }
     }
 
@@ -184,6 +191,7 @@ export function corsMiddleware(options: CorsOptions): MiddlewareHandler {
 
     if (isAllowed) {
       c.res.headers.set('Access-Control-Allow-Origin', origin);
+      c.res.headers.set('Access-Control-Allow-Credentials', 'true');
       c.res.headers.set('Access-Control-Allow-Methods', ALLOWED_METHODS);
       c.res.headers.set('Access-Control-Allow-Headers', resolvedHeaders);
       c.res.headers.set('Vary', 'Origin');

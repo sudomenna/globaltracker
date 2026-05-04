@@ -142,11 +142,14 @@ export function buildLeadTokenCookie(
   token: string,
   maxAge: number = LEAD_TOKEN_DEFAULT_MAX_AGE_SECONDS,
 ): string {
-  // BR-IDENTITY-005: lead_token cookie must be httpOnly, Secure, SameSite=Lax
+  // The tracker reads __ftk via document.cookie on subsequent pages
+  // (INV-TRACKER-004), so HttpOnly is dropped. Cross-origin (LP ↔ Edge)
+  // requires SameSite=None + Secure; the token itself is HMAC-bound to
+  // workspace+lead so theft alone cannot impersonate other workspaces.
   return serializeCookie(LEAD_TOKEN_COOKIE, token, {
-    httpOnly: true,
+    httpOnly: false,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: 'None',
     maxAge,
     path: '/',
   });

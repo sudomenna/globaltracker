@@ -60,6 +60,8 @@ export interface PageConfigRow {
   allowedEventNames: string[];
   /** Custom data schema — extracted from eventConfig if present. */
   customDataSchema: Record<string, unknown>;
+  /** Auto fire PageView on tracker init — extracted from eventConfig.auto_page_view. */
+  autoPageView: boolean;
   metaPixelId: string | null;
   ga4MeasurementId: string | null;
   leadTokenTtlDays: number;
@@ -68,10 +70,12 @@ export interface PageConfigRow {
 /**
  * DB query function injected by the caller.
  * domain-author wires this up via apps/edge/src/lib/page.ts → getPageConfig().
+ * Receives env so the closure can resolve a per-request DB connection (Hyperdrive).
  */
 export type GetPageConfigFn = (
   workspaceId: string,
   pageId: string,
+  env: unknown,
 ) => Promise<PageConfigRow | null>;
 
 // ---------------------------------------------------------------------------
@@ -83,6 +87,7 @@ interface ConfigResponse {
     events_enabled: boolean;
     allowed_event_names: string[];
     custom_data_schema: Record<string, unknown>;
+    auto_page_view: boolean;
   };
   pixel_policy: {
     meta_pixel_id: string | null;
@@ -141,6 +146,7 @@ function buildResponseBody(row: PageConfigRow): ConfigResponse {
       events_enabled: true,
       allowed_event_names: row.allowedEventNames,
       custom_data_schema: row.customDataSchema,
+      auto_page_view: row.autoPageView,
     },
     pixel_policy: {
       meta_pixel_id: row.metaPixelId,
@@ -161,6 +167,7 @@ function buildFallbackBody(): ConfigResponse {
       events_enabled: false,
       allowed_event_names: [],
       custom_data_schema: {},
+      auto_page_view: false,
     },
     pixel_policy: {
       meta_pixel_id: null,
@@ -264,28 +271,10 @@ export function createConfigRoute(
     // Cache miss — attempt DB lookup
     // -----------------------------------------------------------------------
 
-    // Fallback: DB (Hyperdrive) not yet configured
-    if (!c.env.DB) {
-      // BR-PRIVACY-001: no PII in log
-      safeLog('warn', {
-        event: 'config_db_unavailable_fallback',
-        request_id: requestId,
-        workspace_id: workspaceId,
-        page_id: pageId,
-      });
-
-      const fallback = buildFallbackBody();
-
-      return c.json(fallback, 200, {
-        'Cache-Control': 'public, max-age=60',
-        'X-Request-Id': requestId,
-      });
-    }
-
-    // DB is available — query page config
+    // DB lookup — env passed so the closure resolves Hyperdrive connection per request
     let row: PageConfigRow | null;
     try {
-      row = await getPageConfig(workspaceId, pageId);
+      row = await getPageConfig(workspaceId, pageId, c.env);
     } catch (err) {
       // Unexpected DB error — do not surface details
       // BR-PRIVACY-001: no PII in log
@@ -391,4 +380,4 @@ export function createConfigRoute(
  * app.route('/v1/config', createConfigRoute(realGetPageConfig));
  * ```
  */
-export const configRoute = createConfigRoute(async () => null);
+export const configRoute = createConfigRoute(async (_ws, _pid, _env) => null);

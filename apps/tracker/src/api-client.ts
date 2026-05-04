@@ -64,6 +64,7 @@ export async function fetchConfig(
     const url = `${baseUrl}/v1/config/${encodeURIComponent(launchPublicId)}/${encodeURIComponent(pagePublicId)}`;
     const res = await fetch(url, {
       method: 'GET',
+      credentials: 'include',
       headers: {
         'X-Funil-Site': siteToken,
         'Content-Type': 'application/json',
@@ -103,6 +104,7 @@ export async function sendEvent(
     const url = `${baseUrl}/v1/events`;
     const res = await fetch(url, {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         'X-Funil-Site': siteToken,
