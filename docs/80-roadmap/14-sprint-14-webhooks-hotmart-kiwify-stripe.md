@@ -23,10 +23,10 @@ Adicionar suporte a webhooks inbound das principais plataformas BR/global: Hotma
 
 ## T-IDs (alto nível)
 
-- T-14-001: adapter Hotmart (handler + mapper).
-- T-14-002: adapter Kiwify (handler + mapper).
-- T-14-003: adapter Stripe (handler + mapper, raw body obrigatório).
-- T-14-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe.
+- T-14-001: adapter Hotmart (handler + mapper). **Inclui chamada a `enrichLeadPii` (T-13-015)** após `resolveLeadByAliases` retornar — leads criados via webhook Hotmart sem form prévio precisam ter `email_enc/phone_enc/name_enc` populados pra admin recovery + DSAR.
+- T-14-002: adapter Kiwify (handler + mapper). **Idem — chamada a `enrichLeadPii` no fluxo de criação de lead via webhook**.
+- T-14-003: adapter Stripe (handler + mapper, raw body obrigatório). **Idem — `enrichLeadPii` na criação de lead via webhook (`receipt_email` + metadata).** Stripe pode não vir com phone — popular só os campos disponíveis (helper já é tolerante a campos ausentes).
+- T-14-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe — incluir asserções no DB de que `email_enc IS NOT NULL` e (quando aplicável) `phone_enc IS NOT NULL` após o evento de compra.
 - T-14-005: ADR-022 tolerance window off-by-one no `verifyStripeSignature` — confirmar inequalidade `<= 300` vs `< 300` na implementação atual e alinhar com a doc do ADR. Originalmente catalogado como T-13-007 (cleanup herdado do Sprint 12); migrado pra Sprint 14 junto com o Stripe adapter por proximidade de domínio. Referência: `tests/integration/webhooks/stripe-signature.test.ts:148`.
 
 ## Referências de integração
