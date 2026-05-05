@@ -131,7 +131,7 @@
     document.addEventListener('submit', function(ev){
       var form = ev.target;
       if (!form || form.id !== 'gt-form-workshop') return;
-      if (firing) { ev.preventDefault(); return; }
+      if (firing) { ev.preventDefault(); ev.stopImmediatePropagation(); return; }
 
       var nameEl = form.querySelector('[name="name"]');
       var emailEl = form.querySelector('[name="email"]');
@@ -141,7 +141,13 @@
       var phone = phoneEl && phoneEl.value ? phoneEl.value.trim() : '';
       if (!name || !email || !phone) return; // browser validation handles required
 
+      // Bloquear o handler bubble-phase do Elementor (`elementor_pro_atomic_forms_send_form`)
+      // que dispara em paralelo. Sem ações configuradas, ele responde
+      // {success:false, message:"No actions configured"} → popup mostra erro vermelho
+      // antes do redirect Guru completar. Validado seguro: HTML5 validation já rodou
+      // antes do submit event; estado visual do Elementor já está aplicado.
       ev.preventDefault();
+      ev.stopImmediatePropagation();
       firing = true;
       setTimeout(function(){ firing = false; }, 3000);
 
