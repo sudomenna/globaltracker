@@ -152,26 +152,24 @@ Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
   (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
   (Purchase real via Guru cartão).
 
-Próxima ação:  Tiago decidiu priorizar SendFlow (T-13-011 — webhook inbound
-  que dispara Contact event quando lead efetivamente entra no grupo WhatsApp).
-  Pendência crítica antes de começar: doc do payload do webhook SendFlow
-  (URL outbound, payload schema, auth method, identifier — phone? lead_token via
-  query no link de convite?). Tiago precisa fornecer.
+Próxima ação (decidida 2026-05-05 fim-de-tarde — ordem fixa):
+  TRILHA 2 → TRILHA 3 → TRILHA 4 → TRILHA 1
+  Detalhes operacionais de cada uma estão em §9 (NOVO). Resumo:
+    Trilha 2 = T-13-005 + T-13-006 (cleanups de testes legados)
+    Trilha 3 = T-13-012 (survey form na obrigado-workshop)
+    Trilha 4 = T-13-016 (UI no Control Panel pra cadastrar SendFlow config)
+    Trilha 1 = Trilha A original — comprar workshop com cartão real via Guru
+               pra validar pipeline E2E completo (Purchase webhook + stages
+               purchased_workshop, e desbloqueia investigação T-13-009 do
+               source.utm_* null).
 
-  Trilha A (Purchase real) destravada também — pode ser feita em paralelo
-  ou depois do SendFlow. Trilhas anteriores:
-  TRILHA A — Validar Purchase + Contact server-side (server fluxo completo):
-    1. Comprar workshop via Guru com cartão real → webhook deve disparar
-       Purchase → stage purchased_workshop preenchido no DB
-    2. Após compra, ir pra obrigado-workshop, clicar no botão SendFlow,
-       entrar no grupo. Verificar webhook SendFlow chegar no Edge
-       (Sprint 13 / T-13-011 — adapter ainda não implementado).
-       NOTA: SendFlow webhook ainda NÃO está implementado, então Contact
-       não vai chegar — só a parte client (custom:click_wpp_join) está OK.
-       T-13-011 deve ser priorizado.
-  TRILHA B — Construir as 3 pages WP restantes (aula, oferta-principal, obrigado-principal)
-    Mesma metodologia: editor Elementor → CSS IDs estáveis nos elementos
-    chave → 2 snippets WPCode (HEAD + FOOTER) per page → URL no CP.
+  Edge worker prod atual: version `f552f472-a8c5-4c47-ae7e-de0eb6f58126`
+  (deploy 2026-05-05 fim — inclui T-13-008 + T-13-010 + T-13-013 + T-13-014
+  + T-13-015 + T-13-011 SendFlow + fix snippet workshop stopImmediatePropagation).
+
+  Tracker.js R2 atual: build com fix race init→identify (preserva token quando
+  cookie __ftk vazio). Snippet workshop em prod já tem stopImmediatePropagation
+  no handler de submit (Tiago confirmou aplicado em WPCode 2026-05-05).
 ```
 
 ### Plano canônico de sprints restantes
@@ -597,6 +595,138 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 - Prefere caminho recomendado quando há trade-off claro
 - Aceita "começar mais simples e subir"
 - Quer credenciais reais validadas (não mockar dispatchers)
+
+## §9 Próxima sessão — playbook das 4 trilhas (ordem fixa: 2 → 3 → 4 → 1)
+
+> **Como retomar (cold start)**:
+> 1. `git log --oneline -10` — confirma últimos commits desta sessão (todos prefixados `T-13-*`).
+> 2. `cd apps/edge && npx wrangler whoami` — confirma auth Cloudflare (renovar com `npx wrangler login` se necessário).
+> 3. Edge prod version atual: `f552f472-a8c5-4c47-ae7e-de0eb6f58126`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
+> 4. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
+> 5. DB connect (consultas ad-hoc) usar `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
+>
+> **Decisões já tomadas — não rediscutir**:
+> - Ordem das trilhas é 2 → 3 → 4 → 1 (Tiago confirmou).
+> - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer = TUDO em produção. Pipeline funil B paid_workshop está OK fim-a-fim exceto pelo Purchase real (Trilha 1).
+> - SendFlow campaign_map cadastrado pros 2 grupos (compradores `3bhG8XexRRKwLxF4SGtk` → `Contact`/wpp_joined; VIP main `0b4IxLZFiYOxxRyO6ZmE` → `custom:wpp_joined_vip_main`/wpp_joined_vip_main).
+> - Helper `apps/edge/src/lib/jsonb-cast.ts` exporta `jsonb(value)`. Use em TODA escrita pra coluna jsonb daqui pra frente — Hyperdrive driver não cast implícito.
+
+### TRILHA 2 — T-13-005 + T-13-006 (cleanups de testes legados)
+
+Bugs herdados do Sprint 12 que nunca foram resolvidos. Pequenos, focados, sem dependências. Resolver em 1 PR junto.
+
+**T-13-005**: `tests/integration/routes/config.test.ts:443` — fallback "200 quando DB binding ausente" não retorna o esperado.
+- Reproduzir: `cd /Users/tiagomenna/Projetos/GlobalTracker && pnpm vitest run tests/integration/routes/config.test.ts`
+- Investigar `apps/edge/src/routes/config.ts` no caminho `env.DB === undefined`. Provavelmente o handler espera DB sempre presente; ajustar fallback ou ajustar o teste pra refletir o comportamento real (ver qual é o "esperado" alinhado com a doc).
+- O `getPageConfig` (em `apps/edge/src/index.ts:236`) já tem o parse defensivo (T-13-014/015 sessão); confirmar que o caminho do teste passa por ele.
+
+**T-13-006**: `tests/integration/routes/integrations-test.test.ts:235` — Zod `.strict()` não rejeita extra fields no `POST /v1/integrations/:provider/test`.
+- Reproduzir: `pnpm vitest run tests/integration/routes/integrations-test.test.ts`
+- Diagnose: `git log -p apps/edge/src/routes/integrations-test.ts` — provavelmente um refactor recente trocou `.strict()` por `.passthrough()` ou tirou o `.strict()`.
+- Fix: restaurar `.strict()` no schema relevante.
+
+**Validação**:
+- `pnpm vitest run tests/integration/routes/config.test.ts tests/integration/routes/integrations-test.test.ts` deve passar 100%.
+- `pnpm vitest run tests/integration` deve estar tudo verde (havia uma falha pré-existente em `tests/unit/event/guru-raw-events-processor.test.ts` — verificar se ainda existe pós T-13-008/010; pode ter sido afetada).
+
+### TRILHA 3 — T-13-012 (survey form na obrigado-workshop)
+
+Formulário de pesquisa pós-compra do workshop, dispara `custom:survey_responded` → stage `survey_responded`. Audience `respondeu_pesquisa_sem_comprar_main` já existe no template v3 (migration 0036).
+
+**Onde adicionar o form**:
+- Page `/wk-obg/` no WordPress (Elementor) — adicionar widget de formulário OU o snippet WPCode FOOTER atual aceitar um form custom.
+- Decisão Tiago anterior: form simples, 2-3 perguntas. Conteúdo das perguntas: confirmar com Tiago no início da trilha (decisão de produto, não técnica).
+
+**Stack mínimo viável (sugerido)**:
+- Tipo: usar Elementor atomic form com action de "Email" desligada (mesmo padrão do workshop popup).
+- CSS ID do form: `gt-form-survey`.
+- Snippet WPCode FOOTER intercepta submit em capture phase, faz `ev.preventDefault() + ev.stopImmediatePropagation()` (mesmo fix de T-13-013/snippet workshop), monta `customData` com respostas, chama `Funil.track('custom:survey_responded', { custom_data: { q1, q2, q3 } })`.
+- BR-EVENT-001: prefixo `custom:` exigido. Schema custom_data validado contra `pages.event_config.custom_data_schema` (JSONB, hoje `{}` — pode ficar vazio ou definir explicitamente).
+
+**Reaproveitamento de código**:
+- Olhar `apps/tracker/snippets/paid-workshop/workshop.html:128-194` (wireForm) como modelo de submit handler — copiar estrutura adaptando.
+- O custom event `survey_responded` já está em `event_config.custom` da page obrigado-workshop (migration 0034).
+- Stage `survey_responded` já existe no template (migration 0036, posição 6).
+
+**Validação E2E**:
+1. Aplicar form na page WP. Allowlist Wordfence. Limpar WP Rocket.
+2. Em modo anônimo: visitar `/wk-obg/`, preencher form de pesquisa, submeter.
+3. Confirmar no DB: novo `events` row com `event_name='custom:survey_responded'` + `lead_stages` row novo com `stage='survey_responded'` pra esse lead.
+4. Confirmar audience: rodar resolução manual → lead deve aparecer em `respondeu_pesquisa_sem_comprar_main` (se ainda não comprou main).
+
+### TRILHA 4 — T-13-016 (UI no Control Panel pra SendFlow config)
+
+Hoje o `workspace_integrations.sendflow_sendtok` e `workspaces.config.sendflow.campaign_map` estão cadastrados via SQL direto (T-13-011). UI permite autosserviço.
+
+**Backend (Edge)**:
+- Estender schema `PatchWorkspaceConfigBodySchema` em [`apps/edge/src/routes/workspace-config.ts`](apps/edge/src/routes/workspace-config.ts:83-89):
+  - Adicionar `sendflow: SendflowConfigSchema.optional()` ao schema top-level.
+  - `SendflowConfigSchema = z.object({ campaign_map: z.record(SendflowCampaignEntrySchema).optional() })`
+  - `SendflowCampaignEntrySchema = z.object({ launch: z.string().min(1), stage: z.string().min(1), event_name: z.string().min(1) })`
+- Adicionar endpoint POST/PATCH `/v1/integrations/sendflow/sendtok` (ou estender `/v1/integrations/:provider/test`) pra cadastrar `workspace_integrations.sendflow_sendtok` (jsonb cast já tá certo via helper).
+- Tudo já funciona com helper `jsonb()` — não precisa cuidar de double-stringify.
+
+**Frontend (Control Plane)**:
+- Path provável: `apps/control-plane/src/app/(app)/settings/integrations/sendflow/page.tsx` (criar diretório).
+- 2 cards na tela:
+  1. **Sendtok**: input de senha-style + botão Salvar. PATCH `/v1/integrations/sendflow/sendtok` com `{ sendtok: '<value>' }`.
+  2. **Campaign Map**: tabela editável `campaignId` → `launch_public_id` + `stage` + `event_name`. Add/remove rows. Salvar via PATCH `/v1/workspace/config` com `{ sendflow: { campaign_map: {...} } }`.
+- Listar `launch_public_id` e `stage` disponíveis: query `/v1/launches` + `/v1/launches/:public_id` (consumir blueprint pra listar stages).
+- Validações:
+  - Sendtok: 16-200 chars (constraint DB).
+  - campaignId: string não-vazia.
+  - launch: deve existir (lookup); stage: deve existir no blueprint do launch.
+  - event_name: aceitar `Contact` (canonical) ou prefix `custom:` (custom event).
+
+**Reaproveitamento**:
+- Olhar `apps/control-plane/src/app/(app)/settings/integrations/guru/page.tsx` (se existir) ou similar pra Guru config.
+- Padrões UX em [`docs/70-ux/05-screen-integration-health.md`](docs/70-ux/05-screen-integration-health.md).
+
+**Validação**:
+- Cadastrar sendtok e campaign_map via UI → query DB confirma `workspace_integrations.sendflow_sendtok` populado e `workspaces.config.sendflow.campaign_map` é JSONB-object (NÃO string).
+- Disparar webhook SendFlow real (ou simulado via curl) → 202.
+
+### TRILHA 1 — Trilha A original (Purchase real Guru)
+
+Comprar o workshop com cartão real via `https://clkdmg.site/pay/wk-contratos-societarios`. Valida o pipeline E2E completo: form workshop → /v1/lead (Lead) → enrich PII → redirect Guru com UTMs → checkout → cartão → webhook Guru → `purchased_workshop` stage → enrich PII (já tem, mas confirma) → audiência atualizada.
+
+**Pré-requisitos antes de comprar**:
+1. Confirmar que tracker.js em prod tem o fix de race (build pós T-13-014). Hard reload em browser real.
+2. Confirmar snippet workshop tem `stopImmediatePropagation` (Tiago aplicou em sessão anterior).
+3. **CRÍTICO pro T-13-009**: abrir o link da page workshop com UTMs explícitas (ex: `https://contratosnovaeconomia.com.br/wk-societarios-1/?utm_source=teste-trilhaA&utm_campaign=cartao-real-2026-05&utm_medium=manual`). Senão, o webhook Guru chega sem UTMs e não saberemos se T-13-009 é bug Guru ou config nossa.
+
+**O que validar pós-compra**:
+1. **Lead**: confirma que o lead existente do form (workspace 74860330..., phone +5551... ou similar) recebeu Purchase event.
+2. **events row**: `event_name='Purchase'`, `event_source='webhook:guru'`, `customData.dates.confirmed_at` populado, `customData.amount` correto, `customData.product_id` correto, `attribution.utm_source/...` populados (se T-13-009 resolvido).
+3. **lead_stages**: novo row com `stage='purchased_workshop'`, `funnel_role='workshop'` no payload.
+4. **PII enrichment**: lead `email_enc` / `phone_enc` / `name_enc` populados pelo `enrichLeadPii` (T-13-015 — wired em /v1/lead, mas pode não estar wired no guru-raw-events-processor → registrar T-ID novo se faltar).
+5. **Guru retry behavior**: se 2 webhooks chegarem (autorização + settlement), confirmar que o 2º faz UPDATE com `dates.confirmed_at` correto via T-13-010 fix. Procurar no log: `guru_webhook_updated_with_newer_payload`.
+6. **T-13-009 closure**: se UTMs chegaram populadas, fechar T-13-009 como "config Guru OK". Se chegaram null mesmo com checkout aberto com UTMs, escalar — ticket de suporte Guru ou investigar painel Guru config.
+
+**Comandos úteis**:
+```sql
+-- Ver event Purchase recém-criado
+SELECT id, event_name, event_source, lead_id, event_time, attribution, custom_data
+  FROM events
+ WHERE workspace_id='74860330-a528-4951-bf49-90f0b5c72521'
+   AND event_name='Purchase'
+   AND received_at > now() - interval '15 minutes'
+ ORDER BY received_at DESC LIMIT 5;
+
+-- Stage transition do lead
+SELECT lead_id, stage, occurred_at, source_event_id
+  FROM lead_stages
+ WHERE lead_id IN (...)
+ ORDER BY occurred_at DESC LIMIT 10;
+
+-- PII enriquecida pós-Purchase
+SELECT id, email_enc IS NOT NULL AS has_ee, phone_enc IS NOT NULL AS has_pe
+  FROM leads WHERE id = '<lead_id>';
+```
+
+**Cuidados**:
+- Compra real tem custo. Combinar com Tiago se ele quer com cartão pessoal ou test card. Guru aceita test cards em modo sandbox? Verificar painel.
+- Após teste, registrar no `MEMORY.md §5` o lead resultante e os event_ids pra futuras regressões.
 
 ## Política de uso
 
