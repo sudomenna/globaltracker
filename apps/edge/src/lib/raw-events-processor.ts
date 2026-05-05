@@ -23,7 +23,7 @@
 
 import type { Db } from '@globaltracker/db';
 import { events, launches, leadStages, rawEvents } from '@globaltracker/db';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type AttributionParams, recordTouches } from './attribution.js';
@@ -556,9 +556,47 @@ export async function processRawEvent(
 
   // -------------------------------------------------------------------------
   // Step 6: Insert events row
-  // INV-EVENT-001: (workspace_id, event_id) unique — catch unique violation → duplicate
+  // INV-EVENT-001: (workspace_id, event_id) unique
   // BR-EVENT-002: idempotency by (workspace_id, event_id)
+  //
+  // T-13-008: pre-insert dedup. A tabela events é PARTITIONED BY RANGE
+  // (received_at) e a unique constraint inclui received_at — então retries
+  // do tracker (sessions diferentes, mesmo event_id) chegam com received_at
+  // distintos e PASSAM no constraint, criando duplicatas. SELECT prévio por
+  // (workspace_id, event_id) cobre o caso. Mesmo padrão já aplicado em
+  // guru-raw-events-processor.ts (T-FUNIL-047).
   // -------------------------------------------------------------------------
+
+  const existingEvent = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(
+      and(
+        eq(events.workspaceId, rawEvent.workspaceId),
+        eq(events.eventId, payload.event_id),
+      ),
+    )
+    .limit(1);
+
+  if (existingEvent[0]) {
+    safeLog('info', {
+      event: 'tracker_event_duplicate_skipped',
+      raw_event_id,
+      workspace_id: rawEvent.workspaceId,
+      event_id: payload.event_id,
+      existing_event_uuid: existingEvent[0].id,
+    });
+    await markRawEventProcessed(raw_event_id, db);
+    return {
+      ok: true,
+      value: {
+        event_id: payload.event_id,
+        dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
+      },
+    };
+  }
+
   let insertedEventId: string;
 
   try {

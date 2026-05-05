@@ -17,7 +17,7 @@
 
 - **CONSTRAINT-guru-api-token-length** (RESOLVIDO via migration 0033): formalizada via `0033_relax_guru_api_token_constraint.sql` (aplicada 2026-05-05).
 
-- **DUPLICATE-EVENTS bug** (parcialmente resolvido): tabela `events` é `PARTITIONED BY RANGE (received_at)`, forçando UNIQUE constraint a incluir `received_at` (`uq_events_workspace_event_id (workspace_id, event_id, received_at)`). Retries de webhook (Guru manda 2x para `approved`) chegam com `received_at` diferente, então `INSERT ... ON CONFLICT` não dispara → duplicatas. Fix runtime aplicado em `guru-raw-events-processor.ts`: SELECT prévio por `(workspace_id, event_id)` antes do INSERT. **Pendência**: replicar o mesmo padrão em `raw-events-processor.ts` (tracker) — bug latente. Sub-T-ID `T-13-008` (a criar em Sprint 13).
+- **DUPLICATE-EVENTS bug (RESOLVIDO 2026-05-05 — T-13-008)**: tabela `events` é `PARTITIONED BY RANGE (received_at)`, forçando UNIQUE constraint a incluir `received_at`. Pre-insert SELECT cobre retries — fix do guru replicado em `raw-events-processor.ts:557+`. Deploy `f552f472`.
 
 - **CONTRACT-api-events-v1**: `event-payload.ts` agora aceita `user_data`, `attribution.nullish()` e consent string-or-bool. Doc canônica em `docs/30-contracts/05-api-server-actions.md` ainda descreve a forma antiga. Atualizar antes do próximo sprint.
 - **CONTRACT-api-config-v1**: response inclui `event_config.auto_page_view`. Não estava na doc. Atualizar.
@@ -279,8 +279,8 @@ E2E validado em produção real (2026-05-04 19:37-19:38 UTC):
 | TS pré-existentes edge | Vários erros pré-existentes |
 | Doc-sync | §2 lista contratos atualizados que precisam refletir no doc canônico |
 | Tracker dedup events | `raw-events-processor.ts` (tracker) tem mesmo bug latente do guru-processor: events partitioned exige pre-insert dedup. Replicar fix do guru. Sub-T-ID T-13-008. |
-| Guru `source.utm_*` | Nos webhooks recebidos, `source.utm_source/medium/campaign/...` vêm `null` mesmo quando o checkout abriu com UTMs preservados. Investigar config Guru: cookie de atribuição / passagem por iframe / domínio. Sub-T-ID T-13-009. |
-| Guru `dates.confirmed_at` | Webhook `approved` chega 2x (autorização + settlement). Idempotency dedupa, mas se 1º a chegar tem `confirmed_at:null`, esse fica gravado. `update_if_newer` baseado em `dates.updated_at` seria mais correto. Sub-T-ID T-13-010. |
+| Guru `source.utm_*` | Investigação parcial 2026-05-05: TODOS os 4 webhooks Guru existentes têm `source.utm_*` null + `source.checkout_source` null + `pptc:[]`. Bug externo Guru (config conta ou não-passagem cross-domain). Reproduzir com Trilha A (compra real com `?utm_source=teste`). Sub-T-ID T-13-009 segue planejado. |
+| Guru `dates.confirmed_at` | RESOLVIDO 2026-05-05 (T-13-010, deploy `f552f472`). Achado adicional: schema lia top-level `payload.confirmed_at` mas Guru moderno aninha em `payload.dates`. Schema `GuruRawEventPayloadSchema` agora inclui `dates: {...}` completo. Update-if-newer compara `dates.updated_at` vs `existing.customData.dates.updated_at` e faz UPDATE quando novo é mais recente — cobre o caso de 1º webhook com null e 2º com valor. |
 | Pages `workshop` `status=draft` | DB tem status `draft` mesmo a page já estando em produção. Toggle pra `active` (apenas cosmético — não bloqueia tracker). |
 
 ### Ambiente operacional desta sessão (não mudar sem motivo)

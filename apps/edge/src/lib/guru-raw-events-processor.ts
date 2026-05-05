@@ -100,8 +100,24 @@ const GuruRawEventPayloadSchema = z
         name: z.string().nullish(),
       })
       .optional(),
+    // Legacy top-level fields (some Guru payloads put dates at root)
     confirmed_at: z.string().nullish(),
     created_at: z.string().nullish(),
+    // T-13-010: Guru moderno aninha dates em sub-objeto. Webhooks `approved`
+    // chegam 2x (autorização + settlement) e `dates.updated_at` distingue
+    // qual versão é mais recente — usado pro padrão update-if-newer.
+    dates: z
+      .object({
+        canceled_at: z.string().nullish(),
+        confirmed_at: z.string().nullish(),
+        created_at: z.string().nullish(),
+        expires_at: z.string().nullish(),
+        ordered_at: z.string().nullish(),
+        unavailable_until: z.string().nullish(),
+        updated_at: z.string().nullish(),
+        warranty_until: z.string().nullish(),
+      })
+      .nullish(),
   })
   .passthrough();
 
@@ -409,8 +425,14 @@ export async function processGuruRawEvent(
   // outro provider que reentregue webhook).
   // -------------------------------------------------------------------------
 
+  // T-13-010: confirmed_at fica em `payload.dates.confirmed_at` no Guru moderno.
+  // Mantemos fallback pro top-level (legacy/test fixtures) e pro created_at.
   const eventTime = (() => {
-    const raw = payload.confirmed_at ?? payload.created_at;
+    const raw =
+      payload.dates?.confirmed_at ??
+      payload.confirmed_at ??
+      payload.dates?.created_at ??
+      payload.created_at;
     if (raw) {
       const d = new Date(raw);
       return isNaN(d.getTime()) ? new Date() : d;
@@ -418,9 +440,18 @@ export async function processGuruRawEvent(
     return new Date();
   })();
 
+  // T-13-010: dates.updated_at distingue qual versão do webhook é mais recente.
+  // Usado pra decidir update-if-newer no pre-insert dedup abaixo.
+  const newUpdatedAt = payload.dates?.updated_at
+    ? new Date(payload.dates.updated_at)
+    : null;
+
   // Pre-insert idempotency lookup
   const existingEvent = await db
-    .select({ id: events.id })
+    .select({
+      id: events.id,
+      customData: events.customData,
+    })
     .from(events)
     .where(
       and(
@@ -431,13 +462,65 @@ export async function processGuruRawEvent(
     .limit(1);
 
   if (existingEvent[0]) {
-    safeLog('info', {
-      event: 'guru_webhook_duplicate_skipped',
-      raw_event_id,
-      workspace_id: rawEvent.workspaceId,
-      event_id: payload._guru_event_id,
-      existing_event_uuid: existingEvent[0].id,
-    });
+    // T-13-010 (update-if-newer): Guru manda `approved` 2x (autorização +
+    // settlement). O 1º a chegar pode ter `dates.confirmed_at: null`. Se
+    // vier um payload com `dates.updated_at` mais recente, atualizamos os
+    // campos derivados — caso contrário, mantemos o existente.
+    const existingDatesUpdatedAt = (() => {
+      const cd = (existingEvent[0].customData ?? {}) as Record<string, unknown>;
+      const dates = (cd.dates ?? null) as Record<string, unknown> | null;
+      const ts = dates?.updated_at;
+      if (typeof ts === 'string') {
+        const d = new Date(ts);
+        return isNaN(d.getTime()) ? null : d;
+      }
+      return null;
+    })();
+
+    const shouldUpdate =
+      newUpdatedAt !== null &&
+      (existingDatesUpdatedAt === null ||
+        newUpdatedAt.getTime() > existingDatesUpdatedAt.getTime());
+
+    if (shouldUpdate) {
+      // Update event_time + customData with newer payload data.
+      const newCustomData = {
+        ...((existingEvent[0].customData ?? {}) as Record<string, unknown>),
+        funnel_role: payload.funnel_role ?? null,
+        amount:
+          payload.payment?.total != null ? payload.payment.total / 100 : null,
+        currency: payload.payment?.currency ?? null,
+        product_id: payload.product?.id ?? null,
+        product_name: payload.product?.name ?? null,
+        dates: payload.dates ?? null,
+      };
+
+      await db
+        .update(events)
+        .set({
+          eventTime,
+          customData: newCustomData as Record<string, unknown>,
+        })
+        .where(eq(events.id, existingEvent[0].id));
+
+      safeLog('info', {
+        event: 'guru_webhook_updated_with_newer_payload',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        event_id: payload._guru_event_id,
+        new_dates_updated_at: newUpdatedAt.toISOString(),
+        existing_dates_updated_at: existingDatesUpdatedAt?.toISOString() ?? null,
+      });
+    } else {
+      safeLog('info', {
+        event: 'guru_webhook_duplicate_skipped',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        event_id: payload._guru_event_id,
+        existing_event_uuid: existingEvent[0].id,
+      });
+    }
+
     await markRawEventProcessed(raw_event_id, db);
     return {
       ok: true,
@@ -482,6 +565,10 @@ export async function processGuruRawEvent(
           currency: payload.payment?.currency ?? null,
           product_id: payload.product?.id ?? null,
           product_name: payload.product?.name ?? null,
+          // T-13-010: armazenamos `dates` inteiro pra que retries posteriores
+          // com `dates.updated_at` mais recente possam atualizar via
+          // update-if-newer (lógica no bloco existingEvent acima).
+          dates: payload.dates ?? null,
         },
         // Buyer who completed checkout → implicit consent granted
         // INV-EVENT-006: consent_snapshot populated on every event
