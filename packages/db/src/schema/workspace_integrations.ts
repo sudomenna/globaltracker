@@ -22,6 +22,12 @@ export const workspaceIntegrations = pgTable('workspace_integrations', {
   // devem seguir o mesmo padrão: nullable, com check de formato específico.
   guruApiToken: text('guru_api_token'),
 
+  // SendFlow webhook authentication token (header `sendtok`).
+  // T-13-011 / migration 0035. Length 16-200 (formato observado: 40 hex
+  // uppercase). Constant-time compare na app layer (sendflow.ts).
+  // BR-PRIVACY-001: nunca logado.
+  sendflowSendtok: text('sendflow_sendtok'),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

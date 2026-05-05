@@ -98,6 +98,7 @@ import { pagesRoute } from './routes/pages.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
+import { createSendflowWebhookRoute } from './routes/webhooks/sendflow.js';
 
 // ---------------------------------------------------------------------------
 // Bindings
@@ -393,6 +394,19 @@ app.route('/v1/admin/leads', adminLeadsEraseRoute);
 app.route(
   '/v1/webhook/guru',
   createGuruWebhookRoute((env) =>
+    createDb(
+      (env as unknown as Bindings).DATABASE_URL ??
+        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        '',
+    ),
+  ),
+);
+
+// SendFlow webhook (T-13-011) — server-to-server. Auth via `sendtok` header
+// (constant-time compare against workspace_integrations.sendflow_sendtok).
+app.route(
+  '/v1/webhooks/sendflow',
+  createSendflowWebhookRoute((env) =>
     createDb(
       (env as unknown as Bindings).DATABASE_URL ??
         (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
