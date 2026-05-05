@@ -271,6 +271,27 @@ export function createConfigRoute(
     // Cache miss — attempt DB lookup
     // -----------------------------------------------------------------------
 
+    // Fallback: DB binding absent (Hyperdrive not yet configured) — return
+    // minimal safe response so the tracker degrades gracefully instead of 500.
+    if (c.env.DB === undefined) {
+      safeLog('info', {
+        event: 'config_cache_miss',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        page_id: pageId,
+      });
+
+      const fallbackBody = buildFallbackBody();
+      const { _cache: _ignored, ...bodyForEtag } = fallbackBody;
+      const etag = `"${(await sha256Hex(JSON.stringify(bodyForEtag))).slice(0, 8)}"`;
+
+      return c.json(fallbackBody, 200, {
+        'Cache-Control': 'public, max-age=60',
+        ETag: etag,
+        'X-Request-Id': requestId,
+      });
+    }
+
     // DB lookup — env passed so the closure resolves Hyperdrive connection per request
     let row: PageConfigRow | null;
     try {

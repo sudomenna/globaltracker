@@ -65,15 +65,17 @@ type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-const TestRequestSchema = z.object({
-  source: z.enum(['config_screen', 'wizard']),
-  pixel_id: z.string().optional(),
-  capi_token: z.string().optional(),
-  test_event_code: z.string().optional(),
-  measurement_id: z.string().optional(),
-  api_secret: z.string().optional(),
-  debug_mode: z.boolean().optional(),
-});
+const TestRequestSchema = z
+  .object({
+    source: z.enum(['config_screen', 'wizard']),
+    pixel_id: z.string().optional(),
+    capi_token: z.string().optional(),
+    test_event_code: z.string().optional(),
+    measurement_id: z.string().optional(),
+    api_secret: z.string().optional(),
+    debug_mode: z.boolean().optional(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Response types
