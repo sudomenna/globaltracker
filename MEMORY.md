@@ -33,6 +33,8 @@
 
 - **SNIPPET-name-reserved-wp-query-var (RESOLVIDO 2026-05-05)**: WordPress reserva `?name=` como query var pra lookup de post por slug. URLs com `?name=...` em pages que não têm post com esse slug retornam 404. Fix no snippet `obrigado-workshop.html`: trocar key da URL pra `lead_name` (mantém `body.name` no schema do `/v1/lead`). Documentado no header do snippet — qualquer page nova deve evitar `name` cru.
 
+- **PHONE-normalizer-9-prefix-BR**: `normalizePhone` em `apps/edge/src/lib/lead-resolver.ts:67` não reconcilia mobiles BR sem o "9" extra (mandato de 2014). Sistemas legados como SendFlow enviam phone sem o 9 → `phone_hash` divergente do que o form do site gera com 9. Tracking de T-13-014 (Sprint 13). Após implementação, atualizar `docs/50-business-rules/BR-IDENTITY.md` BR-IDENTITY-002 + nova INV-IDENTITY-008 (mobile canônico = 13 dígitos `+55DD9XXXXXXXX`).
+
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
 2026-05-01 — Supabase em cloud (não local). Projeto `globaltracker`, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE Ltda.
@@ -54,7 +56,8 @@
 | Sprint 10 | **completed** (2026-05-04, commit ac93148) | `docs/80-roadmap/10-sprint-10-funil-templates-scaffolding.md` |
 | Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **in progress** — Onda 3 parcial: passos 1-4 do E2E validados (2026-05-05) | `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` |
-| Sprint 13 | **planned** (realocado de 12, +3 T-IDs cleanup herdadas de S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 14 | **planned** (separado de 13 em 2026-05-05 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/14-sprint-14-webhooks-hotmart-kiwify-stripe.md` |
 
 ## §5 Ponto atual de desenvolvimento
 
@@ -164,7 +167,8 @@ Próxima ação:  Tiago decidiu priorizar SendFlow (T-13-011 — webhook inbound
 ### Plano canônico de sprints restantes
 
 - **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v3 (popup Lead, custom events de intent, page aula-workshop, click_wpp_join, survey_responded). Migração Framer → WordPress + Elementor + WPCode em andamento. Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
-- **Sprint 13** — Webhooks Hotmart/Kiwify/Stripe + **SendFlow inbound** (T-13-011, novo) + **survey form** (T-13-012, novo). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 13** (refocado 2026-05-05) — Funil B foundation: **phone normalizer BR-aware** (T-13-014, bloqueia tudo abaixo), **SendFlow inbound** (T-13-011), **survey form** (T-13-012, novo), **CP double-stringify fix** (T-13-013), **identity/Guru cleanups** (T-13-008/-009/-010), **cleanups S12** (T-13-005/-006). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md). T-13-001..004 + T-13-007 migrados pro Sprint 14.
+- **Sprint 14** (separado de 13 em 2026-05-05) — Webhook adapters Hotmart/Kiwify/Stripe (T-14-001..004) + cleanup Stripe signature off-by-one (T-14-005). Ver [`14-sprint-14-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/14-sprint-14-webhooks-hotmart-kiwify-stripe.md).
 
 ### O que foi entregue nesta sessão (Onda 4 — migração Framer → WordPress)
 

@@ -1,44 +1,52 @@
-# Sprint 13 — Webhook adapters Hotmart, Kiwify, Stripe
+# Sprint 13 — Funil B foundation: identidade BR + SendFlow inbound + cleanups S12
 
-> **Nota**: Este sprint era originalmente Sprint 12, foi realocado para Sprint 13 em 2026-05-04 para abrir espaço ao Sprint 12 (realinhamento do template `lancamento_pago_workshop_com_main_offer` com fluxo operacional real, descoberto durante o E2E usability test do `wkshop-cs-jun26`).
+> **Nota**: Este sprint sofreu reposicionamento em 2026-05-05. Originalmente era o sprint dos adapters Hotmart/Kiwify/Stripe (agora Sprint 14). Foi refocado quando o E2E real do funil B (`wkshop-cs-jun26`) revelou que o pipeline de identidade precisa de fortalecimento BR-aware antes de plugar mais provedores. SendFlow é o provedor crítico imediato — destrava o stage `wpp_joined` (Contact server-side) já em produção.
+>
+> O filename ainda menciona "webhooks-hotmart-kiwify-stripe" por referência histórica; o conteúdo canônico é o atual.
 
 ## Duração estimada
 A definir.
 
 ## Objetivo
-Adicionar suporte a webhooks inbound das principais plataformas BR/global: Hotmart, Kiwify e Stripe. Completa o suporte multi-plataforma de purchase events para FLOW-04.
+Fortalecer a foundation de identidade do GlobalTracker pra suportar matching cross-system robusto (form do site, webhooks Guru/SendFlow, futuros adapters), e plugar o primeiro webhook de WhatsApp grupo (SendFlow → `Contact` → stage `wpp_joined`). Inclui também os cleanups herdados do Sprint 12 que ainda não foram fechados.
 
 ## Pré-requisitos
 - Sprint 12 completo (template paid_workshop realinhado e funil B validado E2E em produção real).
-- Sprint 11 completo (Funil Configurável Fase 3 — webhook Guru contextualizado já serve de referência de implementação).
-- Sprint 3 completo (Meta CAPI + Guru webhook base).
+- Sprint 11 completo (Funil Configurável Fase 3 — webhook Guru contextualizado já em produção).
 
 ## Critério de aceite global
 
-- [ ] Adapter Hotmart: `X-Hotmart-Hottok` signature validation + mapper + fixtures.
-- [ ] Adapter Kiwify: HMAC-SHA256 validation (`X-Kiwify-Signature`) + mapper + fixtures.
-- [ ] Adapter Stripe: `constructEvent` raw body + tolerância 5min (ADR-022) + mapper + fixtures.
-- [ ] FLOW-04 (Purchase via webhook) E2E verde para os três provedores.
-- [ ] Smoke em produção com webhook test mode de cada provedor.
+- [ ] `normalizePhone` reconcilia mobiles BR com e sem o "9" extra (T-13-014).
+- [ ] SendFlow webhook inbound em produção, disparando `Contact` para stage `wpp_joined` (T-13-011).
+- [ ] Cleanups de identidade/dedup (T-13-008/-009/-010) aplicados.
+- [ ] CP save handler de `event_config` corrigido (T-13-013).
+- [ ] Survey form em `obrigado-workshop` disparando `custom:survey_responded` (T-13-012).
+- [ ] Cleanups de testes herdados de S12 (T-13-005/-006) verdes.
+- [ ] FLOW-09 (lead resolve cross-system com phone variantes) verde em integration tests.
 
-## T-IDs (alto nível)
+## T-IDs
 
-- T-13-001: adapter Hotmart (handler + mapper).
-- T-13-002: adapter Kiwify (handler + mapper).
-- T-13-003: adapter Stripe (handler + mapper, raw body obrigatório).
-- T-13-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe.
-
-### T-IDs de cleanup herdadas do Sprint 12
+### Cleanups herdados do Sprint 12
 
 Falhas pré-existentes detectadas durante a verificação consolidada do Sprint 12 (descobertas por T-FUNIL-039 e T-FUNIL-041), fora do escopo Sprint 12 e realocadas para este sprint:
 
 - **T-13-005** — `tests/integration/routes/config.test.ts:443` — fallback "200 quando DB binding ausente" não retorna o esperado. Investigar `apps/edge/src/routes/config.ts` para o caminho `env.DB === undefined`.
 - **T-13-006** — `tests/integration/routes/integrations-test.test.ts:235` — Zod `.strict()` não rejeita extra fields no `POST /v1/integrations/:provider/test`. Possível downgrade do schema em refactor recente — verificar com `git log -p apps/edge/src/routes/integrations-test.ts`.
-- **T-13-007** — `tests/integration/webhooks/stripe-signature.test.ts:148` — ADR-022 tolerance window off-by-one no `verifyStripeSignature`. Confirmar inequalidade `<= 300` vs `< 300` na implementação atual e alinhar com a doc do ADR.
+
+> **Nota**: T-13-007 (Stripe signature tolerance off-by-one) foi migrado pra Sprint 14 por proximidade de domínio com o adapter Stripe (lá é T-14-005).
+
+### Identidade & integrações inbound — foundational
+
+- **T-13-008** — Replicar fix de pre-insert dedup do `guru-raw-events-processor.ts` em `apps/edge/src/lib/raw-events-processor.ts` (tracker). Bug latente: tabela `events` é particionada por `received_at`, então `INSERT … ON CONFLICT` não dispara em retries do mesmo `event_id`. Detalhe em `MEMORY.md` §2 (DUPLICATE-EVENTS).
+- **T-13-009** — Investigar Guru `source.utm_*` chegando `null` mesmo quando checkout abriu com UTMs preservados. Verificar config Guru (cookie de atribuição / passagem por iframe / domínio). Detalhe em `MEMORY.md` §5 (Pendências técnicas).
+- **T-13-010** — Aplicar `update_if_newer` baseado em `dates.updated_at` no Guru webhook handler. Hoje, retries `approved` (autorização + settlement) podem gravar `confirmed_at:null` se o 1º a chegar não tiver. Detalhe em `MEMORY.md` §5.
+- **T-13-011** — SendFlow webhook inbound (novo). Adapter em `apps/edge/src/routes/webhooks/sendflow.ts` + migration adicionando `workspace_integrations.sendflow_sendtok` + mapping `workspaces.config.sendflow.campaign_launch_map`. Mapeia `group.updated.members.added` → canonical `Contact` → stage `wpp_joined`. **Depende de T-13-014** (phone normalizer BR-aware — SendFlow envia phone sem o 9). Detalhe em `MEMORY.md` §5 + `~/.claude/projects/.../memory/reference_sendflow.md`.
+- **T-13-012** — Survey form na page `obrigado-workshop` disparando `custom:survey_responded` → stage `survey_responded`. Detalhe em `MEMORY.md` §8.
+- **T-13-013** — Bug do save handler do CP que double-stringifica `event_config` (grava string JSON dentro de JSONB em vez de objeto cru). Detalhe em `MEMORY.md` §2 (CP-DOUBLE-STRINGIFY-event-config).
+- **T-13-014** — Normalizador de telefone BR-aware (9-prefix). Upgrade de [`apps/edge/src/lib/lead-resolver.ts:67`](../../apps/edge/src/lib/lead-resolver.ts#L67) (`normalizePhone`) pra reconciliar mobiles BR com e sem o 9 extra (mandato Anatel de 2014; sistemas legados como SendFlow ainda enviam sem). Heurística determinística baseada na regra de numeração: landline BR nunca começa com 6/7/8/9. **Bloqueia T-13-011** (SendFlow envia phone sem o 9). Doc canônica: [`docs/50-business-rules/BR-IDENTITY.md`](../50-business-rules/BR-IDENTITY.md) BR-IDENTITY-002 + nova INV-IDENTITY-008.
 
 ## Referências de integração
 
-- [`docs/40-integrations/07-hotmart-webhook.md`](../40-integrations/07-hotmart-webhook.md)
-- [`docs/40-integrations/08-kiwify-webhook.md`](../40-integrations/08-kiwify-webhook.md)
-- [`docs/40-integrations/09-stripe-webhook.md`](../40-integrations/09-stripe-webhook.md)
 - [`docs/30-contracts/04-webhook-contracts.md`](../30-contracts/04-webhook-contracts.md)
+- [`docs/50-business-rules/BR-IDENTITY.md`](../50-business-rules/BR-IDENTITY.md)
+- `~/.claude/projects/.../memory/reference_sendflow.md` (operacional, fora do repo)

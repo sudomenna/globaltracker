@@ -55,12 +55,22 @@ Stable.
 ### Enunciado
 Antes de aplicar SHA-256, email **DEVE** ser normalizado para lowercase + trim. Phone **DEVE** ser convertido para E.164 (com `+` e código de país, sem espaços/hífens/parênteses).
 
+Para números brasileiros, a normalização também **DEVE reconciliar o "9" extra** mandatório em celulares desde 2014 (Anatel): inputs com 8 dígitos local-part começando com 6/7/8/9 são interpretados como mobile-sem-9 e canonicalizados inserindo o "9" entre DDD e número local. Heurística é determinística porque landlines BR nunca começam com 6-9 (começam com 2-5).
+
 ### Motivação
 Hashes diferentes para o mesmo identificador real quebram matching e dedup. `Foo@Bar.COM` e `foo@bar.com` representam a mesma pessoa para fins de identidade.
 
+Em phone BR especificamente: sistemas externos (SendFlow, CRMs legados, exports de planilha) frequentemente armazenam celulares no formato pré-2014 sem o "9". Sem reconciliação, o mesmo lead capturado via form do site (com 9) e via webhook desses sistemas (sem 9) gera dois `phone_hash` distintos → matching quebra silenciosamente, lead é duplicado.
+
 ### Enforcement
-- **Domain:** funções `normalizeEmail()`, `normalizePhone()` em `apps/edge/src/lib/pii.ts`. Validador rejeita input não-normalizado em camadas internas.
+- **Domain:** funções `normalizeEmail()`, `normalizePhone()` em [`apps/edge/src/lib/lead-resolver.ts`](../../apps/edge/src/lib/lead-resolver.ts). `normalizePhone` é BR-aware (T-13-014).
 - **Edge:** Zod schema chama normalização antes de hash.
+
+### Invariante derivada
+**INV-IDENTITY-008**: Toda string `phone` armazenada em `phone_hash` (e o plaintext reconstituível em `phone_enc`) usa formato canônico:
+- BR mobile: 13 dígitos, `+55DD9XXXXXXXX` (com `+` e o "9" entre DDD e número).
+- BR landline: 12 dígitos, `+55DDXXXXXXXX`.
+- Internacional: E.164 com `+` e country code não-55, sem mudança de prefixo.
 
 ### Aplica-se a
 MOD-IDENTITY, MOD-EVENT (user_data), MOD-DISPATCH (Meta CAPI parameters).
@@ -77,6 +87,16 @@ Scenario: phone com formatação variada é normalizado
   Given inputs "(11) 99999-9999", "+5511999999999", "11 9 9999 9999"
   When hashPhone aplica e país inferido = BR
   Then todos resultam no mesmo hash
+
+Scenario: phone BR mobile sem o "9" é reconciliado para canônico
+  Given inputs "555195849212", "+555195849212", "(51) 9584-9212", "5195849212"
+  When hashPhone aplica
+  Then todos resultam no mesmo hash de "+5551995849212"
+
+Scenario: phone BR landline mantém 12 dígitos sem inserir 9
+  Given inputs "5132345678", "+555132345678", "(51) 3234-5678"
+  When hashPhone aplica
+  Then todos resultam no mesmo hash de "+555132345678"
 
 Scenario: phone sem código de país requer país explícito
   Given input "9999-9999" sem default country

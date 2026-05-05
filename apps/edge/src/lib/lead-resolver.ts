@@ -59,30 +59,100 @@ export function normalizeEmail(email: string): string {
 }
 
 /**
- * Normalizes a phone number to E.164 format.
- * Handles common BR formatting: (11) 99999-9999, 11 9 9999 9999, etc.
- * Requires a + prefix or recognizable country code.
- * INV-IDENTITY-007: phone → E.164
+ * Normalizes a phone number to E.164 format with Brazilian-aware reconciliation
+ * of the mandatory "9" mobile prefix (Anatel mandate, 2014).
+ *
+ * INV-IDENTITY-007: phone → E.164.
+ * INV-IDENTITY-008: BR mobile canônico = 13 dígitos `+55DD9XXXXXXXX`;
+ *                   BR landline canônico = 12 dígitos `+55DDXXXXXXXX`.
+ *
+ * The "9 problem": since 2014 every BR mobile number gained a leading "9" after
+ * the DDD area code. Some systems (SendFlow, legacy CRMs, manual exports) still
+ * store the pre-2014 format without the 9. To prevent the same lead from
+ * appearing under two distinct phone_hashes (form input vs webhook ingest),
+ * this function reconciles both into the canonical 13-digit form.
+ *
+ * Heuristic: BR landline numbers NEVER start with 6, 7, 8, or 9 (Anatel rules
+ * — landlines start with 2, 3, 4, or 5). Therefore an 8-digit local part
+ * starting with 6-9 is unambiguously a mobile-without-9 and is reconstructed
+ * by inserting a "9" between the DDD and the local part.
+ *
+ * Examples (all → `+5551995849212`):
+ *   `+5551995849212`        E.164 canônico (mobile)
+ *   `5551995849212`         digits only, country code, with 9
+ *   `51995849212`           digits only, no country, with 9
+ *   `5195849212`            digits only, no country, NO 9 — inserts
+ *   `555195849212`          digits only, country code, NO 9 — inserts
+ *   `+555195849212`         with +, country, NO 9 — inserts
+ *   `(51) 99584-9212`       human format with 9
+ *   `(51) 9584-9212`        human format without 9 — inserts
+ *
+ * Landlines (no 9 inserted, → `+555132345678`):
+ *   `5132345678`            DDD 51 + landline
+ *   `+555132345678`
+ *   `(51) 3234-5678`
+ *
+ * International numbers (non-55 country code, with +) pass through with only
+ * non-digit stripping; no 9-prefix logic applied.
+ *
+ * Idempotent: `normalizePhone(normalizePhone(x)) === normalizePhone(x)` for
+ * every input where the first call returns a non-null value.
  */
 export function normalizePhone(phone: string): string | null {
   // BR-IDENTITY-002: normalizar antes de hashear — phone: E.164
-  // Remove all non-digit characters except leading +
   const hasPlus = phone.trimStart().startsWith('+');
   const digits = phone.replace(/\D/g, '');
 
   if (digits.length === 0) return null;
 
+  // Reconstruct BR mobile-without-9 when DDD + 8-digit local part starts with 6-9.
+  // `dd` and `local` are the post-country-code parts (DDD + local subscriber number).
+  function reconcileBr(dd: string, local: string): string {
+    if (local.length === 8 && /^[6-9]/.test(local)) {
+      // Legacy mobile without 9 → insert 9 to canonicalize.
+      return `+55${dd}9${local}`;
+    }
+    return `+55${dd}${local}`;
+  }
+
   if (hasPlus) {
-    // Already has country code
+    if (digits.startsWith('55')) {
+      const rest = digits.slice(2);
+      if (rest.length === 11) {
+        // 13 total: BR mobile canônico (DDD + 9 + 8 dígitos)
+        return `+55${rest}`;
+      }
+      if (rest.length === 10) {
+        // 12 total: DDD + 8 dígitos — pode ser landline ou mobile-sem-9
+        return reconcileBr(rest.slice(0, 2), rest.slice(2));
+      }
+      // BR country code mas comprimento fora do padrão (defensivo: passa cru)
+      return `+${digits}`;
+    }
+    // Outro país: preserva sem mexer no 9-prefix
     return `+${digits}`;
   }
 
-  // BR format inference: 10-11 digits without country code → assume +55 (BR)
-  if (digits.length === 10 || digits.length === 11) {
+  // Sem +: assume BR
+  if (digits.length === 13 && digits.startsWith('55')) {
+    // 55 + DDD + 9 + 8 dígitos (canônico mobile)
+    return `+${digits}`;
+  }
+  if (digits.length === 12 && digits.startsWith('55')) {
+    // 55 + DDD + 8 dígitos: landline ou mobile-sem-9
+    const rest = digits.slice(2);
+    return reconcileBr(rest.slice(0, 2), rest.slice(2));
+  }
+  if (digits.length === 11) {
+    // DDD + 9 + 8 dígitos (mobile canônico sem country code)
     return `+55${digits}`;
   }
+  if (digits.length === 10) {
+    // DDD + 8 dígitos: mesma lógica do branch hadPlus+10
+    return reconcileBr(digits.slice(0, 2), digits.slice(2));
+  }
 
-  // Could not normalize — caller must supply country code
+  // Comprimento não reconhecido (curto demais, ou >13 sem +)
   return null;
 }
 
