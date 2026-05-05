@@ -1,37 +1,41 @@
 <!--
   Snippet canônico — Page `obrigado-workshop` (role: thankyou, funnel_role: workshop)
-  Funil B v2 — `lancamento_pago_workshop_com_main_offer` — Sprint 12
+  Funil B v3 — `lancamento_pago_workshop_com_main_offer` — Sprint 12 Onda 3 (WordPress)
 
-  Papel desta page no funil (Funil B v2 D2):
-    - É a thank-you do Purchase do workshop, mas o **conteúdo** é uma pesquisa
-      curta + botão WhatsApp ao final.
+  Papel desta page no funil v3 (D1-D4 desta sessão):
+    - É a thank-you do Purchase do workshop. Conteúdo MVP: 1 botão CTA pro grupo
+      WhatsApp via SendFlow (`https://sndflw.com/i/...`). Form de pesquisa virá depois (T-13-012).
     - Stages disparados aqui:
-        * PageView (event_config canonical) → marca chegada na thank-you.
-        * Purchase chega via webhook Guru server-side (NÃO client-side).
-        * `survey_responded` via custom event `custom:survey_responded`.
-        * `wpp_joined` via evento canônico `Contact` no click do botão WhatsApp.
+        * PageView (manual, auto_page_view=false)         → identidade primeiro
+        * Purchase                                        → via webhook Guru server-side (NÃO client-side)
+        * `clicked_wpp_join` via `custom:click_wpp_join`  → click no botão (intent)
+        * `wpp_joined` via Contact (server-side)          → SendFlow webhook (T-13-011, Sprint 13)
 
   Contrato com o tracker.js:
-    - `auto_page_view` desta page é `false` (operador prefere disparar quando
-      identidade já foi resolvida via localStorage). Chamamos `Funil.page()`
-      explicitamente após `Funil.identify`.
-    - Form de pesquisa: o operador deve marcar o form do Framer com
-      `data-gt-survey` para garantir o seletor robusto. TODO Tiago: confirmar.
-    - Link WhatsApp: padrão de mercado é `https://wa.me/...` (selector
-      `a[href*="wa.me"], a[href*="whatsapp"]`).
+    - `auto_page_view=false`. Body script chama Funil.page() depois do identify.
+    - Selector do botão WhatsApp no WP/Elementor: `#gt-btn-wpp-join a`
+      O ID `gt-btn-wpp-join` foi setado no widget Elementor (Avançado → CSS ID).
+      Wrapper Elementor recebe o id; <a> está dentro.
+    - Fallback opcional: `a[href*="sndflw.com"]` (caso o ID seja perdido em refactor).
 
   BRs aplicáveis:
-    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato).
+    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato no processor).
     - BR-IDENTITY-005: lead_token vem de `localStorage('__gt_ftk')` (cross-origin).
     - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente.
+
+  WPCode setup:
+    - 2 snippets (head + footer) com Smart Conditional Logic = "Page is Obrigado".
+    - Limpar cache WP Rocket após salvar.
 -->
 
 <!-- ============================== -->
-<!-- COLAR EM <head> NO FRAMER     -->
+<!-- WPCode snippet 1: HEAD          -->
+<!-- Localização: "Cabeçalho do site"-->
+<!-- Tipo: HTML Snippet              -->
 <!-- ============================== -->
 <script
   src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
-  data-site-token="ec866ba774c3f5279dbba1725bb43c6a048bcafe4cb00cee7e76c3899950113b"
+  data-site-token="998909a7c3d7847565565f6aeea5d49e6d302badf1a81715a19e8a629b117d61"
   data-launch-public-id="wkshop-cs-jun26"
   data-page-public-id="obrigado-workshop"
   data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
@@ -39,16 +43,13 @@
 ></script>
 
 <!-- ============================== -->
-<!-- COLAR ANTES DE </body> NO FRAMER -->
+<!-- WPCode snippet 2: FOOTER        -->
+<!-- Localização: "Rodapé do site"   -->
+<!-- Tipo: HTML Snippet              -->
 <!-- ============================== -->
 <script>
 (function(){
-  // Form de pesquisa: prefer `data-gt-survey`, fallback para 1º <form> da page.
-  var SURVEY_SELECTOR = 'form[data-gt-survey]';
-  var SURVEY_FALLBACK_SELECTOR = 'form';
-
-  // Sem evento `gt:ready` no bundle — polling defensivo (verificado em
-  // apps/tracker/src/index.ts).
+  // Tracker.js não emite evento `gt:ready` no bundle — polling defensivo.
   function withTracker(cb){
     if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
     var tries = 0;
@@ -59,68 +60,36 @@
     }, 50);
   }
 
-  // Cross-page identity: __gt_ftk foi setado em workshop.html após /v1/lead.
+  // Cross-page identity: __gt_ftk foi setado em workshop após /v1/lead.
   function bootIdentity(){
     var token = null;
     try { token = localStorage.getItem('__gt_ftk'); } catch (e) {}
     withTracker(function(F){
       if (token) F.identify({ lead_token: token });
-      // Disparamos PageView explicitamente porque event_config desta page tem
-      // auto_page_view=false. Purchase NÃO é client-side aqui — chega via
-      // webhook Guru server-side.
+      // PageView manual — auto_page_view=false p/ disparar APÓS identify.
       F.page();
     });
   }
 
-  // Coleta os campos do form de pesquisa em um objeto chave→valor plano.
-  // Multi-value (checkboxes) vira array. Usado como custom_data do evento
-  // `custom:survey_responded`. Não inclui PII em claro: o operador deve
-  // garantir que o form contém apenas respostas categóricas/escala.
-  function collectFormResponses(form){
-    var responses = {};
-    try {
-      var fd = new FormData(form);
-      fd.forEach(function(value, key){
-        if (typeof value !== 'string') return; // ignora File/blob
-        if (responses[key] === undefined) responses[key] = value;
-        else if (Array.isArray(responses[key])) responses[key].push(value);
-        else responses[key] = [responses[key], value];
-      });
-    } catch (e) { /* fail silently */ }
-    return responses;
-  }
-
-  function wireSurvey(){
-    var form = document.querySelector(SURVEY_SELECTOR);
-    if (!form) form = document.querySelector(SURVEY_FALLBACK_SELECTOR);
-    if (!form) return;
-    form.addEventListener('submit', function(){
-      // Não preventDefault — deixar o form Framer fazer o que normalmente faz
-      // (ex.: thank-you sub-state). Track é fire-and-forget.
-      var responses = collectFormResponses(form);
-      withTracker(function(F){
-        // BR-EVENT-001: prefixo `custom:` é match exato no processor.
-        F.track('custom:survey_responded', { responses: responses });
-      });
-    });
-  }
-
-  // Botão WhatsApp final → evento canônico Contact (mapeado para stage
-  // `wpp_joined` no blueprint v2).
+  // Fire-and-forget: tracker usa sendBeacon/keepalive para garantir entrega
+  // antes do unload pela navegação ao SendFlow.
   function wireWhatsApp(){
-    var links = document.querySelectorAll('a[href*="wa.me"], a[href*="whatsapp"]');
+    // Selector primário: ID setado no widget Elementor.
+    // Fallback: link SendFlow direto (caso ID seja removido).
+    var sel = '#gt-btn-wpp-join a, a[href*="sndflw.com"]';
+    var links = document.querySelectorAll(sel);
     for (var i = 0; i < links.length; i++){
       links[i].addEventListener('click', function(){
-        // Sem preventDefault: track é fire-and-forget (sendBeacon/keepalive
-        // dentro do tracker garantem entrega antes da navegação).
-        withTracker(function(F){ F.track('Contact'); });
+        withTracker(function(F){
+          // BR-EVENT-001: prefixo `custom:` é matching exato.
+          F.track('custom:click_wpp_join');
+        });
       }, { passive: true });
     }
   }
 
   function boot(){
     bootIdentity();
-    wireSurvey();
     wireWhatsApp();
   }
 

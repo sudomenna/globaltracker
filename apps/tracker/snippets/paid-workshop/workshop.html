@@ -1,33 +1,43 @@
 <!--
   Snippet canônico — Page `workshop` (role: sales, funnel_role: workshop)
-  Funil B v2 — `lancamento_pago_workshop_com_main_offer` — Sprint 12
+  Funil B v3 — `lancamento_pago_workshop_com_main_offer` — Sprint 12 Onda 3 (WordPress)
 
-  Papel desta page no funil:
-    - Captura inicial do lead (form: nome + telefone).
-    - Dispara stage `clicked_buy_workshop` quando o visitante clica "Quero Comprar"
-      (custom event `custom:click_buy_workshop`, Funil B v2 D5).
-    - Dispara stage `lead_workshop` ao receber `lead_token` do POST /v1/lead
-      (event canônico `Lead`).
+  Papel desta page no funil v3:
+    - Botão CTA "Garantir minha vaga" dentro de #checkout abre popup Elementor com form.
+    - Click no botão = stage `clicked_buy_workshop` (custom:click_buy_workshop, intent).
+    - Submit do form da popup = stage `lead_workshop` (Lead) + redirect pro Guru
+      com query params nome/email/telefone (+ UTMs preservados).
 
   Contrato com o tracker.js:
-    - `auto_page_view: true` no event_config desta page (PageView é automático no init).
-    - Form selector: `.framer-150ieha` (Framer-gerado; confirmar no preview).
-    - Inputs: `[name="Name"]`, `[name="Phone"]`.
+    - `auto_page_view: true` → PageView automático no init.
+    - Botão CTA selector: `#gt-btn-buy-workshop1` (CSS ID setado no widget Elementor).
+      Clique → preventDefault → custom event → abrir popup via API Elementor Pro.
+    - Form selector: `#gt-form-workshop` (Elementor 4.0 atomic form).
+    - Inputs: `[name="name"]`, `[name="email"]`, `[name="phone"]`.
+    - Popup ID Elementor: 342 (post type elementor_library type=popup).
+
+  Redirect Guru (após Lead capturado):
+    - URL base: https://clkdmg.site/pay/wk-contratos-societarios
+    - Params adicionados: name, email, phone, + UTMs canônicos da location atual.
 
   BRs aplicáveis:
-    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato).
-    - BR-IDENTITY-005: lead_token persiste em localStorage (`__gt_ftk`) — escolha
-      cross-origin (cookie HttpOnly não atravessa workers.dev → cneeducacao.com).
-    - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente
-      (status='paused'); aqui assumimos consent ok no MVP.
+    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato no processor).
+    - BR-IDENTITY-005: lead_token persiste em localStorage `__gt_ftk` (cross-origin compatível).
+    - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente.
+
+  WPCode setup (3 snippets — head + 2 footer separados ou unificados):
+    - HEAD: tracker.js tag.
+    - FOOTER: bootstrap (PageView manual ou auto), wire button, wire form.
+    - Smart Conditional Logic: URL contém `/wk-societarios-1/`.
 -->
 
 <!-- ============================== -->
-<!-- COLAR EM <head> NO FRAMER     -->
+<!-- WPCode snippet 1: HEAD          -->
+<!-- Localização: "Cabeçalho em todo o site" -->
 <!-- ============================== -->
 <script
   src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
-  data-site-token="f919d6b137cdf39b6334cae3bd6b4b7cad5598950552caf9470878271afd80d5"
+  data-site-token="4beab6557f55b6fa0e0ee9c092fed94a2673eb7853ce502f486576e91a574093"
   data-launch-public-id="wkshop-cs-jun26"
   data-page-public-id="workshop"
   data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
@@ -35,139 +45,153 @@
 ></script>
 
 <!-- ============================== -->
-<!-- COLAR ANTES DE </body> NO FRAMER -->
+<!-- WPCode snippet 2: FOOTER        -->
+<!-- Localização: "Rodapé em todo o site" -->
 <!-- ============================== -->
 <script>
 (function(){
-  // Configuração imutável
   var EDGE_URL = 'https://globaltracker-edge.globaltracker.workers.dev';
   var LAUNCH_PUBLIC_ID = 'wkshop-cs-jun26';
   var PAGE_PUBLIC_ID = 'workshop';
-  var FORM_SELECTOR = '.framer-150ieha';
-  // Botão "Quero Comprar" — Framer não expõe um seletor estável; tentamos por
-  // texto + role e caímos para fallback. TODO Tiago: confirmar/ajustar para
-  // o seletor real após o publish do Framer.
-  var BUY_BUTTON_FALLBACK_SELECTORS = [
-    'button[data-gt="click_buy_workshop"]',
-    'a[data-gt="click_buy_workshop"]'
-  ];
+  var BUY_BTN_SELECTOR = '#gt-btn-buy-workshop1 a, #gt-btn-buy-workshop1';
+  var FORM_SELECTOR = '#gt-form-workshop';
+  var POPUP_ID = 342;
+  var GURU_BASE_URL = 'https://clkdmg.site/pay/wk-contratos-societarios';
+  var UTM_KEYS = ['utm_source','utm_medium','utm_campaign','utm_content','utm_term',
+                  'fbclid','gclid','msclkid','ttclid','epik'];
 
-  // BR-EVENT-001 (dedup): flag por 3s impede dispatch duplicado em race
-  // condition (submit + click paralelos) — provado em produção (MEMORY C10).
+  // BR-EVENT-001 dedup: flag por 3s impede dispatch duplicado em race condition.
   var firing = false;
-  function withDedup(cb){
-    if (firing) return;
-    firing = true;
-    setTimeout(function(){ firing = false; }, 3000);
-    try { cb(); } catch (e) { /* fail silently */ }
-  }
 
-  // window.Funil pode ainda não estar pronto (tracker async). Não há evento
-  // `gt:ready` exposto pelo bundle (verificado em apps/tracker/src/index.ts);
-  // usamos polling 50ms × 40 (~2s) com fallback silencioso.
   function withTracker(cb){
     if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
     var tries = 0;
     var t = setInterval(function(){
       tries++;
       if (window.Funil) { clearInterval(t); try { cb(window.Funil); } catch (e) {} }
-      else if (tries >= 40) { clearInterval(t); /* desistir silenciosamente */ }
+      else if (tries >= 40) { clearInterval(t); }
     }, 50);
   }
 
-  // Localiza o botão "Quero Comprar". Estratégia em ordem:
-  //   1. Atributo explícito `data-gt="click_buy_workshop"` (recomendado: Tiago
-  //      adiciona via Framer "code component override").
-  //   2. Texto "Quero Comprar" em <button> ou <a> (case-insensitive, trim).
-  function findBuyButton(){
-    for (var i = 0; i < BUY_BUTTON_FALLBACK_SELECTORS.length; i++){
-      var el = document.querySelector(BUY_BUTTON_FALLBACK_SELECTORS[i]);
-      if (el) return el;
+  function openPopup(){
+    if (window.elementorProFrontend && window.elementorProFrontend.modules &&
+        window.elementorProFrontend.modules.popup) {
+      try {
+        // API canônica: dispatchEvent('elementor/popup/show', ...) ou showPopup
+        // showPopup({id}) é a forma documentada na 4.0+.
+        window.elementorProFrontend.modules.popup.showPopup({ id: POPUP_ID });
+      } catch (e) {
+        console.warn('[gt] popup open failed', e);
+      }
     }
-    var nodes = document.querySelectorAll('button, a[role="button"], a');
-    for (var j = 0; j < nodes.length; j++){
-      var txt = (nodes[j].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-      if (txt === 'quero comprar' || txt === 'quero comprar agora') return nodes[j];
-    }
-    return null;
   }
 
-  // Listener no botão "Quero Comprar" antes da popup do form.
+  // Botão "Garantir minha vaga" dentro de #checkout — dispara intent + abre popup.
+  // Não há href válido (Elementor stripou #elementor-action), por isso preventDefault sempre.
   function wireBuyButton(){
-    var btn = findBuyButton();
-    if (!btn) return; // Tiago confirma o seletor no Framer; ausência é tolerada.
-    btn.addEventListener('click', function(){
-      withTracker(function(F){
-        // BR-EVENT-001: prefixo `custom:` é match exato no processor.
-        F.track('custom:click_buy_workshop');
+    var nodes = document.querySelectorAll(BUY_BTN_SELECTOR);
+    for (var i = 0; i < nodes.length; i++){
+      nodes[i].addEventListener('click', function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        withTracker(function(F){
+          F.track('custom:click_buy_workshop');
+        });
+        openPopup();
       });
-    }, { passive: true });
+    }
   }
 
-  // Form de captura — POST direto a /v1/lead, depois identify+track('Lead').
+  // Lê UTMs canônicos da query string da page atual (preservados pelos CTAs/UTMs Builder).
+  function readUtms(){
+    var p = new URLSearchParams(window.location.search);
+    var out = {};
+    UTM_KEYS.forEach(function(k){
+      var v = p.get(k);
+      if (v) out[k] = v;
+    });
+    return out;
+  }
+
+  // Monta a URL Guru de checkout com todos os params aplicáveis.
+  function buildCheckoutUrl(name, email, phone){
+    var qs = new URLSearchParams();
+    if (name) qs.set('name', name);
+    if (email) qs.set('email', email);
+    if (phone) qs.set('phone', phone);
+    var utms = readUtms();
+    Object.keys(utms).forEach(function(k){ qs.set(k, utms[k]); });
+    return GURU_BASE_URL + '?' + qs.toString();
+  }
+
+  // Form da popup — POST /v1/lead, persist __gt_ftk, identify+track('Lead'), redirect Guru.
   function wireForm(){
-    var form = document.querySelector(FORM_SELECTOR);
-    if (!form) return;
-    form.addEventListener('submit', function(ev){
-      if (firing) return; // dedup
-      var nameEl = form.querySelector('[name="Name"]');
-      var phoneEl = form.querySelector('[name="Phone"]');
+    // Atomic Elementor form pode ainda não estar montado quando popup abre depois.
+    // Usamos delegação no document pra capturar o submit mesmo se o form aparece tardiamente.
+    document.addEventListener('submit', function(ev){
+      var form = ev.target;
+      if (!form || form.id !== 'gt-form-workshop') return;
+      if (firing) { ev.preventDefault(); return; }
+
+      var nameEl = form.querySelector('[name="name"]');
+      var emailEl = form.querySelector('[name="email"]');
+      var phoneEl = form.querySelector('[name="phone"]');
       var name = nameEl && nameEl.value ? nameEl.value.trim() : '';
+      var email = emailEl && emailEl.value ? emailEl.value.trim() : '';
       var phone = phoneEl && phoneEl.value ? phoneEl.value.trim() : '';
-      if (!name || !phone) return; // deixa o form Framer validar normalmente
+      if (!name || !email || !phone) return; // browser validation handles required
 
       ev.preventDefault();
-      withDedup(function(){
-        var eventId = (crypto && crypto.randomUUID) ? crypto.randomUUID()
-          : (Date.now() + '-' + Math.random().toString(36).slice(2));
-        var body = {
-          event_id: eventId,
-          schema_version: 1,
-          launch_public_id: LAUNCH_PUBLIC_ID,
-          page_public_id: PAGE_PUBLIC_ID,
-          name: name,
-          phone: phone,
-          attribution: {}, // tracker não expõe getAttribution público; backend
-                           // já replica do localStorage do tracker no /v1/events
-          consent: { analytics: false, marketing: false, functional: true }
-        };
-        // Lê page_token do <script data-site-token> do head — exigido por
-        // auth-public-token middleware (X-Funil-Site).
-        var siteTokenTag = document.querySelector('script[data-site-token]');
-        var siteToken = siteTokenTag ? siteTokenTag.getAttribute('data-site-token') : '';
-        fetch(EDGE_URL + '/v1/lead', {
-          method: 'POST',
-          credentials: 'include',           // BR-IDENTITY-005 / MEMORY C13
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Funil-Site': siteToken
-          },
-          body: JSON.stringify(body)
-        })
-        .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
-        .then(function(resp){
-          if (resp && resp.lead_token) {
-            try { localStorage.setItem('__gt_ftk', resp.lead_token); } catch (e) {}
-            withTracker(function(F){
-              F.identify({ lead_token: resp.lead_token });
-              F.track('Lead');
-            });
-          }
-        })
-        .catch(function(e){ console.warn('[gt] lead capture failed', e); })
-        .then(function(){
-          // Microdelay para garantir que o sendBeacon do track('Lead') saiu
-          // antes do form Framer fazer o redirect nativo para o checkout Guru.
-          setTimeout(function(){
-            // Re-trigger do submit nativo (sem nosso preventDefault).
-            try {
-              if (typeof form.requestSubmit === 'function') form.requestSubmit();
-              else form.submit();
-            } catch (e) { /* form Framer pode redirecionar via JS próprio */ }
-          }, 80);
-        });
+      firing = true;
+      setTimeout(function(){ firing = false; }, 3000);
+
+      var eventId = (crypto && crypto.randomUUID) ? crypto.randomUUID()
+        : (Date.now() + '-' + Math.random().toString(36).slice(2));
+      var body = {
+        event_id: eventId,
+        schema_version: 1,
+        launch_public_id: LAUNCH_PUBLIC_ID,
+        page_public_id: PAGE_PUBLIC_ID,
+        name: name,
+        email: email,
+        phone: phone,
+        attribution: {},
+        consent: { analytics: false, marketing: false, functional: true }
+      };
+
+      var siteTokenTag = document.querySelector('script[data-site-token]');
+      var siteToken = siteTokenTag ? siteTokenTag.getAttribute('data-site-token') : '';
+
+      function redirectToCheckout(){
+        try { window.location.href = buildCheckoutUrl(name, email, phone); }
+        catch (e) { /* if redirect fails, user stays in popup with no feedback */ }
+      }
+
+      fetch(EDGE_URL + '/v1/lead', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Funil-Site': siteToken
+        },
+        body: JSON.stringify(body)
+      })
+      .then(function(r){ return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function(resp){
+        if (resp && resp.lead_token) {
+          try { localStorage.setItem('__gt_ftk', resp.lead_token); } catch (e) {}
+          withTracker(function(F){
+            F.identify({ lead_token: resp.lead_token });
+            F.track('Lead');
+          });
+        }
+      })
+      .catch(function(e){ console.warn('[gt] lead capture failed', e); })
+      .then(function(){
+        // Pequeno delay pra garantir sendBeacon do track('Lead') antes do redirect.
+        setTimeout(redirectToCheckout, 120);
       });
-    });
+    }, true); // capture phase: roda antes de qualquer outro listener interno do Elementor
   }
 
   function boot(){

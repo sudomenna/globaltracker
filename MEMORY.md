@@ -23,6 +23,7 @@
 - **CONTRACT-api-config-v1**: response inclui `event_config.auto_page_view`. Não estava na doc. Atualizar.
 - **BR-IDENTITY-005**: cookie `__ftk` mudou de `HttpOnly; SameSite=Lax` para `SameSite=None; Secure` sem HttpOnly (tracker lê via JS para propagar identidade cross-page). Atualizar BR e ADR.
 - **CORS público**: quando `pages.allowed_domains` está vazio, libera todas as origens (security via page token). Atualizar `docs/10-architecture/06-auth-rbac-audit.md`.
+- **TEMPLATE-paid-workshop-v3-event-config-purge**: migration 0034 manteve `Purchase` e `Contact` em `event_config.canonical` da page `obrigado-workshop`, mas pela arquitetura v3 ambos são server-side (Purchase via webhook Guru, Contact via webhook SendFlow). Próxima migration deve deixar canonical=[PageView], custom=[click_wpp_join, survey_responded]. Aplicado runtime em wkshop-cs-jun26 via UI do CP (2026-05-05), template global ainda divergente. Mesma correção provavelmente cabe em outras pages (workshop tem `Purchase`? — verificar).
 
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
@@ -50,42 +51,138 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 12 — Onda 3 EM ANDAMENTO (2026-05-05). Passos 1-4 do
-               §Verificação E2E final do roadmap 12 VALIDADOS em produção
-               com lead real (74f1d1bf-3666-49ac-a7c9-5f155e7895b6 — compra
-               R$2 cartão crédito, transação Guru a1b4333f-6244-4885-9ef4-5bf4a59f42b5).
-Branch:        main (working tree GRANDE pronto pra commit)
-DB Supabase:   migrations 0000–0033 aplicadas ✓
-               0031 = funnel template paid_workshop v2 + reset
-               0032 = reorder stages (clicked_buy_workshop antes de lead_workshop)
-               0033 = relax guru_api_token constraint (40 → 16-200 chars)
+Estado:        SPRINT 12 — Onda 4 EM ANDAMENTO (2026-05-05 madrugada).
+               MIGRAÇÃO PLATAFORMA: Tiago migrou Funil B do Framer (cneeducacao.com)
+               para WordPress + Elementor Pro 4.0 (contratosnovaeconomia.com.br).
+               Template v3 ativo no DB (migration 0034). 2/5 pages WordPress
+                100% funcionais e validadas em produção.
+Branch:        main (working tree GRANDE — incluindo 0034 + snippets atualizados —
+               pronto pra commit)
+DB Supabase:   migrations 0000–0034 aplicadas ✓
+               0034 = template v3 (9 stages, +clicked_wpp_join,
+               obrigado-workshop event_config sem survey form ainda)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
-               Last deploy ID 17e3ecce-cc23-4ada-839d-4c820531ac1a (2026-05-05)
-               com pre-insert dedup em guru processor + pptc/utm preprocess
+               (sem novo deploy esta sessão — só DB + tracker snippets)
 Tracker CDN:   https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js
-Lead E2E:      lead 74f1d1bf — `lead_workshop` (03:54:28) + `purchased_workshop` (03:57:31)
-               eventos `lead_identify`, `Lead`, `custom:click_buy_workshop`, `Purchase` ✓
-Próxima ação:  Continuar Onda 3 — passos 5-13 do §Verificação E2E final:
-               5. PageView identificado em obrigado-workshop (precisa snippets head+body Framer)
-               6. survey_responded (precisa form de pesquisa no Framer)
-               7. Contact (click WhatsApp final) → wpp_joined stage
-               8. PageView aula-workshop (criar page Framer)
-               9. custom:watched_workshop (botão "Já assisti")
-               10. PageView + ViewContent oferta-principal (criar page Framer)
-               11. custom:click_buy_main (botão Comprar Oferta Principal)
-               12. Compra main via Guru → purchased_main stage
-               13. Audience sync valida segmentação
+WP plugin:     WPCode Lite (pra snippets per-page com Smart Conditional Logic).
+               Wordfence bloqueia POST com <script> — usar "Allowlist This Action"
+               ao salvar (1× por padrão de request).
+
+Pages WP completas (workshop + obrigado-workshop):
+  workshop          → https://contratosnovaeconomia.com.br/wk-societarios-1/
+                      • CTA dentro de #checkout: <div id="gt-btn-buy-workshop1"> (ID com sufixo "1")
+                      • Click → custom:click_buy_workshop → abre popup Elementor (id 342)
+                        via window.elementorProFrontend.modules.popup.showPopup()
+                      • Popup #342 = "GT — Workshop — Form de captura" com form atomic
+                        id=gt-form-workshop, inputs name=name|email|phone
+                      • Submit → POST /v1/lead → __gt_ftk localStorage → Lead event
+                        → redirect Guru com query (name, email, phone, utms)
+                      • URL Guru: https://clkdmg.site/pay/wk-contratos-societarios
+  obrigado-workshop → https://contratosnovaeconomia.com.br/wk-societario-obrigado/
+                      • Botão WhatsApp → SendFlow (https://sndflw.com/i/3bhG8XexRRKwLxF4SGtk)
+                      • CSS ID widget: gt-btn-wpp-join → click dispara
+                        custom:click_wpp_join (NÃO `Contact` — Contact virá do
+                        webhook SendFlow em Sprint 13)
+
+Lead E2E desta sessão (sintético — fluxo validado, sem compra real):
+  lead 2b8f0cda-188b-4d69-bf0d-3b18a4a6822c
+  eventos accepted:
+    • PageView (workshop)        06:34:10
+    • custom:click_buy_workshop  06:34:32
+    • lead_identify              06:34:53
+    • Lead                       06:34:54
+  redirect verificado: ?name=Teste+Tiago+E2E&email=teste-e2e@globaltracker.dev&phone=+5511988887777
+
+  Lead da sessão anterior 74f1d1bf-3666-49ac-a7c9-5f155e7895b6 (Framer) —
+  obsoleto após migração WP. Não tem stages no DB v3.
+
+Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
+  Não foram criadas no WordPress ainda. Próxima sessão decide qual prio.
+
+Próxima ação:  Continuar com 1 das duas trilhas — escolher na próxima sessão:
+  TRILHA A — Validar Purchase + Contact server-side (server fluxo completo):
+    1. Comprar workshop via Guru com cartão real → webhook deve disparar
+       Purchase → stage purchased_workshop preenchido no DB
+    2. Após compra, ir pra obrigado-workshop, clicar no botão SendFlow,
+       entrar no grupo. Verificar webhook SendFlow chegar no Edge
+       (Sprint 13 / T-13-011 — adapter ainda não implementado).
+       NOTA: SendFlow webhook ainda NÃO está implementado, então Contact
+       não vai chegar — só a parte client (custom:click_wpp_join) está OK.
+       T-13-011 deve ser priorizado.
+  TRILHA B — Construir as 3 pages WP restantes (aula, oferta-principal, obrigado-principal)
+    Mesma metodologia: editor Elementor → CSS IDs estáveis nos elementos
+    chave → 2 snippets WPCode (HEAD + FOOTER) per page → URL no CP.
 ```
 
 ### Plano canônico de sprints restantes
 
-- **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v2 (popup Lead, custom events de intent, page aula-workshop, pesquisa na thankyou). Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
-- **Sprint 13** — Webhooks Hotmart/Kiwify/Stripe (era Sprint 12, realocado). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v3 (popup Lead, custom events de intent, page aula-workshop, click_wpp_join, survey_responded). Migração Framer → WordPress + Elementor + WPCode em andamento. Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
+- **Sprint 13** — Webhooks Hotmart/Kiwify/Stripe + **SendFlow inbound** (T-13-011, novo) + **survey form** (T-13-012, novo). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md).
 
-### O que foi entregue nesta sessão (E2E hardening real)
+### O que foi entregue nesta sessão (Onda 4 — migração Framer → WordPress)
 
-Deploy operacional:
+Decisões fechadas (D1-D4 da sessão, ver §8 também):
+- D1: stage do click WhatsApp = `clicked_wpp_join` (custom:click_wpp_join)
+- D2: `Contact` event NÃO é client — virá do webhook SendFlow (T-13-011)
+- D3: ferramenta de grupos WhatsApp = SendFlow (`reference_sendflow.md`)
+- D4: stage `survey_responded` mantido como placeholder paralelo a `wpp_joined`,
+       audience `respondeu_pesquisa_sem_comprar_main` mantida; form de pesquisa
+       virá em T-13-012 (Sprint 13)
+
+Migration 0034 aplicada na cloud:
+- Template global v3: 9 stages (clicked_wpp_join inserido entre purchased_workshop
+  e wpp_joined). Sem mais campos `Purchase`/`Contact` no canonical da page
+  obrigado-workshop (mas migration ainda mantém — corrigir runtime via CP, ver §2)
+- Reset launch wkshop-cs-jun26: 5 pages com url=NULL, status=draft, event_config
+  v3, tokens novos gerados (revogados antigos via run_reset_wkshop.mjs)
+
+Tokens novos das 5 pages do `wkshop-cs-jun26` (DB só guarda hash):
+- workshop:           `4beab6557f55b6fa0e0ee9c092fed94a2673eb7853ce502f486576e91a574093`
+- obrigado-workshop:  `998909a7c3d7847565565f6aeea5d49e6d302badf1a81715a19e8a629b117d61`
+- aula-workshop:      `2fff0549b63755594cac7b12e64369641faa87edcd4f690f4d10131f0178c77f`
+- oferta-principal:   `1d8cace4ced117bfa9b252cb9dadd306b6b1c96f654580d03ec9c3f070e46413`
+- obrigado-principal: `3d47f79b47f3de94589f3a7a44475ced06cdd1947a93bd67cb3889dbe1459993`
+
+WordPress site de produção:
+- Domínio: `contratosnovaeconomia.com.br`
+- Stack: Hello Elementor + Elementor Pro 4.0 + WPCode Lite + WP Rocket + Wordfence
+- Plugins decisões:
+  - **PixelYourSite**: a desligar (Tiago confirmou opção A — GlobalTracker
+    assume Meta CAPI server-side; mantê-lo causaria dedup hell)
+  - **WPCode Lite**: instalado nesta sessão pra inserir snippets per-page
+    com Smart Conditional Logic
+  - **Wordfence**: bloqueia POST com `<script>` (proteção XSS) — usar
+    "I am certain this is a false positive" → "Allowlist This Action"
+    1× por padrão de request
+
+Snippets canônicos atualizados em `apps/tracker/snippets/paid-workshop/`:
+- `workshop.html` — popup Elementor + form atomic + redirect Guru com query
+  (name, email, phone, utms)
+- `obrigado-workshop.html` — drop survey form, drop Contact wire (vem de webhook)
+
+E2E real validado em produção (sintético):
+- Lead 2b8f0cda-188b-4d69-bf0d-3b18a4a6822c (workshop)
+- 4 eventos `accepted`: PageView, custom:click_buy_workshop, lead_identify, Lead
+- Redirect Guru: ?name=Teste+Tiago+E2E&email=teste-e2e@globaltracker.dev&phone=+5511988887777
+- Sem completar Purchase real ainda — Trilha A da próxima sessão
+
+Ambiente operacional sem mudanças (Edge prod / Tracker CDN / DB / etc.)
+
+### Workaround importante (Elementor 4.0 + popup)
+
+Tentativa frustrada: usar URL nativa `#elementor-action:action=popup:open&settings=...`
+no link do botão. Elementor 4.0 (atomic) **strippa** essa URL no save (campo
+fica vazio no DOM frontal).
+
+**Caminho que funcionou (Opção C)**: snippet WPCode FOOTER hookar click via JS,
+chamar `window.elementorProFrontend.modules.popup.showPopup({id: 342})`.
+Robusto e funciona com qualquer popup Elementor.
+
+(Histórico de bugs pré-migração — Edge hardening, CORS, cookies — preservado
+abaixo)
+
+Deploy operacional (sessões anteriores):
 - Worker Cloudflare deployado em `globaltracker-edge.globaltracker.workers.dev`
 - Subdomínio workers.dev `globaltracker` registrado no account `118836e4d3020f5666b2b8e5ddfdb222`
 - Tracker.js rebuildado e republicado no R2 com `credentials: 'include'`
@@ -133,13 +230,13 @@ E2E validado em produção real (2026-05-04 19:37-19:38 UTC):
 - Subdomain CF: `globaltracker.workers.dev` (registrado nesta sessão)
 - R2 bucket: `gt-tracker-cdn`, public URL `pub-e224c543d78644699af01a135279a5e2.r2.dev`
 - Wrangler OAuth token em `~/Library/Preferences/.wrangler/config/default.toml` (expira 2026-05-04T18:36:08Z — renovar com `npx wrangler login`)
-- Page tokens ativos (5 pages do `wkshop-cs-jun26` Funil B v2 — **rotacionados 2026-05-04 via reset_funnel script**):
-  - workshop: `f919d6b137cdf39b6334cae3bd6b4b7cad5598950552caf9470878271afd80d5` (rotacionado pelo CP em 23:43; token anterior `4ae3c000…` ainda em status=`rotating`)
-  - obrigado-workshop: `ec866ba774c3f5279dbba1725bb43c6a048bcafe4cb00cee7e76c3899950113b`
-  - aula-workshop: `5f376c162fba3577268325b0aa25e6af3baafbda853e7b73c87e41bd19c93aaf`
-  - oferta-principal: `7e10e3e260a09cc69b4407867b4d3645f1bb124529fe8f5cb93fbb802e265849`
-  - obrigado-principal: `04e8724b77005b79c8dcd62f8e65140b422f23cbeb1f307abd31a14940492793`
-  - **Tokens antigos revogados** (pages anteriores foram DELETE-ada no reset, ON DELETE RESTRICT garantiu cleanup atômico). Tiago precisa recolar **5 snippets** no Framer (incluindo workshop + obrigado-workshop que já estavam em produção).
+- Page tokens ATIVOS (5 pages do `wkshop-cs-jun26`, rotacionados 2026-05-05 via run_reset_wkshop.mjs após migration 0034):
+  - workshop: `4beab6557f55b6fa0e0ee9c092fed94a2673eb7853ce502f486576e91a574093`
+  - obrigado-workshop: `998909a7c3d7847565565f6aeea5d49e6d302badf1a81715a19e8a629b117d61`
+  - aula-workshop: `2fff0549b63755594cac7b12e64369641faa87edcd4f690f4d10131f0178c77f` (page existe no DB, não no WP ainda)
+  - oferta-principal: `1d8cace4ced117bfa9b252cb9dadd306b6b1c96f654580d03ec9c3f070e46413` (page existe no DB, não no WP ainda)
+  - obrigado-principal: `3d47f79b47f3de94589f3a7a44475ced06cdd1947a93bd67cb3889dbe1459993` (page existe no DB, não no WP ainda)
+- Tokens anteriores (Framer) revogados nesta sessão. Snippets do Framer obsoletos.
 
 ### Decisões já tomadas (não reabrir)
 
@@ -150,21 +247,33 @@ E2E validado em produção real (2026-05-04 19:37-19:38 UTC):
 ### Como retomar em nova sessão
 
 ```
-1. Ler §5 + §7 + §8 inteiros (estado Onda 3 + decisões + bugs encontrados).
-2. git log -5 + git status (deve estar limpo — última sessão commitou tudo).
-3. Edge prod já está rodando — não precisa subir wrangler dev local.
-   Verificar saúde: curl https://globaltracker-edge.globaltracker.workers.dev/health
-4. Reabrir CP local quando precisar:
+1. Ler §5 + §8 (estado Onda 4 + checkpoint Sprint 12 v3).
+2. git log -5 + git status (working tree GRANDE pronto pra commit, ver §5).
+3. Edge prod sem mudanças nesta sessão. Sanidade:
+     curl https://globaltracker-edge.globaltracker.workers.dev/health
+4. CP local quando precisar:
      cd apps/control-plane && pnpm dev
-   Wrangler tail (auto-reconnect) em outro shell:
-     cd apps/edge && (while true; do npx wrangler tail --format pretty 2>&1 | tee -a /tmp/wrangler-tail.log; sleep 2; done)
-5. Próxima ação: continuar Onda 3 a partir do passo 5 do §Verificação E2E final
-   do roadmap 12 (instalar snippets das 4 pages restantes no Framer e validar
-   o flow ponta-a-ponta com lead identificado de teste).
-6. Snippets versionados em apps/tracker/snippets/paid-workshop/ (5 arquivos)
-   — todos com tokens reais atualizados desta sessão. Body para captura-v1
-   foi gerado via "Detection script" do CP (Tier 1 form-detector + custom
-   events + checkout URL com UTMs); fluxo replicar para outras pages.
+5. Próxima ação: escolher TRILHA A (Purchase via Guru cartão real + Contact via
+   webhook SendFlow [T-13-011 ainda não implementado]) ou TRILHA B (construir
+   3 pages WP restantes). Ver §5 "Próxima ação" detalhe.
+6. Snippets canônicos versionados em apps/tracker/snippets/paid-workshop/:
+     workshop.html          — atualizado (popup Elementor + form atomic + Guru redirect)
+     obrigado-workshop.html — atualizado (drop survey, button #gt-btn-wpp-join)
+     aula-workshop.html, oferta-principal.html, obrigado-principal.html — Framer-era,
+       precisarão ser reescritos quando criarmos as pages WP correspondentes.
+7. Para criar nova page WP no Sprint 12 (TRILHA B), padrão repetível:
+   a) Editor Elementor → setar CSS ID estável nos elementos chave (botões/forms)
+   b) WPCode Lite → 2 snippets (HEAD: tracker.js tag; FOOTER: bootstrap+wires)
+       com Smart Conditional Logic = "page URL contém /<slug>/"
+   c) Wordfence: ao salvar com <script>, allowlist a action específica
+   d) WP Rocket: Limpar cache após cada update
+   e) URL no CP local: http://localhost:3000/launches/wkshop-cs-jun26/pages/<public_id>
+   f) E2E: navegar page → checar tracker carrega → simular click/submit →
+      validar no DB (events + leads + lead_stage_history)
+8. URL Guru workshop: https://clkdmg.site/pay/wk-contratos-societarios
+   (URLs Guru das outras pages — main offer — Tiago vai fornecer próxima sessão)
+9. Wordfence: usar "Allowlist This Action" 1× por padrão de request quando
+   Wordfence bloquear. NÃO allowlistar IP (over-permissivo).
 ```
 
 ## §8 Checkpoint Sprint 12 — Realinhamento template paid_workshop (2026-05-04)
@@ -226,14 +335,44 @@ Migrations criadas/aplicadas durante Onda 3:
   0032 reorder stages canonical (clicked_buy_workshop antes lead_workshop)      ✓
   0033 relax guru_api_token constraint (length 16-200 — formato moderno)        ✓
 
-Onda 3 (EM ANDAMENTO — humano-in-the-loop):
-  T-FUNIL-037 E2E real wkshop-cs-jun26 ponta-a-ponta
-    Passos 1-4 ✓ (PageView anon → click_buy_workshop → Lead → Purchase + stages)
-    Passo 5+ ⏳ (obrigado-workshop, aula, oferta-principal — instalar snippets Framer)
+Onda 3 (CONCLUÍDA com lead 74f1d1bf — Framer):
+  T-FUNIL-037 E2E real wkshop-cs-jun26 ponta-a-ponta — passos 1-4 ✓
+              (passo 5+ não chegou a executar antes da decisão de migrar pra WP)
 
-Onda 4 (após Onda 3):
+Onda 4 (EM ANDAMENTO 2026-05-05 madrugada — migração Framer → WordPress):
+  Decisões da sessão (D1-D4 sprint-paid v3 — alvo de ADR-026 addendum):
+    D1: stage clicked_wpp_join (custom:click_wpp_join)
+    D2: Contact event vem do webhook SendFlow (T-13-011), NÃO client-side
+    D3: ferramenta SendFlow registrada (memória ~/reference_sendflow.md)
+    D4: survey_responded mantido como placeholder paralelo a wpp_joined
+  T-FUNIL-048 migration 0034 paid_workshop v3                              ✓
+  T-FUNIL-049 reset launch wkshop-cs-jun26 (run_reset_wkshop.mjs)           ✓
+  T-FUNIL-050 atualizar snippets canônicos (workshop.html + obrigado-workshop.html) ✓
+  T-FUNIL-051 page workshop WP — Elementor + popup + 2 snippets WPCode + E2E ✓
+              (lead E2E 2b8f0cda-188b-4d69-bf0d-3b18a4a6822c)
+  T-FUNIL-052 page obrigado-workshop WP — botão SendFlow + 2 snippets + E2E ✓
+              (custom:click_wpp_join validado em DB)
+  T-FUNIL-053 URL workshop preenchida no CP                                ✓
+  T-FUNIL-054 page aula-workshop WP                                        ⏳ (futuro)
+  T-FUNIL-055 page oferta-principal WP                                     ⏳ (futuro)
+  T-FUNIL-056 page obrigado-principal WP                                   ⏳ (futuro)
+  T-FUNIL-057 Trilha A — Purchase via Guru + Contact via SendFlow webhook  ⏳
+
+Onda 5 (após Onda 4):
   T-FUNIL-038 br-auditor pré-merge
 ```
+
+### Bugs encontrados e workarounds durante Onda 4 (migração WP — 2026-05-05 madrugada)
+
+| # | Bug | Solução |
+|---|---|---|
+| O4-1 | Elementor 4.0 (atomic) **strippa** `#elementor-action:action=popup:open&settings=...` no save → href fica vazio | Opção C (JS direto): snippet WPCode FOOTER chama `window.elementorProFrontend.modules.popup.showPopup({id})` ao click. Robusto e funciona com qualquer popup. |
+| O4-2 | Elementor 4.0 popup trigger "Ao clicar" não tem campo selector específico — só conta cliques globais | Não usar trigger nativo. JS direto + showPopup() (mesma solução O4-1). |
+| O4-3 | Wordfence bloqueia POSTs do admin com `<script>` (proteção XSS WAF) → 403 ao salvar snippet WPCode | Allowlist da action específica (NÃO IP) via tela de bloqueio: marca "I am certain this is a false positive" + "Allowlist This Action". 1× por padrão de request. |
+| O4-4 | "Ações após o envio = E-mail" no atomic form atomic dispara email automatico, conflita com submit handler do GT | Desligar a ação no painel do form. Nosso JS toma o submit. |
+| O4-5 | Atomic form: `name` dos inputs mutável via campo "ID" (não óbvio — mesmo nome do "CSS ID") | Renomear pra `name`/`email`/`phone`. |
+| O4-6 | CSS ID do widget Botão Elementor vai pro **wrapper DIV**, não no `<a>` interno | Selector compatível: `#gt-btn-buy-workshop1 a, #gt-btn-buy-workshop1`. |
+| O4-7 | Page workshop tinha 5 CTAs externos `#checkout` (scroll only) + 1 dentro de #checkout. Decisão D5: só o de dentro de #checkout é o intent | CTAs externos sem listener (só scroll UX). 1 botão `#gt-btn-buy-workshop1` = `custom:click_buy_workshop` + abre popup. |
 
 ### Bugs encontrados e corrigidos durante Onda 3 (2026-05-05)
 
