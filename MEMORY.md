@@ -35,6 +35,8 @@
 
 - **PHONE-normalizer-9-prefix-BR**: `normalizePhone` em `apps/edge/src/lib/lead-resolver.ts:67` não reconcilia mobiles BR sem o "9" extra (mandato de 2014). Sistemas legados como SendFlow enviam phone sem o 9 → `phone_hash` divergente do que o form do site gera com 9. Tracking de T-13-014 (Sprint 13). Após implementação, atualizar `docs/50-business-rules/BR-IDENTITY.md` BR-IDENTITY-002 + nova INV-IDENTITY-008 (mobile canônico = 13 dígitos `+55DD9XXXXXXXX`).
 
+- **PII-encrypt-órfão (parcial — código pronto, deploy pendente)**: descoberta crítica em 2026-05-05: a função `encryptPii` em `apps/edge/src/lib/pii.ts:157` nunca era chamada em produção. Resultado: as colunas `leads.email_enc / phone_enc / name_enc` estavam todas NULL nos 13 leads sintéticos atuais. Quebra: admin export, DSAR (LGPD/GDPR), suporte ao cliente, backfills futuros. T-13-015 implementado (helper `pii-enrich.ts` + wire em `routes/lead.ts`). Pendente: (1) `wrangler secret put PII_MASTER_KEY_V1` em prod (bloqueado por incidente CF 502 dashboard 2026-05-05 09:07 UTC), (2) deploy edge, (3) extensão pra Guru webhook (próximo T-ID). Os 13 leads atuais ficam sem ciphertext — aceitamos perda (Tiago confirmou — todos sintéticos de teste).
+
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
 2026-05-01 — Supabase em cloud (não local). Projeto `globaltracker`, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE Ltda.
@@ -167,7 +169,7 @@ Próxima ação:  Tiago decidiu priorizar SendFlow (T-13-011 — webhook inbound
 ### Plano canônico de sprints restantes
 
 - **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v3 (popup Lead, custom events de intent, page aula-workshop, click_wpp_join, survey_responded). Migração Framer → WordPress + Elementor + WPCode em andamento. Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
-- **Sprint 13** (refocado 2026-05-05) — Funil B foundation: **phone normalizer BR-aware** (T-13-014, bloqueia tudo abaixo), **SendFlow inbound** (T-13-011), **survey form** (T-13-012, novo), **CP double-stringify fix** (T-13-013), **identity/Guru cleanups** (T-13-008/-009/-010), **cleanups S12** (T-13-005/-006). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md). T-13-001..004 + T-13-007 migrados pro Sprint 14.
+- **Sprint 13** (refocado 2026-05-05) — Funil B foundation: **phone normalizer BR-aware** (T-13-014, bloqueia tudo abaixo), **wire encryptPii pipeline** (T-13-015, novo — admin recovery + DSAR), **SendFlow inbound** (T-13-011), **survey form** (T-13-012, novo), **CP double-stringify fix** (T-13-013), **identity/Guru cleanups** (T-13-008/-009/-010), **cleanups S12** (T-13-005/-006). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md). T-13-001..004 + T-13-007 migrados pro Sprint 14.
 - **Sprint 14** (separado de 13 em 2026-05-05) — Webhook adapters Hotmart/Kiwify/Stripe (T-14-001..004) + cleanup Stripe signature off-by-one (T-14-005). Ver [`14-sprint-14-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/14-sprint-14-webhooks-hotmart-kiwify-stripe.md).
 
 ### O que foi entregue nesta sessão (Onda 4 — migração Framer → WordPress)

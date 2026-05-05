@@ -111,6 +111,9 @@ type Bindings = {
   HYPERDRIVE: Hyperdrive;
   META_CAPI_TOKEN: string;
   META_CAPI_TEST_EVENT_CODE?: string;
+  // T-13-015: AES-GCM master key (hex, 32 bytes) for PII encryption.
+  // Set via `wrangler secret put PII_MASTER_KEY_V1`.
+  PII_MASTER_KEY_V1?: string;
   // Dev shortcut: workspace_id fixo para local dev (substituído por auth-cp.ts em prod)
   DEV_WORKSPACE_ID?: string;
   // Cost ingestor credentials (T-4-001 / T-4-002)

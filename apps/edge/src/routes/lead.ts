@@ -21,8 +21,9 @@ import type { Db } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
-import { resolveLeadByAliases } from '../lib/lead-resolver.js';
+import { normalizePhone as normalizePhoneForEnc, resolveLeadByAliases } from '../lib/lead-resolver.js';
 import { issueLeadToken } from '../lib/lead-token.js';
+import { enrichLeadPii } from '../lib/pii-enrich.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import {
   shouldBypassTurnstile,
@@ -44,6 +45,13 @@ type AppBindings = {
   DATABASE_URL?: string;
   LEAD_TOKEN_HMAC_SECRET?: string;
   TURNSTILE_SECRET_KEY?: string;
+  /**
+   * 32-byte AES-GCM master key (hex) for PII encryption (BR-PRIVACY-004).
+   * Set via `wrangler secret put PII_MASTER_KEY_V1`. When absent (dev/local),
+   * lead rows are created without ciphertext (hashes still populated).
+   * T-13-015.
+   */
+  PII_MASTER_KEY_V1?: string;
 };
 
 /**
@@ -297,6 +305,42 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
 
       const leadId = resolveResult.value.lead_id;
       leadPublicId = leadId; // internal ID used as public ID for now (no separate public_id on leads table)
+
+      // T-13-015: Encrypt PII into leads.email_enc/phone_enc/name_enc so admin
+      // recovery + DSAR work. Hashes were already populated by resolveLeadByAliases.
+      // Helper is non-blocking: encryption failure logs and continues; pipeline
+      // remains functional with hashes only.
+      // Phone passed pre-normalized? No — businessPayload still raw, but enrichLeadPii
+      // doesn't normalize internally; we pass plaintexts and the encryption is opaque.
+      // Storing E.164 normalized form is more useful for downstream decryption (admin
+      // export shows canonical), so normalize here if phone present.
+      const phoneForEnc = businessPayload.phone
+        ? (normalizePhoneForEnc(businessPayload.phone) ?? businessPayload.phone)
+        : undefined;
+      try {
+        await enrichLeadPii(
+          {
+            email: businessPayload.email,
+            phone: phoneForEnc,
+            name: businessPayload.name,
+          },
+          {
+            leadId,
+            workspaceId,
+            db: effectiveDb,
+            masterKeyHex: c.env.PII_MASTER_KEY_V1,
+            requestId,
+          },
+        );
+      } catch (err) {
+        // INV-PRIVACY-006-soft: never block /v1/lead on enrichment failure
+        safeLog('error', {
+          event: 'enrich_lead_pii_threw',
+          request_id: requestId,
+          workspace_id: workspaceId,
+          message: err instanceof Error ? err.message : 'unknown',
+        });
+      }
 
       // 4b. Compute page_token_hash from X-Funil-Site header
       // INV-IDENTITY-006: token bound to the issuing page_token
