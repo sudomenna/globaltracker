@@ -13,6 +13,7 @@
 
 import { createDb, events, launches, pageTokens, pages, rawEvents } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
+import { jsonb } from '../lib/jsonb-cast.js';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
@@ -328,7 +329,11 @@ pagesRoute.patch('/:page_public_id', async (c) => {
   if (parsed.data.url !== undefined) updates.url = parsed.data.url;
   if (parsed.data.allowed_domains !== undefined) updates.allowedDomains = parsed.data.allowed_domains;
   if (parsed.data.status !== undefined) updates.status = parsed.data.status;
-  if (parsed.data.event_config !== undefined) updates.eventConfig = parsed.data.event_config;
+  // T-13-013: jsonb() helper força cast `::jsonb` explícito.
+  // Sem isso, Hyperdrive driver grava jsonb-string em vez de jsonb-object.
+  if (parsed.data.event_config !== undefined) {
+    updates.eventConfig = jsonb(parsed.data.event_config);
+  }
 
   if (Object.keys(updates).length === 0) {
     return c.json({ updated: false, request_id: requestId }, 200);

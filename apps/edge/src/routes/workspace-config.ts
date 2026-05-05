@@ -21,6 +21,7 @@ import { auditLog, createDb } from '@globaltracker/db';
 import type { Db } from '@globaltracker/db';
 import { workspaces } from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
+import { jsonb } from '../lib/jsonb-cast.js';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
@@ -295,9 +296,11 @@ export function createWorkspaceConfigRoute(deps?: {
           : (rawCfg as Record<string, unknown>) ?? {};
       mergedConfig = deepMerge(currentConfig, body as Record<string, unknown>);
 
+      // T-13-013: jsonb() helper força cast `::jsonb` explícito.
+      // Sem isso, Hyperdrive driver grava jsonb-string em vez de jsonb-object.
       await db
         .update(workspaces)
-        .set({ config: mergedConfig })
+        .set({ config: jsonb(mergedConfig) })
         .where(eq(workspaces.id, workspaceId));
     } catch (err) {
       // BR-PRIVACY-001: no PII in log — workspace_id is an opaque UUID.
