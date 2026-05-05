@@ -45,6 +45,19 @@ Além da configuração de tracking (`config.tracking.*`), o JSONB `config` pers
 
 `config.type` é exibido como badge na lista de lançamentos no Control Plane.
 
+### Funnel snapshot — `launches.funnel_template_id` + `launches.funnel_blueprint`
+
+Adicionados na migration `0029_funnel_templates.sql` (Sprint 10). Detalhe canônico em [`docs/20-domain/06-mod-funnel.md`](06-mod-funnel.md).
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `funnel_template_id` | `uuid NULL` FK → `funnel_templates(id)` | Template de origem (SET NULL on delete). |
+| `funnel_blueprint` | `jsonb NULL` | Snapshot editável do blueprint do template no momento do scaffolding. Mutações posteriores no template **não afetam** o blueprint do launch (INV-FUNNEL-007). |
+
+**Realinhamento por migration ad-hoc:** alterações pós-scaffolding em `funnel_blueprint` podem vir de:
+- (a) edição via UI no Control Plane (`/launches/[public_id]/funnel`); ou
+- (b) migration de realinhamento operacional, ex.: `0031_funnel_template_paid_workshop_v2.sql` (T-FUNIL-030, Sprint 12) que re-snapshot o blueprint do launch real `wkshop-cs-jun26` após reshape do template `lancamento_pago_workshop_com_main_offer` (v1 → v2). Ver ADR-026.
+
 ## 4. Relações
 
 - `Launch N—1 Workspace`

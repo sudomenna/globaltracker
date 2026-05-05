@@ -1,0 +1,127 @@
+<!--
+  Snippet canônico — Page `oferta-principal` (role: sales, funnel_role: main_offer)
+  Funil B v2 — `lancamento_pago_workshop_com_main_offer` — Sprint 12
+
+  Papel desta page no funil (Funil B v2 D6):
+    - Apresenta a oferta principal **sem popup** (decisão D6: sem captura nesta
+      page; lead já foi capturado em `workshop`).
+    - Stages disparados aqui:
+        * PageView (event_config canonical) — chegada na página de venda main.
+        * ViewContent (event_config canonical) — sinaliza visualização da oferta.
+        * `clicked_buy_main` via custom event `custom:click_buy_main` no clique
+          do botão "Comprar Oferta Principal".
+    - Purchase do main_offer chega via webhook Guru server-side.
+
+  Contrato com o tracker.js:
+    - O tracker dispara `PageView` automaticamente apenas se `auto_page_view=true`
+      (ver apps/tracker/src/index.ts:195). `ViewContent` NÃO é auto-fire em
+      nenhum caso (verificado em apps/tracker/src/). Disparamos os dois
+      explicitamente no boot, por ordem.
+    - Botão "Quero Comprar" / "Comprar Oferta Principal": Tiago confirma o
+      seletor real após publish do Framer. Fallback por texto.
+
+  IMPORTANTE — TOKEN PENDENTE:
+    O `data-site-token` abaixo é placeholder. Após T-FUNIL-030 ser aplicada na
+    cloud, a migration emitirá `RAISE NOTICE` com o page_token clear. Substitua
+    `7e10e3e260a09cc69b4407867b4d3645f1bb124529fe8f5cb93fbb802e265849` pelo valor emitido antes de colar no Framer.
+
+  BRs aplicáveis:
+    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato).
+    - BR-IDENTITY-005: lead_token vem de `localStorage('__gt_ftk')` (cross-origin).
+    - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente.
+-->
+
+<!-- ============================== -->
+<!-- COLAR EM <head> NO FRAMER     -->
+<!-- ============================== -->
+<!-- TODO Tiago: trocar 7e10e3e260a09cc69b4407867b4d3645f1bb124529fe8f5cb93fbb802e265849 pelo token emitido em -->
+<!-- T-FUNIL-030 (RAISE NOTICE da migration 0031) antes de publicar.      -->
+<script
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
+  data-site-token="7e10e3e260a09cc69b4407867b4d3645f1bb124529fe8f5cb93fbb802e265849"
+  data-launch-public-id="wkshop-cs-jun26"
+  data-page-public-id="oferta-principal"
+  data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
+  async
+></script>
+
+<!-- ============================== -->
+<!-- COLAR ANTES DE </body> NO FRAMER -->
+<!-- ============================== -->
+<script>
+(function(){
+  // Botão "Comprar Oferta Principal" — Framer não expõe um seletor estável.
+  // TODO Tiago: confirmar/ajustar seletor real após publish.
+  var BUY_BUTTON_FALLBACK_SELECTORS = [
+    'button[data-gt="click_buy_main"]',
+    'a[data-gt="click_buy_main"]'
+  ];
+
+  // Sem evento `gt:ready` no bundle (verificado em apps/tracker/src/index.ts);
+  // polling 50ms × 40 (~2s) com fallback silencioso.
+  function withTracker(cb){
+    if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
+    var tries = 0;
+    var t = setInterval(function(){
+      tries++;
+      if (window.Funil) { clearInterval(t); try { cb(window.Funil); } catch (e) {} }
+      else if (tries >= 40) { clearInterval(t); /* fail silently */ }
+    }, 50);
+  }
+
+  function findBuyButton(){
+    for (var i = 0; i < BUY_BUTTON_FALLBACK_SELECTORS.length; i++){
+      var el = document.querySelector(BUY_BUTTON_FALLBACK_SELECTORS[i]);
+      if (el) return el;
+    }
+    var nodes = document.querySelectorAll('button, a[role="button"], a');
+    for (var j = 0; j < nodes.length; j++){
+      var txt = (nodes[j].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (txt === 'quero comprar' ||
+          txt === 'comprar oferta principal' ||
+          txt === 'comprar agora') return nodes[j];
+    }
+    return null;
+  }
+
+  function bootIdentity(){
+    var token = null;
+    try { token = localStorage.getItem('__gt_ftk'); } catch (e) {}
+    withTracker(function(F){
+      if (token) F.identify({ lead_token: token });
+      // PageView: o tracker auto-fire só roda se event_config.auto_page_view=true.
+      // Disparamos explicitamente para uniformidade; o tracker dedupa por
+      // event_id via sessionStorage (TTL 5min) — re-fire é absorvido como
+      // `event_duplicate_accepted` (esperado, MEMORY).
+      F.page();
+      // ViewContent NÃO é auto-fire pelo bundle — disparamos explicitamente
+      // (event_config canonical desta page inclui ViewContent).
+      F.track('ViewContent');
+    });
+  }
+
+  function wireBuyButton(){
+    var btn = findBuyButton();
+    if (!btn) return; // operador ajusta seletor depois; ausência tolerada.
+    // D6: sem popup, click NÃO é interceptado — track + deixa o navegador
+    // seguir o link de checkout Guru naturalmente.
+    btn.addEventListener('click', function(){
+      withTracker(function(F){
+        // BR-EVENT-001: prefixo `custom:` é match exato no processor.
+        F.track('custom:click_buy_main');
+      });
+    }, { passive: true });
+  }
+
+  function boot(){
+    bootIdentity();
+    wireBuyButton();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+})();
+</script>

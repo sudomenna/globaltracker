@@ -24,13 +24,16 @@ function buildSnippet(
   pageToken: string,
   launchPublicId: string,
   pagePublicId: string,
+  edgeUrl?: string,
 ): string {
+  const edgeAttr = edgeUrl ? `\n  data-edge-url="${edgeUrl}"` : '';
   return `<script
   src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
   data-site-token="${pageToken}"
   data-launch-public-id="${launchPublicId}"
-  data-page-public-id="${pagePublicId}">
-</script>`;
+  data-page-public-id="${pagePublicId}"${edgeAttr}
+  async
+></script>`;
 }
 
 export function StepInstall({
@@ -87,15 +90,18 @@ export function StepInstall({
     }
   }, [pageStatus]);
 
+  const edgeBaseUrl =
+    process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
+
   const handleCopy = useCallback(() => {
     if (!pageToken || !launchPublicId || !pagePublicId) return;
-    const snippet = buildSnippet(pageToken, launchPublicId, pagePublicId);
+    const snippet = buildSnippet(pageToken, launchPublicId, pagePublicId, edgeBaseUrl);
     navigator.clipboard.writeText(snippet).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2_000);
       toast.success('Snippet copiado');
     });
-  }, [pageToken, launchPublicId, pagePublicId]);
+  }, [pageToken, launchPublicId, pagePublicId, edgeBaseUrl]);
 
   function handleComplete() {
     onComplete({
@@ -106,7 +112,7 @@ export function StepInstall({
 
   const snippet =
     pageToken && launchPublicId && pagePublicId
-      ? buildSnippet(pageToken, launchPublicId, pagePublicId)
+      ? buildSnippet(pageToken, launchPublicId, pagePublicId, edgeBaseUrl)
       : null;
 
   const elapsedSeconds = Math.floor(

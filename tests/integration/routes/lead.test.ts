@@ -756,9 +756,11 @@ describe('POST /v1/lead — issueLeadToken DB path (T-2-008)', () => {
     const setCookie = res.headers.get('set-cookie');
     expect(setCookie).not.toBeNull();
     expect(setCookie).toContain('__ftk=');
-    expect(setCookie).toContain('HttpOnly');
+    // BR-IDENTITY-005 hardening (Sprint 12, MEMORY §2 + §7 bug C12):
+    // tracker.js lê __ftk via JS → HttpOnly removido; cross-origin → SameSite=None + Secure.
+    expect(setCookie).not.toContain('HttpOnly');
     expect(setCookie).toContain('Secure');
-    expect(setCookie).toContain('SameSite=Lax');
+    expect(setCookie).toContain('SameSite=None');
   });
 
   // -------------------------------------------------------------------------

@@ -56,9 +56,21 @@ Scenario: 2 sync jobs concorrentes — apenas 1 processa
 ### Enunciado
 `audience_snapshots` + `audience_snapshot_members` armazenam estado **com membros** materializados, não apenas hash. Diff calculado como SET difference entre snapshot atual e anterior.
 
+`query_definition` é um DSL estruturado (jsonb), **nunca SQL livre**. O DSL é validado por `AudienceQueryDefinitionSchema` (Zod) antes de qualquer avaliação ou save (INV-AUDIENCE-007). O vocabulário aceito é:
+
+- **Canônico (T-FUNIL-040 em diante):** `stage_eq`, `stage_not`, `stage_gte`.
+- **Legacy aliases (retro-compat, mesmo lifetime das condições canônicas):** `stage` (= `stage_eq`), `not_stage` (= `stage_not`).
+- **Demais predicados (inalterados):** `is_icp`, `purchased`.
+
+**Runtime contract — `stage_gte`:** quando qualquer condição usa `stage_gte`, o `query_definition` **DEVE** conter `launch_id` (UUID) no top-level. O evaluator resolve a ordem do funil a partir de `launches.funnel_blueprint.stages[].slug` na ordem posicional do array (não há campo `order`). Se `launch_id` estiver ausente, o blueprint não carregar, ou o slug-alvo não existir no blueprint, o evaluator falha com erro determinístico (`invalid_query_definition: ...`) — o sync job é marcado como `failed` e o operador corrige o `query_definition`. Não há fallback silencioso para conjunto vazio.
+
+**Determinismo (INV-AUDIENCE-003 preservado):** para `query_definition`s escritos com vocabulário legacy (`stage` / `not_stage`), a expansão do DSL não muda o conjunto de membros nem o `snapshot_hash`. Audiences existentes não regridem após a expansão de vocabulário.
+
 ### Enforcement
 - Job de geração escreve snapshot + members em transação.
 - Sync job calcula diff via SQL determinístico.
+- `evaluateAudience()` parseia `query_definition` com Zod antes de construir SQL; entrada inválida lança `invalid_query_definition` antes de tocar DB de leads.
+- `stage_gte` sem `launch_id` no top-level → erro determinístico antes do query.
 
 ### Gherkin
 ```gherkin
@@ -67,6 +79,42 @@ Scenario: diff identifica adições e remoções corretamente
   And snapshot T com members={B, C, D}
   When sync job calcula diff
   Then planned_additions=1 (D), planned_removals=1 (A)
+```
+
+```gherkin
+Scenario: stage_gte resolve ordem via funnel_blueprint
+  Given launch L com funnel_blueprint.stages=[
+    {slug: "registered"},
+    {slug: "watched_workshop"},
+    {slug: "purchased_main"}
+  ]
+  And audience com query_definition={
+    type: "builder",
+    launch_id: L.id,
+    all: [{stage_gte: "watched_workshop"}]
+  }
+  When evaluateAudience executa
+  Then members inclui leads com stage IN ("watched_workshop", "purchased_main")
+  And exclui leads cuja stage máxima é "registered"
+```
+
+```gherkin
+Scenario: stage_gte sem launch_id falha determinístico
+  Given audience com query_definition={
+    type: "builder",
+    all: [{stage_gte: "watched_workshop"}]
+  }
+  When evaluateAudience executa
+  Then erro "invalid_query_definition: stage_gte requires launch_id..."
+  And nenhuma query a leads é executada
+```
+
+```gherkin
+Scenario: vocabulário legacy preserva snapshot_hash (INV-AUDIENCE-003)
+  Given audience pré-T-FUNIL-040 com query_definition={type:"builder", all:[{stage:"registered"}]}
+  When evaluateAudience executa antes e depois da expansão de vocabulário
+  Then o member set é idêntico
+  And snapshot_hash é idêntico
 ```
 
 ---

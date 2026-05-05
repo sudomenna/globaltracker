@@ -6,7 +6,10 @@ export async function edgeFetch(
   accessToken: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const baseUrl = process.env.EDGE_WORKER_URL ?? 'http://localhost:8787';
+  const baseUrl =
+    process.env.NEXT_PUBLIC_EDGE_WORKER_URL ??
+    process.env.EDGE_WORKER_URL ??
+    'http://localhost:8787';
   return fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {

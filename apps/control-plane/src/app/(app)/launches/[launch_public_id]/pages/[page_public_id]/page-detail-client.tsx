@@ -89,8 +89,9 @@ function buildHeadSnippet(
   src="${TRACKER_CDN_URL}"
   data-site-token="${pageToken}"
   data-launch-public-id="${launchPublicId}"
-  data-page-public-id="${pagePublicId}"${edgeAttr}>
-</script>`;
+  data-page-public-id="${pagePublicId}"${edgeAttr}
+  async
+></script>`;
 }
 
 function buildBodySnippet(formSelector: string) {
@@ -115,6 +116,258 @@ document.addEventListener('DOMContentLoaded', function () {
 <\/script>`;
 }
 
+/**
+ * Build a "detection script" the user pastes in DevTools console of their own
+ * landing page. Inspects the form, maps inputs to identify fields, generates
+ * the EXACT body snippet (with selectors that match the real DOM, using the
+ * canonical capture flow: POST /v1/lead → localStorage → Funil.identify →
+ * Funil.track('Lead')) and copies it to the clipboard.
+ *
+ * Funciona em LPs SPA (Framer, Next.js etc.) porque roda no DOM já renderizado.
+ *
+ * INV-TRACKER-008 / BR-TRACKER-001: Funil.identify só aceita {lead_token}.
+ * Por isso o snippet gerado faz POST /v1/lead manualmente para obter o token.
+ */
+function buildDetectionScript(
+  formSelector: string,
+  edgeUrl: string,
+  launchPublicId: string,
+  pagePublicId: string,
+  checkoutUrl: string,
+) {
+  return `// Cole no DevTools console da sua landing page (com o form já visível na tela).
+// Detecta campos do form, gera o body snippet exato e copia pro clipboard.
+(function () {
+  var SELECTOR = ${JSON.stringify(formSelector)};
+  var form = document.querySelector(SELECTOR);
+  if (!form) {
+    console.error('[gt] Form não encontrado para o seletor: ' + SELECTOR);
+    return;
+  }
+  var REGEX = {
+    email: /e[-_]?mail/i,
+    name: /^(nome|name|first[-_]?name|primeiro[-_]?nome|full[-_]?name|nome[-_]?completo)$/i,
+    phone: /telefone|celular|whatsapp|wpp|phone|fone|tel/i,
+  };
+  var detected = {};
+  var inputs = form.querySelectorAll('input, select, textarea');
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    var n = (el.name || '').trim();
+    if (!n) continue;
+    for (var key in REGEX) {
+      if (REGEX[key].test(n) && !detected[key]) {
+        detected[key] = n;
+        break;
+      }
+    }
+  }
+  var keys = Object.keys(detected);
+  if (keys.length === 0) {
+    console.warn('[gt] Nenhum campo (email/name/phone) detectado no form. Inputs encontrados:', Array.from(inputs).map(function(x){return x.name;}).filter(Boolean));
+    return;
+  }
+  var EDGE_URL = ${JSON.stringify(edgeUrl)};
+  var LAUNCH = ${JSON.stringify(launchPublicId)};
+  var PAGE = ${JSON.stringify(pagePublicId)};
+  var CHECKOUT_URL = ${JSON.stringify(checkoutUrl ?? '')};
+  var fieldReads = keys.map(function (k) {
+    var attrSel = '[name="' + detected[k].replace(/"/g, '\\\\"') + '"]';
+    return "      var " + k + "El = form.querySelector(" + JSON.stringify(attrSel) + ");\\n" +
+           "      var " + k + "Val = " + k + "El && " + k + "El.value ? " + k + "El.value.trim() : '';";
+  }).join('\\n');
+  var bodyFields = keys.map(function (k) { return "        " + k + ": " + k + "Val"; }).join(',\\n');
+  var snippet = '<script>\\n' +
+    "(function(){\\n" +
+    "  var EDGE_URL = " + JSON.stringify(EDGE_URL) + ";\\n" +
+    "  var LAUNCH_PUBLIC_ID = " + JSON.stringify(LAUNCH) + ";\\n" +
+    "  var PAGE_PUBLIC_ID = " + JSON.stringify(PAGE) + ";\\n" +
+    "  var FORM_SELECTOR = " + JSON.stringify(SELECTOR) + ";\\n" +
+    "  var CHECKOUT_URL = " + JSON.stringify(CHECKOUT_URL) + ";\\n" +
+    "  var UTM_KEYS = ['utm_source','utm_medium','utm_campaign','utm_content','utm_term','fbclid','gclid'];\\n" +
+    "  function pickUtms(){\\n" +
+    "    try { var qs = new URLSearchParams(location.search); var p = new URLSearchParams();\\n" +
+    "      UTM_KEYS.forEach(function(k){ var v = qs.get(k); if (v) p.set(k, v); });\\n" +
+    "      return p; } catch(e){ return new URLSearchParams(); }\\n" +
+    "  }\\n" +
+    "  function appendQuery(url, extra){\\n" +
+    "    if (!extra || !extra.toString || !extra.toString()) return url;\\n" +
+    "    var sep = url.indexOf('?') >= 0 ? '&' : '?';\\n" +
+    "    return url + sep + extra.toString();\\n" +
+    "  }\\n" +
+    "  var firing = false;\\n" +
+    "  // Lê o page_token do <script data-site-token> do head (mesmo do tracker.js).\\n" +
+    "  function getSiteToken(){\\n" +
+    "    var tag = document.querySelector('script[data-site-token]');\\n" +
+    "    return tag ? tag.getAttribute('data-site-token') : '';\\n" +
+    "  }\\n" +
+    "  function withTracker(cb){\\n" +
+    "    if (window.Funil) { try { cb(window.Funil); } catch(e){} return; }\\n" +
+    "    var n = 0, t = setInterval(function(){\\n" +
+    "      if (window.Funil) { clearInterval(t); try { cb(window.Funil); } catch(e){} }\\n" +
+    "      else if (++n >= 40) clearInterval(t);\\n" +
+    "    }, 50);\\n" +
+    "  }\\n" +
+    "  function wire(){\\n" +
+    "    var form = document.querySelector(FORM_SELECTOR);\\n" +
+    "    if (!form) return;\\n" +
+    "    form.addEventListener('submit', function(ev){\\n" +
+    "      if (firing) return;\\n" +
+    fieldReads + '\\n' +
+    "      ev.preventDefault();\\n" +
+    "      firing = true;\\n" +
+    "      setTimeout(function(){ firing = false; }, 3000);\\n" +
+    "      var siteToken = getSiteToken();\\n" +
+    "      if (!siteToken) { console.warn('[gt] data-site-token ausente — confira o snippet do <head>'); return; }\\n" +
+    "      var eventId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2));\\n" +
+    "      fetch(EDGE_URL + '/v1/lead', {\\n" +
+    "        method: 'POST',\\n" +
+    "        headers: { 'Content-Type': 'application/json', 'X-Funil-Site': siteToken },\\n" +
+    "        credentials: 'include',\\n" +
+    "        body: JSON.stringify({\\n" +
+    "          event_id: eventId,\\n" +
+    "          schema_version: 1,\\n" +
+    "          launch_public_id: LAUNCH_PUBLIC_ID,\\n" +
+    "          page_public_id: PAGE_PUBLIC_ID,\\n" +
+    bodyFields + ',\\n' +
+    "          attribution: {},\\n" +
+    "          consent: { analytics: false, marketing: false, functional: true }\\n" +
+    "        })\\n" +
+    "      })\\n" +
+    "      .then(function(r){ return r.ok ? r.json() : null; })\\n" +
+    "      .then(function(resp){\\n" +
+    "        if (resp && resp.lead_token) {\\n" +
+    "          try { localStorage.setItem('__gt_ftk', resp.lead_token); } catch(e){}\\n" +
+    "          withTracker(function(F){\\n" +
+    "            F.identify({ lead_token: resp.lead_token });\\n" +
+    "            F.track('Lead');\\n" +
+    "          });\\n" +
+    "        }\\n" +
+    "      })\\n" +
+    "      .catch(function(e){ console.warn('[gt] lead capture failed', e); })\\n" +
+    "      .finally(function(){\\n" +
+    "        setTimeout(function(){\\n" +
+    "          if (CHECKOUT_URL) {\\n" +
+    "            // Redirect explícito preservando UTMs da page atual.\\n" +
+    "            window.location.href = appendQuery(CHECKOUT_URL, pickUtms());\\n" +
+    "          } else if (form.requestSubmit) {\\n" +
+    "            form.requestSubmit();\\n" +
+    "          } else {\\n" +
+    "            form.submit();\\n" +
+    "          }\\n" +
+    "        }, 80);\\n" +
+    "      });\\n" +
+    "    });\\n" +
+    "  }\\n" +
+    "  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);\\n" +
+    "  else wire();\\n" +
+    "})();\\n" +
+    '<\\/script>';
+  console.log('[gt] Campos detectados:', detected);
+  console.log('%c[gt] Snippet pronto:%c\\n' + snippet, 'color:#0a0;font-weight:bold', 'color:inherit');
+
+  // Tenta copiar via Clipboard API; fallback execCommand se DevTools focado bloqueia.
+  function copyFallback(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function done() {
+    console.log('%c[gt] ✓ Copiado pro clipboard — cola antes de </body> no Framer.', 'color:#0a0;font-weight:bold');
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(snippet).then(done, function () {
+      if (copyFallback(snippet)) done();
+      else console.warn('[gt] Auto-copy falhou — copie o snippet acima manualmente (selecione e Cmd/Ctrl+C).');
+    });
+  } else if (copyFallback(snippet)) {
+    done();
+  } else {
+    console.warn('[gt] Clipboard indisponível — copie o snippet acima manualmente.');
+  }
+})();`;
+}
+
+/**
+ * Build a body snippet that wires arbitrary selectors to custom track() calls.
+ * BR-EVENT-001: matching exato com prefixo `custom:` no processor.
+ *
+ * Aceita pares (event_name, selector). Sintaxes do selector:
+ *   - CSS normal: `[data-gt="x"]`, `#id`, `.classe`, etc. (querySelector)
+ *   - Texto:      `text:Quero Comprar` → match por textContent (case+trim insensitive)
+ *
+ * Útil em Framer/SPA onde adicionar custom attributes não é trivial.
+ *
+ * Gera 1 IIFE com listeners click `passive: true` + delegação no document
+ * para o matcher por texto (cobre re-renders de SPA).
+ */
+function buildCustomEventsSnippet(
+  pairs: Array<{ eventName: string; selector: string }>,
+): string {
+  const valid = pairs.filter((p) => p.eventName.trim() && p.selector.trim());
+  if (valid.length === 0) {
+    return '<!-- Preencha pelo menos 1 seletor abaixo para gerar o snippet -->';
+  }
+  const wires = valid
+    .map((p) => {
+      const sel = p.selector.trim();
+      const evt = `custom:${p.eventName.trim()}`;
+      if (sel.toLowerCase().startsWith('text:')) {
+        const text = sel.slice(5).trim();
+        return `    wireByText(${JSON.stringify(text)}, ${JSON.stringify(evt)});`;
+      }
+      return `    wireBySelector(${JSON.stringify(sel)}, ${JSON.stringify(evt)});`;
+    })
+    .join('\n');
+  return `<script>
+(function () {
+  function withTracker(cb) {
+    if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
+    var n = 0, t = setInterval(function () {
+      if (window.Funil) { clearInterval(t); try { cb(window.Funil); } catch (e) {} }
+      else if (++n >= 40) clearInterval(t);
+    }, 50);
+  }
+  function fire(eventName) {
+    withTracker(function (F) { F.track(eventName); });
+  }
+  function wireBySelector(selector, eventName) {
+    var el = document.querySelector(selector);
+    if (!el) return;
+    el.addEventListener('click', function () { fire(eventName); }, { passive: true });
+  }
+  // Delegação no document — sobrevive a re-renders de SPA (Framer/Next/etc.).
+  // Match: elemento clicado (ou ancestral até 5 níveis) com textContent normalizado igual ao alvo.
+  function wireByText(targetText, eventName) {
+    var target = (targetText || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    if (!target) return;
+    document.addEventListener('click', function (ev) {
+      var node = ev.target;
+      for (var i = 0; i < 5 && node && node !== document; i++) {
+        var txt = (node.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (txt === target) { fire(eventName); return; }
+        node = node.parentNode;
+      }
+    }, { passive: true, capture: true });
+  }
+  function boot() {
+${wires}
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+<\/script>`;
+}
+
 const MASKED_TOKEN = '••••••••••••••••••••••';
 
 export function PageDetailClient({
@@ -127,14 +380,23 @@ export function PageDetailClient({
   initialAllowedDomains = [],
 }: Props) {
   const [tokenVisible, setTokenVisible] = useState(false);
-  // pageToken: loaded from localStorage (saved on creation/rotation) or set after rotation.
-  const [pageToken, setPageToken] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(`gt:token:${pagePublicId}`);
-  });
+  // pageToken: lê do localStorage **após mount** para evitar hydration mismatch
+  // (SSR retorna null, client tem valor → render diverge). Inicia null e
+  // hidrata em useEffect.
+  const [pageToken, setPageToken] = useState<string | null>(null);
+  useEffect(() => {
+    const v = localStorage.getItem(`gt:token:${pagePublicId}`);
+    if (v) setPageToken(v);
+  }, [pagePublicId]);
   const [copied, setCopied] = useState(false);
   const [bodyCopied, setBodyCopied] = useState(false);
+  const [detectionCopied, setDetectionCopied] = useState(false);
+  const [customEventsCopied, setCustomEventsCopied] = useState(false);
   const [formSelector, setFormSelector] = useState('form');
+  const [checkoutUrl, setCheckoutUrl] = useState('');
+  const [customEventSelectors, setCustomEventSelectors] = useState<
+    Record<string, string>
+  >({});
   const [rotateDialogOpen, setRotateDialogOpen] = useState(false);
   const [rotateConfirmInput, setRotateConfirmInput] = useState('');
   const [isRotating, setIsRotating] = useState(false);
@@ -208,7 +470,7 @@ export function PageDetailClient({
 
   async function handleCopySnippet() {
     const token = pageToken ?? MASKED_TOKEN;
-    const snippet = buildHeadSnippet(token, pagePublicId, launchPublicId);
+    const snippet = buildHeadSnippet(token, pagePublicId, launchPublicId, baseUrl);
     await navigator.clipboard.writeText(snippet);
     setCopied(true);
     setTimeout(() => setCopied(false), 2_000);
@@ -354,6 +616,7 @@ export function PageDetailClient({
     pageToken ?? MASKED_TOKEN,
     pagePublicId,
     launchPublicId,
+    baseUrl,
   );
 
   const healthState: HealthState =
@@ -597,7 +860,7 @@ export function PageDetailClient({
         <CardContent className="space-y-3">
           <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto">
             <pre className="whitespace-pre-wrap break-all">
-              {buildHeadSnippet(displayToken, pagePublicId, launchPublicId)}
+              {buildHeadSnippet(displayToken, pagePublicId, launchPublicId, baseUrl)}
             </pre>
           </div>
 
@@ -698,6 +961,29 @@ export function PageDetailClient({
             />
           </div>
 
+          <div className="space-y-1">
+            <label
+              htmlFor="checkout-url-detail"
+              className="text-xs font-medium text-muted-foreground"
+            >
+              URL do checkout (opcional)
+            </label>
+            <input
+              id="checkout-url-detail"
+              value={checkoutUrl}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setCheckoutUrl(e.target.value)
+              }
+              placeholder="https://pay.guru.com.br/PRODUTO_ID"
+              className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <p className="text-xs text-muted-foreground">
+              Se preenchido, após capturar o lead o snippet redireciona para esta URL anexando os UTMs (
+              <code className="font-mono bg-muted px-1 rounded">utm_source/medium/campaign/content/term, fbclid, gclid</code>
+              ) da page atual. Guru repropaga no payload do webhook de Purchase.
+            </p>
+          </div>
+
           <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto">
             <pre className="whitespace-pre-wrap break-all">
               {buildBodySnippet(formSelector)}
@@ -726,12 +1012,170 @@ export function PageDetailClient({
             ) : (
               <>
                 <Copy className="h-4 w-4" aria-hidden="true" />
-                Copiar script
+                Copiar script (genérico)
               </>
             )}
           </Button>
+
+          <div className="border-t pt-4 space-y-3">
+            <div>
+              <p className="text-sm font-medium">
+                Gerar snippet exato a partir do form real
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                O genérico acima usa fallbacks de nomes comuns (email/nome/phone). Se
+                seu form usa atributos <code className="font-mono bg-muted px-1 rounded">name=</code>{' '}
+                fora do padrão (ex.: Framer com{' '}
+                <code className="font-mono bg-muted px-1 rounded">Name</code>,{' '}
+                <code className="font-mono bg-muted px-1 rounded">Phone</code>), use a detecção:
+              </p>
+              <ol className="text-xs text-muted-foreground mt-2 list-decimal list-inside space-y-0.5">
+                <li>Abra sua landing page real no browser</li>
+                <li>Abra o DevTools console (F12 → Console)</li>
+                <li>Cole o script abaixo e tecle Enter</li>
+                <li>O body snippet customizado vai pro seu clipboard</li>
+                <li>Cole no Framer (antes de <code className="font-mono bg-muted px-1 rounded">&lt;/body&gt;</code>)</li>
+              </ol>
+            </div>
+
+            <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto max-h-64">
+              <pre className="whitespace-pre-wrap break-all">
+                {buildDetectionScript(formSelector, baseUrl, launchPublicId, pagePublicId, checkoutUrl)}
+              </pre>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await navigator.clipboard.writeText(
+                  buildDetectionScript(formSelector, baseUrl, launchPublicId, pagePublicId, checkoutUrl),
+                );
+                setDetectionCopied(true);
+                setTimeout(() => setDetectionCopied(false), 2_000);
+              }}
+              aria-label="Copiar script de detecção"
+              className="gap-1.5"
+            >
+              {detectionCopied ? (
+                <>
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                  Copiado!
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4" aria-hidden="true" />
+                  Copiar script de detecção
+                </>
+              )}
+            </Button>
+          </div>
         </CardContent>
       </Card>
+
+      {/* Eventos customizados — wire de seletores DOM */}
+      {eventConfig.custom.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Eventos customizados (clique em elementos)
+            </CardTitle>
+            <CardDescription>
+              Para cada evento <code className="font-mono text-xs bg-muted px-1 rounded">custom:*</code>{' '}
+              configurado nesta page, informe o seletor CSS do elemento que dispara
+              o clique. O snippet gerado adiciona um listener para cada par
+              (seletor, evento) e chama{' '}
+              <code className="font-mono text-xs bg-muted px-1 rounded">Funil.track()</code> com o prefixo{' '}
+              <code className="font-mono text-xs bg-muted px-1 rounded">custom:</code> exigido pelo processor (BR-EVENT-001).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-2">
+              {eventConfig.custom.map((eventName) => (
+                <div key={eventName} className="grid grid-cols-[1fr_2fr] gap-2 items-center">
+                  <code className="font-mono text-xs bg-muted px-2 py-1 rounded truncate">
+                    custom:{eventName}
+                  </code>
+                  <input
+                    value={customEventSelectors[eventName] ?? ''}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setCustomEventSelectors((prev) => ({
+                        ...prev,
+                        [eventName]: e.target.value,
+                      }))
+                    }
+                    placeholder={`[data-gt="${eventName}"]  OU  text:Quero Comprar`}
+                    className="flex h-8 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div className="relative rounded-md border bg-muted/50 p-3 font-mono text-xs overflow-x-auto max-h-64">
+              <pre className="whitespace-pre-wrap break-all">
+                {buildCustomEventsSnippet(
+                  eventConfig.custom.map((name) => ({
+                    eventName: name,
+                    selector: customEventSelectors[name] ?? '',
+                  })),
+                )}
+              </pre>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await navigator.clipboard.writeText(
+                  buildCustomEventsSnippet(
+                    eventConfig.custom.map((name) => ({
+                      eventName: name,
+                      selector: customEventSelectors[name] ?? '',
+                    })),
+                  ),
+                );
+                setCustomEventsCopied(true);
+                setTimeout(() => setCustomEventsCopied(false), 2_000);
+              }}
+              aria-label="Copiar snippet de eventos customizados"
+              className="gap-1.5"
+            >
+              {customEventsCopied ? (
+                <>
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                  Copiado!
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4" aria-hidden="true" />
+                  Copiar snippet
+                </>
+              )}
+            </Button>
+
+            <p className="text-xs text-muted-foreground">
+              <strong>Sintaxe aceita:</strong>
+            </p>
+            <ul className="text-xs text-muted-foreground list-disc list-inside space-y-0.5 -mt-2">
+              <li>
+                CSS:{' '}
+                <code className="font-mono bg-muted px-1 rounded">[data-gt="x"]</code>,{' '}
+                <code className="font-mono bg-muted px-1 rounded">#id</code>,{' '}
+                <code className="font-mono bg-muted px-1 rounded">.classe</code>
+              </li>
+              <li>
+                Texto (recomendado em Framer/SPA sem custom attributes):{' '}
+                <code className="font-mono bg-muted px-1 rounded">text:Quero Comprar</code>{' '}
+                — bate por <code className="font-mono bg-muted px-1 rounded">textContent</code>{' '}
+                (normalizado, case-insensitive), com delegação no{' '}
+                <code className="font-mono bg-muted px-1 rounded">document</code> (sobrevive re-renders).
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Configuração de eventos */}
       <Card>

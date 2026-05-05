@@ -145,13 +145,16 @@ describe('POST /v1/lead', () => {
     expect(token).toContain('.');
 
     // __ftk cookie must be set with correct attributes
+    // BR-IDENTITY-005 hardening (Sprint 12, MEMORY §2 + §7 bug C12):
+    // SameSite=None + Secure (cross-origin LP ↔ Edge); HttpOnly dropped so
+    // tracker.js pode ler via document.cookie (INV-TRACKER-004).
     const setCookie = res.headers.get('Set-Cookie');
     expect(setCookie).toBeTruthy();
     expect(setCookie).toContain('__ftk=');
     expect(setCookie).toContain('Max-Age=5184000');
-    expect(setCookie).toContain('SameSite=Lax');
+    expect(setCookie).toContain('SameSite=None');
     expect(setCookie).toContain('Secure');
-    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).not.toContain('HttpOnly');
     expect(setCookie).toContain('Path=/');
 
     // BR-PRIVACY-001: email must not appear in response body

@@ -22,6 +22,7 @@ import {
   audienceSnapshots,
   audienceSyncJobs,
   audiences,
+  launches,
   leadConsents,
   leadIcpScores,
   leadStages,
@@ -51,25 +52,63 @@ export interface AudienceCtx {
 
 // BR-AUDIENCE-003: query_definition is a structured DSL — no free-form SQL.
 // Each condition object must have at least one field.
+//
+// T-FUNIL-040: vocabulary expanded to align with funnel_template_paid_workshop_v2
+// (migration 0031). Canonical fields are now `stage_eq`, `stage_not`, `stage_gte`.
+// Legacy fields `stage` and `not_stage` remain accepted as aliases for retro-compat
+// — this preserves existing DB rows and INV-AUDIENCE-003 (snapshotHash determinism)
+// for query_definitions written before the expansion.
+//
+// Semantics:
+//   - stage_eq: lead has the named stage in lead_stages (== legacy `stage`).
+//   - stage_not: lead does NOT have the named stage (== legacy `not_stage`).
+//   - stage_gte: lead has the named stage OR any stage that comes AFTER it in
+//     the ordered funnel_blueprint.stages[] of the audience's launch. Requires
+//     query_definition.launch_id to resolve the blueprint.
+//   - is_icp / purchased: unchanged.
 export const AudienceQueryConditionSchema = z
   .object({
+    // Canonical (preferred from T-FUNIL-040 forward)
+    stage_eq: z.string().optional(),
+    stage_not: z.string().optional(),
+    stage_gte: z.string().optional(),
+    // Legacy aliases (retained for retro-compat — see comment above)
     stage: z.string().optional(),
     not_stage: z.string().optional(),
+    // Other predicates (unchanged)
     is_icp: z.boolean().optional(),
     purchased: z.boolean().optional(),
   })
-  .refine((obj) => Object.keys(obj).length > 0, {
-    message: 'condition must have at least one field',
-  });
+  .refine(
+    (obj) =>
+      obj.stage_eq !== undefined ||
+      obj.stage_not !== undefined ||
+      obj.stage_gte !== undefined ||
+      obj.stage !== undefined ||
+      obj.not_stage !== undefined ||
+      obj.is_icp !== undefined ||
+      obj.purchased !== undefined,
+    { message: 'condition must have at least one field' },
+  );
 
 // INV-AUDIENCE-007: query_definition must be a builder DSL with at least one condition.
+//
+// `launch_id` (UUID string) is optional at schema level but REQUIRED at runtime
+// when any condition uses `stage_gte` — the evaluator resolves the funnel order
+// from launches.funnel_blueprint via this id. `launch_public_id` is informative
+// only (kept for traceability; not used by the evaluator).
 export const AudienceQueryDefinitionSchema = z.object({
   type: z.literal('builder'),
+  launch_id: z.string().optional(),
+  launch_public_id: z.string().optional(),
   all: z.array(AudienceQueryConditionSchema).min(1),
 });
 
 export type AudienceQueryDefinition = z.infer<
   typeof AudienceQueryDefinitionSchema
+>;
+export type AudienceQueryCondition = z.infer<
+  typeof AudienceQueryConditionSchema
 >;
 
 // ---------------------------------------------------------------------------
@@ -103,6 +142,78 @@ function djb2(str: string): number {
     hash |= 0; // force 32-bit int
   }
   return Math.abs(hash);
+}
+
+/**
+ * Load the ordered list of stage slugs from a launch's funnel_blueprint.
+ *
+ * T-FUNIL-040: required by `stage_gte` semantics. Reads launches.funnel_blueprint
+ * (jsonb, added by migration 0029) and returns blueprint.stages[].slug in the
+ * authoring order — this is the canonical ordering of the funnel.
+ *
+ * Returns null when:
+ *   - launch row not found
+ *   - funnel_blueprint column is null
+ *   - jsonb does not contain a stages[] array (malformed blueprint)
+ *
+ * BR-PRIVACY-001: launchId is a UUID, no PII.
+ *
+ * Note: we read only `stages[].slug` (not the full FunnelBlueprintSchema) to
+ * avoid coupling this domain helper to packages/shared. A malformed blueprint
+ * (missing/non-array stages) returns null and the evaluator surfaces a
+ * deterministic error — no silent fallback.
+ */
+async function loadFunnelStageOrder(
+  launchId: string,
+  db: Db,
+): Promise<string[] | null> {
+  // launches.funnel_blueprint may not be reflected in the Drizzle type yet
+  // (added by migration 0029) — use sql template, mirroring raw-events-processor.ts.
+  let rows: Array<{ funnelBlueprint: unknown }>;
+  try {
+    rows = await db
+      .select({ funnelBlueprint: sql<unknown>`funnel_blueprint` })
+      .from(launches)
+      .where(eq(launches.id, launchId))
+      .limit(1);
+  } catch {
+    return null;
+  }
+
+  const row = rows[0];
+  if (!row || row.funnelBlueprint === null || row.funnelBlueprint === undefined) {
+    return null;
+  }
+
+  // jsonb via sql template can come back as a string in some drivers — parse first.
+  const bp =
+    typeof row.funnelBlueprint === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(row.funnelBlueprint);
+          } catch {
+            return null;
+          }
+        })()
+      : row.funnelBlueprint;
+
+  if (
+    bp === null ||
+    typeof bp !== 'object' ||
+    !('stages' in bp) ||
+    !Array.isArray((bp as { stages: unknown }).stages)
+  ) {
+    return null;
+  }
+
+  const stages = (bp as { stages: Array<{ slug?: unknown }> }).stages;
+  const slugs: string[] = [];
+  for (const s of stages) {
+    if (s && typeof s === 'object' && typeof s.slug === 'string') {
+      slugs.push(s.slug);
+    }
+  }
+  return slugs;
 }
 
 /**
@@ -170,34 +281,94 @@ export async function evaluateAudience(
   // 2. Build the lead query with dynamic WHERE conditions
   //
   // Each condition in query_definition.all ANDs additional constraints:
-  //   {stage: 'X'}       → EXISTS lead_stages with stage='X'
-  //   {not_stage: 'X'}   → NOT EXISTS lead_stages with stage='X'
-  //   {is_icp: true}     → EXISTS lead_icp_scores with is_icp=true
-  //   {purchased: true}  → EXISTS lead_stages with stage='purchased'
-  //   {purchased: false} → NOT EXISTS lead_stages with stage='purchased'
+  //   {stage_eq: 'X'} | {stage: 'X'}     → EXISTS lead_stages with stage='X'
+  //   {stage_not: 'X'} | {not_stage: 'X'}→ NOT EXISTS lead_stages with stage='X'
+  //   {stage_gte: 'X'}                   → EXISTS lead_stages with stage IN
+  //                                        (X, ...stages after X in funnel_blueprint order)
+  //   {is_icp: true}                     → EXISTS lead_icp_scores with is_icp=true
+  //   {purchased: true}                  → EXISTS lead_stages with stage='purchased'
+  //   {purchased: false}                 → NOT EXISTS lead_stages with stage='purchased'
+  //
+  // T-FUNIL-040: canonical fields (stage_eq / stage_not / stage_gte) align with
+  // the vocabulary written by funnel_template_paid_workshop_v2 (migration 0031).
+  // Legacy `stage` / `not_stage` continue to be accepted as aliases.
+
+  // Determine if any condition needs the funnel stage order (only stage_gte does).
+  const needsStageOrder = queryDef.all.some(
+    (c) => c.stage_gte !== undefined,
+  );
+
+  let stageOrder: string[] | null = null;
+  if (needsStageOrder) {
+    if (!queryDef.launch_id) {
+      // INV-AUDIENCE-007: stage_gte requires launch_id to resolve funnel ordering.
+      throw new Error(
+        'invalid_query_definition: stage_gte requires launch_id at the top of query_definition',
+      );
+    }
+    stageOrder = await loadFunnelStageOrder(queryDef.launch_id, db);
+    if (stageOrder === null) {
+      // Deterministic failure — do not silently degrade. The dispatcher will
+      // mark the sync job as failed and surface to operator.
+      throw new Error(
+        `invalid_query_definition: funnel_blueprint not loadable for launch_id=${queryDef.launch_id}`,
+      );
+    }
+  }
 
   // Use SQL fragment array; Drizzle's `and()` accepts SQL<unknown> fragments directly.
   const dynConditions: SQL[] = [];
 
   for (const condition of queryDef.all) {
-    if (condition.stage !== undefined) {
-      const stageVal = condition.stage;
+    // stage_eq + legacy alias `stage` — both mean "lead has this stage".
+    const stageEqVal = condition.stage_eq ?? condition.stage;
+    if (stageEqVal !== undefined) {
       dynConditions.push(
         sql`EXISTS (
           SELECT 1 FROM ${leadStages} ls
           WHERE ls.lead_id = ${leads.id}
-          AND ls.stage = ${stageVal}
+          AND ls.stage = ${stageEqVal}
         )`,
       );
     }
 
-    if (condition.not_stage !== undefined) {
-      const notStageVal = condition.not_stage;
+    // stage_not + legacy alias `not_stage` — both mean "lead does NOT have this stage".
+    const stageNotVal = condition.stage_not ?? condition.not_stage;
+    if (stageNotVal !== undefined) {
       dynConditions.push(
         sql`NOT EXISTS (
           SELECT 1 FROM ${leadStages} ls
           WHERE ls.lead_id = ${leads.id}
-          AND ls.stage = ${notStageVal}
+          AND ls.stage = ${stageNotVal}
+        )`,
+      );
+    }
+
+    // stage_gte — lead has the named stage OR any stage that appears AFTER it in
+    // the funnel_blueprint.stages[] order. T-FUNIL-040.
+    if (condition.stage_gte !== undefined) {
+      const targetStage = condition.stage_gte;
+      // stageOrder is non-null here (we checked needsStageOrder above and threw on null).
+      const order = stageOrder as string[];
+      const idx = order.indexOf(targetStage);
+      if (idx === -1) {
+        // Stage not part of this launch's funnel — deterministic error so operator can fix
+        // the audience query_definition rather than silently returning empty set.
+        throw new Error(
+          `invalid_query_definition: stage_gte target "${targetStage}" not found in funnel_blueprint stages`,
+        );
+      }
+      const matchingStages = order.slice(idx);
+      // Build a parameterised IN list (sql.join keeps each value as a parameter).
+      const stagesList = sql.join(
+        matchingStages.map((s) => sql`${s}`),
+        sql`, `,
+      );
+      dynConditions.push(
+        sql`EXISTS (
+          SELECT 1 FROM ${leadStages} ls
+          WHERE ls.lead_id = ${leads.id}
+          AND ls.stage IN (${stagesList})
         )`,
       );
     }

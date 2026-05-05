@@ -1,0 +1,75 @@
+<!--
+  Snippet canônico — Page `obrigado-principal` (role: thankyou, funnel_role: main_offer)
+  Funil B v2 — `lancamento_pago_workshop_com_main_offer` — Sprint 12
+
+  Papel desta page no funil:
+    - É a thank-you do Purchase do main_offer.
+    - Stage `purchased_main` é disparado pelo webhook Guru server-side
+      (NÃO client-side). Esta page só registra `PageView` para fechar o funil
+      visualmente.
+
+  Contrato com o tracker.js:
+    - event_config canonical = `["PageView","Purchase"]`. Purchase chega via
+      Guru webhook; client-side cuida só do PageView.
+    - Sem listeners adicionais — page é mínima.
+
+  IMPORTANTE — TOKEN PENDENTE:
+    O `data-site-token` abaixo é placeholder. Após T-FUNIL-030 ser aplicada na
+    cloud, a migration emitirá `RAISE NOTICE` com o page_token clear. Substitua
+    `04e8724b77005b79c8dcd62f8e65140b422f23cbeb1f307abd31a14940492793` pelo valor emitido antes de colar no Framer.
+
+  BRs aplicáveis:
+    - BR-IDENTITY-005: lead_token vem de `localStorage('__gt_ftk')` (cross-origin).
+    - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente.
+-->
+
+<!-- ============================== -->
+<!-- COLAR EM <head> NO FRAMER     -->
+<!-- ============================== -->
+<!-- TODO Tiago: trocar 04e8724b77005b79c8dcd62f8e65140b422f23cbeb1f307abd31a14940492793 pelo token emitido em -->
+<!-- T-FUNIL-030 (RAISE NOTICE da migration 0031) antes de publicar.      -->
+<script
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
+  data-site-token="04e8724b77005b79c8dcd62f8e65140b422f23cbeb1f307abd31a14940492793"
+  data-launch-public-id="wkshop-cs-jun26"
+  data-page-public-id="obrigado-principal"
+  data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
+  async
+></script>
+
+<!-- ============================== -->
+<!-- COLAR ANTES DE </body> NO FRAMER -->
+<!-- ============================== -->
+<script>
+(function(){
+  // Sem evento `gt:ready` no bundle (verificado em apps/tracker/src/index.ts);
+  // polling 50ms × 40 (~2s) com fallback silencioso.
+  function withTracker(cb){
+    if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
+    var tries = 0;
+    var t = setInterval(function(){
+      tries++;
+      if (window.Funil) { clearInterval(t); try { cb(window.Funil); } catch (e) {} }
+      else if (tries >= 40) { clearInterval(t); /* fail silently */ }
+    }, 50);
+  }
+
+  function boot(){
+    var token = null;
+    try { token = localStorage.getItem('__gt_ftk'); } catch (e) {}
+    withTracker(function(F){
+      if (token) F.identify({ lead_token: token });
+      // Disparamos PageView explicitamente; tracker dedupa por event_id em
+      // sessionStorage se auto_page_view também estiver ligado.
+      F.page();
+      // Purchase NÃO é client-side — chega via webhook Guru server-side.
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
+  }
+})();
+</script>

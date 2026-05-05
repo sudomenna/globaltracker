@@ -239,6 +239,7 @@ pagesRoute.get('/', async (c) => {
         url: pages.url,
         allowedDomains: pages.allowedDomains,
         status: pages.status,
+        eventConfig: pages.eventConfig,
         createdAt: pages.createdAt,
       })
       .from(pages)
@@ -252,6 +253,7 @@ pagesRoute.get('/', async (c) => {
         url: pages.url,
         allowedDomains: pages.allowedDomains,
         status: pages.status,
+        eventConfig: pages.eventConfig,
         createdAt: pages.createdAt,
       })
       .from(pages)
@@ -267,6 +269,7 @@ pagesRoute.get('/', async (c) => {
       url: r.url,
       allowed_domains: r.allowedDomains,
       status: r.status,
+      event_config: r.eventConfig,
       created_at: r.createdAt.toISOString(),
     })),
     request_id: requestId,

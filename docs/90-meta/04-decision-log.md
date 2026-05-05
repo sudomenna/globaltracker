@@ -656,6 +656,66 @@ Aceito (2026-05-02). Fecha OQ-013.
 
 ---
 
+## ADR-026 — Realinhamento template `lancamento_pago_workshop_com_main_offer` ao fluxo operacional real (Sprint 12)
+
+### Status
+Aceito (2026-05-04).
+
+### Contexto
+O template `lancamento_pago_workshop_com_main_offer` (seed em `0029_funnel_templates.sql`) foi desenhado na Fase 2 antes de existir um lançamento real validando-o. O E2E usability test do `wkshop-cs-jun26` (Outsiders Digital, sessão de 2026-05-04) revelou divergências estruturais entre o template e o fluxo operacional efetivamente praticado pelo operador:
+
+- Template assumia múltiplas aulas (`watched_class_1/2/3`), mas o workshop real é evento único.
+- Template esperava `InitiateCheckout` client-side em pages de venda; na prática, o checkout vive no Digital Manager Guru e o sinal de IC só é capturável via webhook (a investigar em sprint futuro).
+- Template não previa stage de `survey_responded`, mas a `obrigado-workshop` real é uma página de pesquisa antes do botão WhatsApp.
+- Template não previa page de aula separada; a aula precisa de uma `aula-workshop` (role=`webinar`) com tracking próprio.
+- `event_config` defasado: faltava `Lead` na page de captura, faltavam `Contact` + `survey_responded` na thankyou, e `oferta-principal` esperava `InitiateCheckout` que não existe client-side.
+
+Sprint 12 fecha o gap atualizando o template canônico (v2) e realinhando o launch real `wkshop-cs-jun26` para a forma nova.
+
+### Decisão
+- **D1.** `InitiateCheckout` (workshop e main) virá do Guru — load do checkout ou webhook intermediário, **a investigar pós-sprint**. IC fica fora dos stages do template Sprint 12; entra como input futuro para dispatcher Meta CAPI.
+- **D2.** Após `Purchase` do workshop, lead é redirecionado para `obrigado-workshop`, que muda de papel para **página de pesquisa + botão WhatsApp ao final**. Fluxo: `Purchase` → `custom:survey_responded` → `Contact` (clique no botão WhatsApp).
+- **D3.** Aula vive em page nova `aula-workshop` (role=`webinar`); MVP é binário com botão "Já assisti". Evolução planejada (Zoom webhook attendance ou heartbeat Vimeo) fica em backlog.
+- **D4.** Tracking da aula é **binário** (`custom:watched_workshop` → 1 stage `watched_workshop`). Sem granularidade `_25/_50/_90` por enquanto.
+- **D5.** Click "Quero Comprar" antes da popup de captura vira stage `clicked_buy_workshop` via `custom:click_buy_workshop`. Custom event client-side; iOS funciona via first-party fetch ao Edge Worker (cookie `__ftk` cross-origin já resolvido com `SameSite=None; Secure`).
+- **D6.** `oferta-principal` **sem popup**; `clicked_buy_main` vem de `custom:click_buy_main` no botão da page main. Page main perde `Lead` do `event_config` e ganha o custom event de intent.
+
+### Alternativas consideradas
+- **Manter template original e tratar diferenças por workspace override**: viável tecnicamente, mas força cada operador a recriar a forma "real" — perde valor do template canônico. Rejeitado.
+- **Tentar capturar IC client-side via redirect intermediário**: complexo (reverse-proxy do checkout Guru), depende do plano Guru e quebra UX. Adiado para investigação posterior.
+- **Granularidade de aula via heartbeat já no MVP**: requer player embedded controlado; LP atual usa redirect externo. Rejeitado para MVP — backlog.
+
+### Consequências
+- (+) Template v2 reflete fluxo operacional real; novos lançamentos partem de blueprint validado em produção.
+- (+) Custom events (`custom:*`) cobrem intents (`click_buy_*`) sem depender de IC do provider — reduz surface de falha.
+- (+) Page `aula-workshop` separada permite evoluir tracking de attendance no futuro sem alterar pages de venda.
+- (−) Stages de `InitiateCheckout` (workshop e main) ficam **fora** do template Sprint 12; investigação Guru webhook fica como ADR/Sprint futuro (potencial Sprint 14, ADR-027 ou seguinte).
+- (−) Tracking de aula é binário e tem viés (operador pode clicar sem assistir); evolução para Zoom webhook ou Vimeo heartbeat planejada — fora do MVP.
+- (−) `oferta-principal` perde `Lead` do `event_config` (não há popup); ganho de `custom:click_buy_main` é compensação parcial — leads que chegam à oferta principal sem ter passado pelo workshop ficam anônimos até IC do Guru (D1).
+- (−) Migration `0031` precisa ser idempotente e preservar `lead_stages` históricos; já é critério da T-FUNIL-030.
+
+### Impacta
+`MOD-FUNNEL`, `MOD-LAUNCH`, `MOD-PAGE`, template seed em `packages/db/migrations/0031_funnel_template_paid_workshop_v2.sql`, doc canônica em [`docs/20-domain/06-mod-funnel.md`](../20-domain/06-mod-funnel.md), [`docs/20-domain/02-mod-launch.md`](../20-domain/02-mod-launch.md), [`docs/20-domain/03-mod-page.md`](../20-domain/03-mod-page.md), e [`docs/80-roadmap/funil-templates-plan.md`](../80-roadmap/funil-templates-plan.md). Sprint de execução: [`docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md`](../80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md). Investigação IC via Guru entra como ADR futuro (ADR-027 ou seguinte).
+
+### Refinamento pós-implementação (2026-05-04) — Reorder cronológico de stages
+
+Durante validação no Control Plane do template v2 já aplicado em produção, o operador detectou que a ordem dos dois primeiros stages contradiz o fluxo cronológico real:
+
+- **Ordem original (v2 inicial):** `lead_workshop` (1) → `clicked_buy_workshop` (2) → ...
+- **Ordem alvo (cronologicamente correta):** `clicked_buy_workshop` (1) → `lead_workshop` (2) → ...
+
+**Justificativa:** no fluxo real (validado em `wkshop-cs-jun26`), o lead clica o botão **"Quero Comprar"** **antes** que a popup de captura abra e o form seja preenchido. Logo, `clicked_buy_workshop` é a porta de entrada do funil; `lead_workshop` ocorre **após** o submit do form. Forma cronológica reflete intenção operacional do operador para análises de funil (taxas de conversão "intent → form fill") e para futura semântica de `stage_gte` (T-FUNIL-040).
+
+**Aplicação:**
+- Migration `0032_reorder_stages_paid_workshop_v2.sql` (idempotente, espelhada em `supabase/migrations/`): swap de `blueprint.stages[0]` e `blueprint.stages[1]` no `funnel_templates` (template canônico) e em `launches.funnel_blueprint` dos snapshots já existentes do template.
+- Re-run da migration é noop (verifica estado pré e alvo).
+- **Sem regressão funcional:** nenhuma das 6 audiences do template usa `stage_gte` com `lead_workshop` ou `clicked_buy_workshop`; matching por `event_name` em `BlueprintStage.source_events` é independente de ordem (BR-EVENT-001).
+- **Sem regressão de dados:** `lead_stages` históricos preservados (a migration não toca instâncias).
+
+**Status:** ADR-026 permanece **Aceito**; este refinamento é um ajuste cronológico interno à decisão original (D5 — `clicked_buy_workshop` via custom event), não nova decisão arquitetural. Nenhum impacto em outras BRs/INVs/contracts.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

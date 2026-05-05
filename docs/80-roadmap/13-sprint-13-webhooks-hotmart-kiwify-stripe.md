@@ -28,6 +28,14 @@ Adicionar suporte a webhooks inbound das principais plataformas BR/global: Hotma
 - T-13-003: adapter Stripe (handler + mapper, raw body obrigatório).
 - T-13-004: testes E2E FLOW-04 para Hotmart, Kiwify, Stripe.
 
+### T-IDs de cleanup herdadas do Sprint 12
+
+Falhas pré-existentes detectadas durante a verificação consolidada do Sprint 12 (descobertas por T-FUNIL-039 e T-FUNIL-041), fora do escopo Sprint 12 e realocadas para este sprint:
+
+- **T-13-005** — `tests/integration/routes/config.test.ts:443` — fallback "200 quando DB binding ausente" não retorna o esperado. Investigar `apps/edge/src/routes/config.ts` para o caminho `env.DB === undefined`.
+- **T-13-006** — `tests/integration/routes/integrations-test.test.ts:235` — Zod `.strict()` não rejeita extra fields no `POST /v1/integrations/:provider/test`. Possível downgrade do schema em refactor recente — verificar com `git log -p apps/edge/src/routes/integrations-test.ts`.
+- **T-13-007** — `tests/integration/webhooks/stripe-signature.test.ts:148` — ADR-022 tolerance window off-by-one no `verifyStripeSignature`. Confirmar inequalidade `<= 300` vs `< 300` na implementação atual e alinhar com a doc do ADR.
+
 ## Referências de integração
 
 - [`docs/40-integrations/07-hotmart-webhook.md`](../40-integrations/07-hotmart-webhook.md)

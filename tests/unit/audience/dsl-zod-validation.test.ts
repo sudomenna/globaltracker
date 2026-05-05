@@ -122,4 +122,44 @@ describe('AudienceQueryConditionSchema condition validation', () => {
     const result = AudienceQueryConditionSchema.safeParse({});
     expect(result.success).toBe(false);
   });
+
+  // T-FUNIL-040: canonical vocabulary stage_eq / stage_not / stage_gte
+  it('T-FUNIL-040: accepts canonical stage_eq', () => {
+    const result = AudienceQueryConditionSchema.safeParse({
+      stage_eq: 'purchased_main',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('T-FUNIL-040: accepts canonical stage_not', () => {
+    const result = AudienceQueryConditionSchema.safeParse({
+      stage_not: 'purchased_main',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('T-FUNIL-040: accepts canonical stage_gte', () => {
+    const result = AudienceQueryConditionSchema.safeParse({
+      stage_gte: 'watched_workshop',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('T-FUNIL-040: accepts combined stage_gte + stage_not (used by template v2)', () => {
+    const result = AudienceQueryConditionSchema.safeParse({
+      stage_gte: 'watched_workshop',
+      stage_not: 'purchased_main',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('T-FUNIL-040: AudienceQueryDefinition accepts launch_id + launch_public_id at top level', () => {
+    const result = AudienceQueryDefinitionSchema.safeParse({
+      type: 'builder',
+      launch_id: '11111111-1111-1111-1111-111111111111',
+      launch_public_id: 'wkshop-cs-jun26',
+      all: [{ stage_gte: 'watched_workshop' }],
+    });
+    expect(result.success).toBe(true);
+  });
 });

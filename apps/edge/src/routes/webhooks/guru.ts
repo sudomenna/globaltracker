@@ -104,18 +104,35 @@ async function timingSafeTokenEqual(a: string, b: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Dual-mode argument accepted by `createGuruWebhookRoute`.
+ *
+ * - `Db` (direct instance): legacy form used by integration / e2e tests that
+ *   already hold a Drizzle handle. Resolved synchronously per request.
+ * - `(env: AppBindings) => Db` (factory): production form used by `apps/edge/src/index.ts`,
+ *   where the DB connection must be created lazily from `env` (Hyperdrive bindings
+ *   are only available inside the request scope on Cloudflare Workers).
+ *
+ * The runtime distinguishes via `typeof === 'function'`. This dual signature
+ * preserves backwards compatibility with the test suite while keeping the
+ * env-scoped factory used in production.
+ */
+type DbOrFactory = Db | ((env: AppBindings) => Db);
+
+/**
  * Creates the Guru webhook sub-router.
  *
- * @param getDb - Factory that receives env bindings and returns a Drizzle DB instance.
- *                Undefined in tests without DB (all DB operations are skipped).
+ * @param dbOrFactory - Either a Drizzle DB instance directly (legacy/test path)
+ *                      or a factory `(env) => Db` (production path with Hyperdrive).
+ *                      Undefined in tests without DB (all DB operations are skipped).
  */
 export function createGuruWebhookRoute(
-  getDb?: (env: AppBindings) => Db,
+  dbOrFactory?: DbOrFactory,
 ): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
 
   router.post('/', async (c) => {
-    const db = getDb?.(c.env);
+    const db =
+      typeof dbOrFactory === 'function' ? dbOrFactory(c.env) : dbOrFactory;
     // -----------------------------------------------------------------------
     // Step 1: Read raw body text BEFORE parse
     // BR-WEBHOOK-001: raw body must be read first (pattern established for
@@ -129,14 +146,47 @@ export function createGuruWebhookRoute(
       return c.json({ error: 'bad_request' }, 400);
     }
 
+    const debugContentType = c.req.header('content-type') ?? '';
+
     // -----------------------------------------------------------------------
-    // Step 2: Parse JSON body
+    // Step 2: Parse JSON body — fallback to form-urlencoded (Guru envia assim)
     // -----------------------------------------------------------------------
     let body: Record<string, unknown>;
     try {
       body = JSON.parse(rawBodyText) as Record<string, unknown>;
     } catch {
-      return c.json({ error: 'invalid_json' }, 400);
+      // Try form-urlencoded fallback. Guru envia application/x-www-form-urlencoded.
+      try {
+        const params = new URLSearchParams(rawBodyText);
+        const obj: Record<string, unknown> = {};
+        params.forEach((v, k) => {
+          // Re-parse JSON-shaped values (Guru envia objetos aninhados como JSON-string).
+          if ((v.startsWith('{') && v.endsWith('}')) || (v.startsWith('[') && v.endsWith(']'))) {
+            try { obj[k] = JSON.parse(v); return; } catch { /* fall through */ }
+          }
+          obj[k] = v;
+        });
+        if (Object.keys(obj).length === 0) {
+          safeLog('warn', {
+            event: 'guru_webhook_unparseable',
+            request_id: requestId,
+            content_type: debugContentType,
+            body_preview: rawBodyText.slice(0, 200),
+            body_length: rawBodyText.length,
+          });
+          return c.json({ error: 'invalid_body' }, 400);
+        }
+        body = obj;
+      } catch {
+        safeLog('warn', {
+          event: 'guru_webhook_unparseable',
+          request_id: requestId,
+          content_type: debugContentType,
+          body_preview: rawBodyText.slice(0, 200),
+          body_length: rawBodyText.length,
+        });
+        return c.json({ error: 'invalid_json' }, 400);
+      }
     }
 
     // -----------------------------------------------------------------------
@@ -145,6 +195,12 @@ export function createGuruWebhookRoute(
     // -----------------------------------------------------------------------
     const receivedToken = body.api_token;
     if (typeof receivedToken !== 'string' || receivedToken.length === 0) {
+      safeLog('warn', {
+        event: 'guru_webhook_missing_api_token',
+        request_id: requestId,
+        content_type: debugContentType,
+        body_keys: Object.keys(body),
+      });
       return c.json({ error: 'unauthorized' }, 400);
     }
 

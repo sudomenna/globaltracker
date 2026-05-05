@@ -59,12 +59,33 @@ const GuruRawEventPayloadSchema = z
       .optional(),
     source: z
       .object({
-        pptc: z.string().nullish(),
-        utm_source: z.string().nullish(),
-        utm_campaign: z.string().nullish(),
-        utm_medium: z.string().nullish(),
-        utm_content: z.string().nullish(),
-        utm_term: z.string().nullish(),
+        // Guru envia `[]` (array vazio) quando o campo não tem valor — coercer
+        // para null antes do parse de string. Defensive em todos os campos
+        // do source porque a API pode emitir array vazio em qualquer um deles.
+        pptc: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
+        utm_source: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
+        utm_campaign: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
+        utm_medium: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
+        utm_content: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
+        utm_term: z.preprocess(
+          (v) => (Array.isArray(v) ? null : v),
+          z.string().nullish(),
+        ),
       })
       .optional(),
     payment: z
@@ -377,7 +398,15 @@ export async function processGuruRawEvent(
   // -------------------------------------------------------------------------
   // Step 4: Insert events row
   // INV-EVENT-001: (workspace_id, event_id) unique
-  // BR-EVENT-002: idempotency via unique violation catch
+  // BR-EVENT-002: idempotency via pre-insert lookup
+  //
+  // NOTE: Tabela `events` é PARTITIONED BY RANGE (received_at). UNIQUE constraint
+  // técnica é (workspace_id, event_id, received_at) — particionamento exige.
+  // Não dá pra contar com ON CONFLICT/unique violation porque retries de webhook
+  // chegam com received_at diferente e PASSAM no constraint, criando duplicatas.
+  // Por isso fazemos SELECT prévio por (workspace_id, event_id) e tratamos como
+  // idempotent success se já existir. Cobre todos os retries do Guru (e qualquer
+  // outro provider que reentregue webhook).
   // -------------------------------------------------------------------------
 
   const eventTime = (() => {
@@ -388,6 +417,37 @@ export async function processGuruRawEvent(
     }
     return new Date();
   })();
+
+  // Pre-insert idempotency lookup
+  const existingEvent = await db
+    .select({ id: events.id })
+    .from(events)
+    .where(
+      and(
+        eq(events.workspaceId, rawEvent.workspaceId),
+        eq(events.eventId, payload._guru_event_id),
+      ),
+    )
+    .limit(1);
+
+  if (existingEvent[0]) {
+    safeLog('info', {
+      event: 'guru_webhook_duplicate_skipped',
+      raw_event_id,
+      workspace_id: rawEvent.workspaceId,
+      event_id: payload._guru_event_id,
+      existing_event_uuid: existingEvent[0].id,
+    });
+    await markRawEventProcessed(raw_event_id, db);
+    return {
+      ok: true,
+      value: {
+        event_id: payload._guru_event_id,
+        dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
+      },
+    };
+  }
 
   let insertedEventId: string;
 

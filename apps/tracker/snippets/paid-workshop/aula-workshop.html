@@ -1,0 +1,197 @@
+<!--
+  Page: aula-workshop  (Funil B v2 — lancamento_pago_workshop_com_main_offer)
+  Role: webinar  |  Funnel role: workshop  |  Launch: wkshop-cs-jun26
+
+  Papel desta page no Funil B v2:
+    Page de aula gravada/ao vivo do workshop. O lead já comprou o workshop
+    (stage `purchased_workshop`) e chega aqui para assistir. Ao confirmar
+    que assistiu, dispara `custom:watched_workshop` → stage `watched_workshop`,
+    que entra na audience `engajados_workshop`.
+
+  MVP binário (D3/D4 — Sprint 12):
+    1 stage só (`watched_workshop`). Sem granularidade `_25/_50/_90`.
+    O lead clica o botão "Já assisti" (auto-declaração) e isso vira o stage.
+    Tem viés (operador clica sem assistir) — aceito no MVP.
+
+  Evolução futura (pós-Sprint 12, ver §"Sobre tracking da aula" do roadmap 12):
+    1) Zoom Webinar/Meeting: webhook `webinar.participant_joined`/`participant_left`
+       com `duration` por participante. Match por email do lead. Stages
+       granulares (`attended_workshop_5min`, `attended_workshop_30min`...).
+    2) Vimeo Live + heartbeat: player embedded; heartbeat a cada 30s via
+       `Funil.track('custom:watched_heartbeat', { sec: N })`. Stages calculados
+       no processor somando heartbeats. Backlog.
+
+  Substituições antes de colar no Framer:
+    - `5f376c162fba3577268325b0aa25e6af3baafbda853e7b73c87e41bd19c93aaf` → token real da page `aula-workshop`,
+      emitido por RAISE NOTICE quando T-FUNIL-030 (migration 0031) for aplicada.
+    - O botão "Já assisti" no Framer precisa ter `data-gt-watched` no atributo
+      custom (preferido) — caso contrário o snippet faz fallback por texto.
+      Ver TODO no <body> abaixo.
+
+  BRs aplicáveis:
+    - BR-EVENT-001: prefixo `custom:` é matching exato no processor; o nome
+      enviado deve ser literal `custom:watched_workshop`.
+    - BR-IDENTITY-005: identidade cross-origin via `__gt_ftk` no localStorage
+      (cookies não atravessam Framer ↔ Guru ↔ aula-workshop). Backend gera
+      o token; tracker apenas lê.
+-->
+
+
+<!-- ============================================================ -->
+<!-- BLOCO 1 — colar no <head> da page Framer "aula-workshop"      -->
+<!-- ============================================================ -->
+<script
+  src="https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js"
+  data-site-token="5f376c162fba3577268325b0aa25e6af3baafbda853e7b73c87e41bd19c93aaf"
+  data-launch-public-id="wkshop-cs-jun26"
+  data-page-public-id="aula-workshop"
+  data-edge-url="https://globaltracker-edge.globaltracker.workers.dev"
+  async
+></script>
+
+
+<!-- ============================================================ -->
+<!-- BLOCO 2 — colar antes de </body> (custom code Framer "End of  -->
+<!-- body"). IIFE; sem dependências externas; PT-BR nos comentários -->
+<!-- ============================================================ -->
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------
+  // withTracker(cb): aguarda a API global window.Funil ficar pronta.
+  // O entry point do tracker (apps/tracker/src/index.ts) instala
+  // window.Funil sincronamente assim que o <script> async é parseado,
+  // mas a inicialização interna (fetch de /v1/config + leitura do
+  // cookie __ftk) é assíncrona e roda em DOMContentLoaded.
+  //
+  // NÃO existe um evento `gt:ready` no tracker atual (verificado em
+  // apps/tracker/src/index.ts). Polling é a única opção robusta.
+  // ---------------------------------------------------------------
+  function withTracker(cb) {
+    if (window.Funil && typeof window.Funil.track === 'function') {
+      try { cb(window.Funil); } catch (e) { /* fail silently */ }
+      return;
+    }
+    var tries = 0;
+    var iv = setInterval(function () {
+      tries++;
+      if (window.Funil && typeof window.Funil.track === 'function') {
+        clearInterval(iv);
+        try { cb(window.Funil); } catch (e) { /* fail silently */ }
+      } else if (tries >= 40) {
+        // 40 × 50ms = 2s de timeout; tracker.js não carregou ou falhou
+        // INV-TRACKER-007: degradar silenciosamente, sem quebrar a page
+        clearInterval(iv);
+      }
+    }, 50);
+  }
+
+  // ---------------------------------------------------------------
+  // Identify + PageView. Tem que rodar antes do click do botão para
+  // que `custom:watched_workshop` saia já com `lead_token` no payload.
+  //
+  // BR-IDENTITY-005: lê __gt_ftk do localStorage (escrito na page
+  // workshop quando o form de Lead foi submetido com sucesso).
+  // ---------------------------------------------------------------
+  withTracker(function (Funil) {
+    var token = null;
+    try { token = window.localStorage.getItem('__gt_ftk'); } catch (e) {}
+
+    if (token) {
+      Funil.identify({ lead_token: token });
+    } else {
+      // Lead chegou em aula-workshop sem ter passado pelo form na page
+      // workshop — ou localStorage foi limpo (ITP, modo anônimo, device
+      // novo). PageView ainda é registrado (anônimo); o stage
+      // `watched_workshop` SÓ vai disparar de fato no processor se o
+      // click acontecer e o lead estiver identificado por algum outro
+      // canal (ex.: voltou para captura-v1 antes). Aceitável no MVP.
+      try {
+        console.warn('[gt] aula-workshop sem __gt_ftk no localStorage — ' +
+                     'lead anônimo; PageView registra mas stage não dispara');
+      } catch (e) {}
+    }
+
+    // PageView (auto_page_view do tracker pode estar habilitado pelo
+    // /v1/config, mas chamamos manualmente para garantir que ocorra
+    // DEPOIS do identify acima — assim o evento já carrega lead_token).
+    Funil.page();
+  });
+
+  // ---------------------------------------------------------------
+  // Botão "Já assisti" → custom:watched_workshop
+  //
+  // Seletor primário: [data-gt-watched]
+  //   TODO Tiago: no Framer, abrir as configurações do botão "Já
+  //   assisti" e adicionar atributo custom `data-gt-watched` (sem
+  //   valor). É a forma mais robusta — independe de copy.
+  //
+  // Fallback: qualquer <button>/<a>/elemento clicável cujo texto
+  // contenha "já assisti" (case-insensitive, com/sem acento). Útil
+  // enquanto Tiago não adiciona o data-attribute.
+  //
+  // Idempotência: flag `watched` previne duplo-track no mesmo
+  // carregamento (o processor dedupa por event_id no servidor, mas
+  // economiza request de rede). Nova navegação para a page volta a
+  // permitir o evento (intencional — re-confirmar assistência se a
+  // sessão foi recarregada conta como novo "watched_workshop";
+  // o stage é idempotente por (lead_id, stage) no DB).
+  // ---------------------------------------------------------------
+  var watched = false;
+
+  function looksLikeJaAssisti(el) {
+    if (!el) return false;
+    if (el.matches && el.matches('[data-gt-watched]')) return true;
+    var txt = (el.textContent || '').trim().toLowerCase();
+    if (!txt) return false;
+    // Aceita "já assisti", "ja assisti", "Já Assisti", "JÁ ASSISTI"
+    return txt.indexOf('já assisti') !== -1 || txt.indexOf('ja assisti') !== -1;
+  }
+
+  function findClickable(start) {
+    var el = start;
+    var hops = 0;
+    while (el && hops < 5) {
+      if (
+        el.tagName === 'BUTTON' ||
+        el.tagName === 'A' ||
+        (el.getAttribute && el.getAttribute('role') === 'button') ||
+        (el.matches && el.matches('[data-gt-watched]'))
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+      hops++;
+    }
+    return null;
+  }
+
+  // BR-EVENT-001: nome literal `custom:watched_workshop` (matching
+  // exato no processor — sem normalização de prefixo no servidor).
+  function fireWatched() {
+    if (watched) return;
+    watched = true;
+    withTracker(function (Funil) {
+      Funil.track('custom:watched_workshop');
+    });
+  }
+
+  // Delegação no document para sobreviver a re-renders do Framer.
+  document.addEventListener(
+    'click',
+    function (ev) {
+      try {
+        var clickable = findClickable(ev.target);
+        if (!clickable) return;
+        if (looksLikeJaAssisti(clickable)) {
+          fireWatched();
+        }
+      } catch (e) {
+        // INV-TRACKER-007: erro no listener não pode quebrar a page
+      }
+    },
+    true /* capture: pega o evento antes de navegação/preventDefault da page */
+  );
+})();
+</script>

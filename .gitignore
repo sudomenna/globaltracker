@@ -66,5 +66,12 @@ test-results/
 # Plans dir (local-only)
 .claude/plans/
 
+# Local-only Claude Code runtime artifacts
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Playwright MCP runtime (snapshots, console logs)
+.playwright-mcp/
+
 # OS
 Thumbs.db

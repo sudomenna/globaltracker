@@ -43,14 +43,16 @@ Documentado em `docs/90-meta/04-decision-log.md` como ADR-026 (a criar em T-FUNI
 
 | ordem | slug | label | source_events | source_event_filters | is_recurring |
 |---|---|---|---|---|---|
-| 1 | `lead_workshop` | Lead identificado (workshop) | `["Lead"]` | — | false |
-| 2 | `clicked_buy_workshop` | Clicou comprar workshop | `["custom:click_buy_workshop"]` | — | true |
+| 1 | `clicked_buy_workshop` | Clicou comprar workshop | `["custom:click_buy_workshop"]` | — | true |
+| 2 | `lead_workshop` | Lead identificado (workshop) | `["Lead"]` | — | false |
 | 3 | `purchased_workshop` | Comprou workshop | `["Purchase"]` | `{"funnel_role":"workshop"}` | false |
 | 4 | `survey_responded` | Respondeu pesquisa | `["custom:survey_responded"]` | — | false |
 | 5 | `wpp_joined` | Entrou no WhatsApp | `["Contact"]` | — | false |
 | 6 | `watched_workshop` | Assistiu workshop | `["custom:watched_workshop"]` | — | false |
 | 7 | `clicked_buy_main` | Clicou comprar oferta principal | `["custom:click_buy_main"]` | — | true |
 | 8 | `purchased_main` | Comprou oferta principal | `["Purchase"]` | `{"funnel_role":"main_offer"}` | false |
+
+> **Reorder cronológico (refinamento pós-ADR-026, 2026-05-04).** Em fluxo real, o lead clica `Quero Comprar` antes do form de captura — `clicked_buy_workshop` é entrada de funil; `lead_workshop` segue após preenchimento do form. Reorder aplicado via migration `0032_reorder_stages_paid_workshop_v2.sql` (idempotente, espelhada em `supabase/migrations/`). Nenhuma das 6 audiences do template usa `stage_gte` com `lead_workshop`/`clicked_buy_workshop`, então sem regressão funcional. T-FUNIL-040 (DSL canônica de `stage_gte`) preserva semântica.
 
 ### Pages (5)
 

@@ -56,6 +56,41 @@ Tabela `funnel_templates`. Armazena presets do sistema e templates workspace-sco
 | `lancamento_pago_workshop_apenas` | `a1000000-0000-0000-0000-000000000003` |
 | `evergreen_direct_sale` | `a1000000-0000-0000-0000-000000000004` |
 
+#### Template `lancamento_pago_workshop_com_main_offer` — v2 (Sprint 12)
+
+Realinhado pela migration `0031_funnel_template_paid_workshop_v2.sql` (T-FUNIL-030) ao fluxo operacional real do launch `wkshop-cs-jun26`. ADR-026 documenta as decisões D1–D6 que guiaram o reshape.
+
+**Stages (8) — em ordem cronológica esperada:**
+
+| ordem | slug | label | source_events | source_event_filters | is_recurring |
+|---|---|---|---|---|---|
+| 1 | `clicked_buy_workshop` | Clicou comprar workshop | `["custom:click_buy_workshop"]` | — | true |
+| 2 | `lead_workshop` | Lead identificado (workshop) | `["Lead"]` | — | false |
+| 3 | `purchased_workshop` | Comprou workshop | `["Purchase"]` | `{"funnel_role":"workshop"}` | false |
+| 4 | `survey_responded` | Respondeu pesquisa | `["custom:survey_responded"]` | — | false |
+| 5 | `wpp_joined` | Entrou no WhatsApp | `["Contact"]` | — | false |
+| 6 | `watched_workshop` | Assistiu workshop | `["custom:watched_workshop"]` | — | false |
+| 7 | `clicked_buy_main` | Clicou comprar oferta principal | `["custom:click_buy_main"]` | — | true |
+| 8 | `purchased_main` | Comprou oferta principal | `["Purchase"]` | `{"funnel_role":"main_offer"}` | false |
+
+**Pages (5):**
+
+| public_id | role | suggested_funnel_role | event_config |
+|---|---|---|---|
+| `workshop` | `sales` | `workshop` | canonical: `["PageView","Lead"]` / custom: `["click_buy_workshop"]` |
+| `obrigado-workshop` | `thankyou` | `workshop` | canonical: `["PageView","Purchase","Contact"]` / custom: `["survey_responded"]` |
+| `aula-workshop` | `webinar` | `workshop` | canonical: `["PageView"]` / custom: `["watched_workshop"]` |
+| `oferta-principal` | `sales` | `main_offer` | canonical: `["PageView","ViewContent"]` / custom: `["click_buy_main"]` |
+| `obrigado-principal` | `thankyou` | `main_offer` | canonical: `["PageView","Purchase"]` / custom: `[]` |
+
+**Audiences (6):** `compradores_workshop_aquecimento`, `respondeu_pesquisa_sem_comprar_main`, `engajados_workshop`, `abandono_main_offer`, `compradores_main`, `nao_compradores_workshop_engajados`. Detalhe das queries em `docs/80-roadmap/funil-templates-plan.md`.
+
+> **Reorder cronológico (refinamento pós-ADR-026, 2026-05-04).** Em fluxo real, o lead clica `Quero Comprar` antes do form de captura — `clicked_buy_workshop` é entrada de funil; `lead_workshop` segue após preenchimento do form. Reorder aplicado via migration `0032_reorder_stages_paid_workshop_v2.sql` (idempotente). Nenhuma audience usa `stage_gte` com esses dois stages, então sem regressão funcional.
+
+> **Nota — IC (InitiateCheckout) fora dos stages.** No v2, intenção de compra é capturada via custom events client-side (`custom:click_buy_workshop`, `custom:click_buy_main`), não via `InitiateCheckout`. O motivo é operacional: o checkout do Guru não emite IC client-side acessível ao tracker. **Pós-Sprint 12** está mapeada uma investigação para capturar IC via webhook Guru (potencial evento `CHECKOUT_INITIATED` ou pixel/proxy no checkout) — quando disponível, `clicked_buy_*` se manterá (intent de clique) e `InitiateCheckout` será adicionado como stage independente alimentado pelo Guru. Ver ADR-026 (D1) e `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` §Notas técnicas.
+
+> **Nota — tracking de aula é binário no MVP.** `watched_workshop` é disparado pelo botão "Já assisti" na page `aula-workshop`. Evolução planejada: Zoom webhook `participant_joined`/`_left` para granularidade por duração; ou Vimeo player + heartbeat custom events. Ver ADR-026 (D3/D4).
+
 ### FunnelBlueprint (shape do JSONB)
 
 Validado pelo `FunnelBlueprintSchema` (Zod) na camada Edge antes de qualquer persistência.
@@ -127,6 +162,8 @@ Stages canônicos sugeridos (operador pode customizar):
 ```
 
 `viewed`, `engaged`, `watched_class_*` podem ser recorrentes (operador decide via `event_config`).
+
+> **Nota:** o esquema acima é referencial. Cada template define seu próprio conjunto. Ex.: `lancamento_gratuito_3_aulas` usa `watched_class_1/2/3`; `lancamento_pago_workshop_com_main_offer` v2 usa apenas `watched_workshop` (binário). Ver §3 "Templates pré-existentes".
 
 ## 6. Transições válidas
 
@@ -248,6 +285,7 @@ Função `apps/edge/src/lib/funnel-scaffolder.ts`. Executada de forma assíncron
 - `packages/db/src/schema/lead_stage.ts`
 - `packages/db/src/schema/funnel_template.ts`
 - `packages/db/migrations/0029_funnel_templates.sql`
+- `packages/db/migrations/0031_funnel_template_paid_workshop_v2.sql`
 - `apps/edge/src/lib/funnel.ts`
 - `apps/edge/src/lib/funnel-scaffolder.ts`
 - `apps/edge/src/routes/funnel-templates.ts`
@@ -269,5 +307,5 @@ Função `apps/edge/src/lib/funnel-scaffolder.ts`. Executada de forma assíncron
 ## 14. Test harness
 
 - `tests/integration/funnel/unique-non-recurring.test.ts` — INV-FUNNEL-001.
-- `tests/integration/funnel/recurring-allows-multiple.test.ts` — `watched_class_1` registrado 2× ok.
+- `tests/integration/funnel/recurring-allows-multiple.test.ts` — stage com `is_recurring=true` (ex.: `watched_class_1` ou `clicked_buy_workshop`) registrado 2× ok.
 - `tests/integration/funnel/cross-launch-isolation.test.ts` — INV-FUNNEL-004.

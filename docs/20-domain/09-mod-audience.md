@@ -137,6 +137,41 @@ Retenção: últimos 2 snapshots `active` por audience; demais marcados `archive
 - `createSyncJob(audience_id, snapshot_id, ctx): Result<AudienceSyncJob>`
 - `processSyncJob(sync_job_id, ctx): Result<{additions, removals}, ProcessingError>`
 
+### 10.1 DSL de `query_definition` (validada por Zod — INV-AUDIENCE-007)
+
+`query_definition` é um objeto `{type: 'builder', launch_id?, launch_public_id?, all: Condition[]}` onde cada `Condition` aceita os campos abaixo. Múltiplas condições no mesmo objeto são ANDeadas; múltiplos objetos em `all[]` também são ANDeados.
+
+| Campo | Status | Semântica |
+|---|---|---|
+| `stage_eq` | canônico (T-FUNIL-040) | Match exato — lead tem a stage nomeada em `lead_stages`. |
+| `stage_not` | canônico (T-FUNIL-040) | Exclusão — lead **não** tem a stage nomeada. |
+| `stage_gte` | canônico (T-FUNIL-040) | Lead tem a stage nomeada **ou** qualquer stage que apareça **depois** dela na ordem de `launches.funnel_blueprint.stages[].slug`. **Exige `launch_id` no top-level do `query_definition`** — sem ele, o evaluator falha com erro determinístico (`invalid_query_definition: stage_gte requires launch_id`). |
+| `stage` | legacy alias | Equivalente a `stage_eq`. Mantido para retro-compat com audiences existentes. |
+| `not_stage` | legacy alias | Equivalente a `stage_not`. Mantido para retro-compat. |
+| `is_icp` | inalterado | Boolean — quando `true`, exige `lead_icp_scores.is_icp=true`. |
+| `purchased` | inalterado | Boolean — `true` exige stage `'purchased'`; `false` exclui leads com stage `'purchased'`. |
+
+**Convenção:** novos audiences devem usar o vocabulário canônico (`stage_eq` / `stage_not` / `stage_gte`). Os aliases legados (`stage` / `not_stage`) continuam aceitos para preservar `snapshot_hash` determinístico de audiences pré-T-FUNIL-040 (INV-AUDIENCE-003 — mesmo conjunto de membros, mesmo hash).
+
+**Ordem de stages para `stage_gte`:** lida posicionalmente de `launches.funnel_blueprint.stages[]` na ordem em que os elementos aparecem no array do blueprint (não há campo `order`; a posição no array é canônica). Se o `stage_gte` apontar para um slug ausente do blueprint, evaluator falha com erro determinístico.
+
+**Top-level fields no `query_definition`:**
+- `launch_id` (UUID) — obrigatório em runtime quando algum condition usa `stage_gte`. Resolve `funnel_blueprint`.
+- `launch_public_id` — informativo apenas (rastreabilidade); não é usado pelo evaluator.
+
+**Exemplo — audience "engajados_workshop" (template `paid_workshop_v2`):**
+```json
+{
+  "type": "builder",
+  "launch_id": "11111111-1111-1111-1111-111111111111",
+  "launch_public_id": "wkshop-cs-jun26",
+  "all": [
+    { "stage_gte": "watched_workshop", "stage_not": "purchased_main" }
+  ]
+}
+```
+Resultado: leads que assistiram ao workshop **ou alcançaram qualquer stage posterior**, exceto os que já compraram o produto principal.
+
 ## 11. Eventos de timeline emitidos
 
 - `TE-AUDIENCE-CREATED`

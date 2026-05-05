@@ -151,18 +151,35 @@ O `funnel_role` é injetado pelo mapping Guru (Fase 3) no payload do raw_event a
   - `abandono_checkout_main` (stage=clicked_buy_main AND NOT stage=purchased_main)
   - `compradores_main` (stage=purchased_main)
 
-**2. `lancamento_pago_workshop_com_main_offer`** (Funil B completo)
+**2. `lancamento_pago_workshop_com_main_offer`** (Funil B completo) — **v2 (Sprint 12)**
 - `has_workshop: true`, `has_main_offer: true`
-- Stages: `lead_workshop` (opcional, popup), `clicked_buy_workshop`, `purchased_workshop`, `wpp_joined`, `watched_class_1`, `watched_class_2`, `watched_class_3`, `clicked_buy_main`, `purchased_main`
-- Stage `purchased_workshop`: `source_events: ['Purchase']`, `source_event_filters: { funnel_role: 'workshop' }`
-- Stage `purchased_main`: `source_events: ['Purchase']`, `source_event_filters: { funnel_role: 'main_offer' }`
-- Pages: capture (paga, role=sales) + thankyou_workshop + sales (main offer) + thankyou_main
-- Audiences:
-  - `compradores_workshop_aquecimento` (stage=purchased_workshop AND NOT stage=purchased_main)
-  - `engajados_workshop` (stage=watched_class_2 e foi comprador workshop)
-  - `abandono_main_offer` (stage=clicked_buy_main AND NOT stage=purchased_main)
-  - `compradores_main` (stage=purchased_main)
-  - `compradores_apenas_workshop` (stage=purchased_workshop AND NOT stage=purchased_main, após X dias do lançamento — para retargeting futuro)
+- Stages (8, em ordem cronológica): `clicked_buy_workshop`, `lead_workshop`, `purchased_workshop`, `survey_responded`, `wpp_joined`, `watched_workshop`, `clicked_buy_main`, `purchased_main`
+  - `clicked_buy_workshop` (recorrente): `source_events: ['custom:click_buy_workshop']` — clique no botão "Quero Comprar" antes do form de captura (entrada do funil); via custom event client-side (D5 da ADR-026).
+  - `lead_workshop`: `source_events: ['Lead']` — após preenchimento do form de captura, lead identificado.
+  - `purchased_workshop`: `source_events: ['Purchase']`, `source_event_filters: { funnel_role: 'workshop' }`
+  - `survey_responded`: `source_events: ['custom:survey_responded']` — pesquisa na page `obrigado-workshop` (D2).
+  - `wpp_joined`: `source_events: ['Contact']` — botão WhatsApp ao final da pesquisa.
+  - `watched_workshop`: `source_events: ['custom:watched_workshop']` — MVP binário via botão "Já assisti" na page `aula-workshop` (D3/D4).
+  - `clicked_buy_main` (recorrente): `source_events: ['custom:click_buy_main']` — `oferta-principal` sem popup (D6).
+  - `purchased_main`: `source_events: ['Purchase']`, `source_event_filters: { funnel_role: 'main_offer' }`
+- Pages (5): `workshop` (sales) + `obrigado-workshop` (thankyou — pesquisa+wpp) + `aula-workshop` (webinar — page nova) + `oferta-principal` (sales — sem popup) + `obrigado-principal` (thankyou)
+- Audiences (6):
+  - `compradores_workshop_aquecimento` (stage_eq=purchased_workshop AND stage_not=purchased_main)
+  - `respondeu_pesquisa_sem_comprar_main` (stage_eq=survey_responded AND stage_not=purchased_main)
+  - `engajados_workshop` (stage_gte=watched_workshop)
+  - `abandono_main_offer` (stage_eq=clicked_buy_main AND stage_not=purchased_main)
+  - `compradores_main` (stage_eq=purchased_main)
+  - `nao_compradores_workshop_engajados` (stage_gte=watched_workshop AND stage_not=purchased_main)
+
+> **Diferenças vs v1 (seed original 0029):** removidos `watched_class_1/2/3` (substituídos por `watched_workshop` único — D4); IC removido como stage (D1 — virá do Guru no futuro); adicionado `survey_responded` (D2); page nova `aula-workshop` (role=`webinar`); `oferta-principal` sem popup (D6); audience `compradores_apenas_workshop` arquivada (duplicata).
+
+> **Refinamento cronológico (2026-05-04, migration 0032).** Ordem dos stages 1 e 2 trocada: `clicked_buy_workshop` antes de `lead_workshop`. Cronologicamente o lead clica "Quero Comprar" antes de preencher o form de captura — `clicked_buy_workshop` é entrada de funil; `lead_workshop` segue após o form. Aplicado via `0032_reorder_stages_paid_workshop_v2.sql` (idempotente, espelhado em `supabase/migrations/`). Sem regressão: nenhuma das 6 audiences usa `stage_gte` com `lead_workshop`/`clicked_buy_workshop`. Detalhe em ADR-026 §Refinamento pós-implementação.
+
+> **Evolução pós-Sprint 12** (não escopo deste sprint, mas mapeado):
+> - **InitiateCheckout via Guru** (D1): investigar webhook `CHECKOUT_INITIATED` ou pixel/proxy no checkout Guru. Hoje IC fica fora dos stages do funil; entrará como input futuro do dispatcher Meta CAPI. Decisão definitiva via ADR separado (ADR-027+) e potencial Sprint 14.
+> - **Zoom Webinar/Meeting webhook** (D3): `webinar.participant_joined`/`participant_left` com duração por participante. Match por email do lead. Substitui MVP binário por stages granulares (`attended_workshop_5min`, `attended_workshop_30min`, etc.).
+> - **Vimeo Live + heartbeat** (D3 alternativa): player embedded enviando heartbeat a cada 30s via `Funil.track('custom:watched_heartbeat', { sec: N })`. Stages calculados pelo processor (ou job batch) somando heartbeats. Mais complexo, mas independe de plataforma de webinar.
+> - Detalhe completo: `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` §Notas técnicas.
 
 **3. `lancamento_pago_workshop_apenas`** (Funil B simplificado)
 - `has_workshop: true`, `has_main_offer: false`

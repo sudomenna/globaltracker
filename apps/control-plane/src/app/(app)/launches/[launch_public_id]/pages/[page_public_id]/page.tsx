@@ -21,6 +21,7 @@ interface PageStatus {
 interface PageDetail {
   url: string | null;
   allowed_domains: string[];
+  event_config: { canonical?: string[]; custom?: string[] } | null;
 }
 
 interface Props {
@@ -53,10 +54,10 @@ export default async function PageDetailPage({ params }: Props) {
       `${baseUrl}/v1/pages?launch_public_id=${launch_public_id}`,
       { headers: { Authorization: `Bearer ${session.access_token}` }, cache: 'no-store' },
     )
-      .then((r) => r.ok ? r.json() as Promise<{ pages: Array<{ public_id: string; url: string | null; allowed_domains: string[] }> }> : null)
+      .then((r) => r.ok ? r.json() as Promise<{ pages: Array<{ public_id: string; url: string | null; allowed_domains: string[]; event_config: PageDetail['event_config'] }> }> : null)
       .then((d): PageDetail | null => {
         const found = d?.pages.find((p) => p.public_id === page_public_id);
-        return found ? { url: found.url, allowed_domains: found.allowed_domains } : null;
+        return found ? { url: found.url, allowed_domains: found.allowed_domains, event_config: found.event_config ?? null } : null;
       })
       .catch((): null => null),
   ]);
@@ -69,6 +70,7 @@ export default async function PageDetailPage({ params }: Props) {
       initialStatus={initialStatus}
       initialUrl={initialPageDetail?.url ?? null}
       initialAllowedDomains={initialPageDetail?.allowed_domains ?? []}
+      initialEventConfig={initialPageDetail?.event_config ?? null}
     />
   );
 }

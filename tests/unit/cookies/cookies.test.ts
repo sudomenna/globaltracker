@@ -207,9 +207,16 @@ describe('LEAD_TOKEN_COOKIE', () => {
 describe('buildLeadTokenCookie', () => {
   const TOKEN = 'payload.signature';
 
-  it('BR-IDENTITY-005: sets HttpOnly flag', () => {
+  // BR-IDENTITY-005 hardening (Sprint 12, MEMORY §2 + §7 bug C12):
+  // tracker.js precisa ler __ftk via document.cookie para propagar identidade
+  // cross-page entre LP (cneeducacao.com) e Edge (workers.dev). Por isso:
+  //   - HttpOnly foi removido (era flag original)
+  //   - SameSite=Lax → SameSite=None (cross-origin LP ↔ Edge)
+  //   - Secure permanece obrigatório (mitigação)
+  // O token é HMAC-bound a workspace+lead → roubo isolado não autoriza impersonação cross-tenant.
+  it('BR-IDENTITY-005 (hardening): does NOT set HttpOnly (tracker.js needs JS read access)', () => {
     const result = buildLeadTokenCookie(TOKEN);
-    expect(result).toContain('HttpOnly');
+    expect(result).not.toContain('HttpOnly');
   });
 
   it('BR-IDENTITY-005: sets Secure flag', () => {
@@ -217,9 +224,9 @@ describe('buildLeadTokenCookie', () => {
     expect(result).toContain('Secure');
   });
 
-  it('BR-IDENTITY-005: sets SameSite=Lax', () => {
+  it('BR-IDENTITY-005 (hardening): sets SameSite=None for cross-origin LP ↔ Edge', () => {
     const result = buildLeadTokenCookie(TOKEN);
-    expect(result).toContain('SameSite=Lax');
+    expect(result).toContain('SameSite=None');
   });
 
   it('uses cookie name __ftk', () => {

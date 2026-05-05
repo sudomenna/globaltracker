@@ -59,6 +59,19 @@ Implementados em `apps/control-plane/src/lib/page-role-defaults.ts`. Ao criar um
 
 O usuário pode sobrescrever os defaults via painel "Configuração de eventos" na tela de detalhe da page (ver [70-ux/04-screen-page-registration.md](../70-ux/04-screen-page-registration.md)).
 
+#### Exemplo canônico — page `aula-workshop` (role=`webinar`)
+
+Page de aula do template `lancamento_pago_workshop_com_main_offer` v2 (Sprint 12). Sobrescreve o default `webinar` removendo `ViewContent` (não há player nativo no MVP) e adicionando custom event `watched_workshop` (botão "Já assisti" como proxy binário — ADR-026 D3/D4).
+
+```json
+{
+  "canonical": ["PageView"],
+  "custom": ["watched_workshop"]
+}
+```
+
+Custom event é disparado via `Funil.track('custom:watched_workshop')` no body script Framer (ver `apps/tracker/snippets/paid-workshop/aula-workshop.html`). Evolução pós-MVP: substituir botão binário por Zoom webhook attendance ou Vimeo heartbeat (ver `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` §Notas técnicas).
+
 ### PageToken
 - `id`
 - `workspace_id`
