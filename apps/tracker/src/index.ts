@@ -171,9 +171,15 @@ async function init(): Promise<void> {
     const attribution = captureAndPersistAttribution();
     setAttribution(attribution);
 
-    // Read __ftk (lead_token) from cookie — backend sets it (INV-TRACKER-004)
+    // Read __ftk (lead_token) from cookie — backend sets it (INV-TRACKER-004).
+    // Only overwrite state.leadToken when the cookie carries a value: a snippet
+    // running on DOMContentLoaded may have already called Funil.identify(token)
+    // (token sourced from localStorage when the cookie is unavailable cross-origin
+    // — see BR-IDENTITY-005), and the async init() must not erase it.
     const leadToken = readLeadTokenCookie();
-    setLeadToken(leadToken);
+    if (leadToken) {
+      setLeadToken(leadToken);
+    }
 
     // initialized → ready
     transition('ready');

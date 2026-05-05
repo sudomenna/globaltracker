@@ -246,13 +246,41 @@ const getPageConfig: GetPageConfigFn = async (_workspaceId, pageId, env) => {
     .where(eq(pages.id, pageId))
     .limit(1);
   if (!rows[0]) return null;
-  const ec = (rows[0].eventConfig ?? {}) as Record<string, unknown>;
+  // Defensive parse: pages.event_config is JSONB, but legacy rows saved via the
+  // CP UI were double-stringified ({"...":"..."} as a JSON-encoded string inside
+  // the JSONB column). Accept both shapes so the Edge keeps working until the
+  // CP save bug is fixed and rows are normalized.
+  let ec: Record<string, unknown> = {};
+  const raw = rows[0].eventConfig;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') ec = parsed as Record<string, unknown>;
+    } catch {
+      // unparseable → treat as empty config
+    }
+  } else if (raw && typeof raw === 'object') {
+    ec = raw as Record<string, unknown>;
+  }
+
+  // Canonical schema is {canonical: string[], custom: string[]} (CP + migration 0034).
+  // Tracker dispatches custom events with a `custom:` prefix (BR-EVENT-001), so the
+  // allowed list concatenates canonical names verbatim with `custom:`-prefixed customs.
+  // Legacy `allowed_event_names` field still honored if present (back-compat).
+  const canonical = Array.isArray(ec.canonical) ? (ec.canonical as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  const custom = Array.isArray(ec.custom) ? (ec.custom as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  const legacy = Array.isArray(ec.allowed_event_names)
+    ? (ec.allowed_event_names as unknown[]).filter((x): x is string => typeof x === 'string')
+    : [];
+  const allowedEventNames =
+    canonical.length > 0 || custom.length > 0
+      ? [...canonical, ...custom.map((c) => `custom:${c}`)]
+      : legacy;
+
   return {
     status: rows[0].status as 'draft' | 'active' | 'paused' | 'archived',
     eventConfig: ec,
-    allowedEventNames: Array.isArray(ec.allowed_event_names)
-      ? (ec.allowed_event_names as string[])
-      : [],
+    allowedEventNames,
     customDataSchema:
       typeof ec.custom_data_schema === 'object' && ec.custom_data_schema !== null
         ? (ec.custom_data_schema as Record<string, unknown>)

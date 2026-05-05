@@ -25,6 +25,14 @@
 - **CORS público**: quando `pages.allowed_domains` está vazio, libera todas as origens (security via page token). Atualizar `docs/10-architecture/06-auth-rbac-audit.md`.
 - **TEMPLATE-paid-workshop-v3-event-config-purge**: migration 0034 manteve `Purchase` e `Contact` em `event_config.canonical` da page `obrigado-workshop`, mas pela arquitetura v3 ambos são server-side (Purchase via webhook Guru, Contact via webhook SendFlow). Próxima migration deve deixar canonical=[PageView], custom=[click_wpp_join, survey_responded]. Aplicado runtime em wkshop-cs-jun26 via UI do CP (2026-05-05), template global ainda divergente. Mesma correção provavelmente cabe em outras pages (workshop tem `Purchase`? — verificar).
 
+- **CP-DOUBLE-STRINGIFY-event-config**: o save handler do CP grava `event_config` como **string JSON** dentro do JSONB (double-encoded), em vez de objeto JSONB cru. Detectado nas pages `workshop` e `obrigado-workshop` que foram editadas via UI (`jsonb_typeof(event_config)='string'`). As 3 pages que vieram só da migration 0034 estão como `object` ✓. UPDATE manual aplicado em 2026-05-05 (`event_config = (event_config #>> '{}')::jsonb`). **Pendência**: encontrar e corrigir o save handler que está rodando `JSON.stringify` antes do Drizzle. Sub-T-ID `T-13-013` (Sprint 13).
+
+- **EDGE-event-config-schema-mismatch (RESOLVIDO 2026-05-05)**: Edge `getPageConfig` em `apps/edge/src/index.ts` lia `ec.allowed_event_names` (campo inexistente — o schema canônico usa `{canonical, custom}`). Resultado: `/v1/config` sempre retornava `allowed_event_names: []` → todos eventos client-side bloqueados. Fix deployado: agora monta `allowedEventNames = [...canonical, ...custom.map(c => 'custom:' + c)]` + parse defensivo string→object pra cobrir rows double-stringified. Worker version `dff44d61-fdca-4f6a-ab3e-f066a07d23d7`.
+
+- **TRACKER-init-race-zera-leadToken (RESOLVIDO 2026-05-05)**: `init()` async do tracker chamava `setLeadToken(readLeadTokenCookie())` incondicionalmente. Quando snippet roda primeiro no DOMContentLoaded e chama `Funil.identify(token)` (token de localStorage), init posteriormente lia cookie vazio e zerava o state. Resultado: PageView (logo após identify) ia com lead_token, mas tracks subsequentes ficavam anônimos. Fix: `if (leadToken) setLeadToken(leadToken)` em apps/tracker/src/index.ts:175. Tracker rebuilt + reuploaded R2. Snippet também ganhou re-identify defensivo no listener de click.
+
+- **SNIPPET-name-reserved-wp-query-var (RESOLVIDO 2026-05-05)**: WordPress reserva `?name=` como query var pra lookup de post por slug. URLs com `?name=...` em pages que não têm post com esse slug retornam 404. Fix no snippet `obrigado-workshop.html`: trocar key da URL pra `lead_name` (mantém `body.name` no schema do `/v1/lead`). Documentado no header do snippet — qualquer page nova deve evitar `name` cru.
+
 ## §3 Modelo de negócio (decisões ainda não em ADR)
 
 2026-05-01 — Supabase em cloud (não local). Projeto `globaltracker`, ref `kaxcmhfaqrxwnpftkslj`, sa-east-1, org CNE Ltda.
@@ -51,23 +59,34 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 12 — Onda 4 EM ANDAMENTO (2026-05-05 madrugada).
-               MIGRAÇÃO PLATAFORMA: Tiago migrou Funil B do Framer (cneeducacao.com)
-               para WordPress + Elementor Pro 4.0 (contratosnovaeconomia.com.br).
-               Template v3 ativo no DB (migration 0034). 2/5 pages WordPress
-                100% funcionais e validadas em produção.
-Branch:        main (working tree GRANDE — incluindo 0034 + snippets atualizados —
-               pronto pra commit)
+Estado:        SPRINT 12 — Onda 4 PARCIALMENTE FECHADA (2026-05-05 manhã).
+               MIGRAÇÃO PLATAFORMA: Funil B Framer → WordPress + Elementor Pro 4.0
+               (contratosnovaeconomia.com.br). Template v3 ativo no DB (migration
+               0034). 2/5 pages WordPress 100% funcionais. Pages aula-workshop,
+               oferta-principal e obrigado-principal ADIADAS pro lançamento real
+               de junho (decisão Tiago: foco em SendFlow/T-13-011 antes).
+
+               COLD PATH (cross-device identity via Guru redirect) IMPLEMENTADO E
+               VALIDADO E2E. obrigado-workshop agora lê email/phone/utms da URL,
+               cria/resolve lead via /v1/lead, identifica e strippa PII da URL.
+Branch:        main (working tree pronto pra commit — 3 files: edge, tracker, snippet)
 DB Supabase:   migrations 0000–0034 aplicadas ✓
-               0034 = template v3 (9 stages, +clicked_wpp_join,
-               obrigado-workshop event_config sem survey form ainda)
+               event_config das 5 pages NORMALIZADO nesta sessão (era double-
+               stringified em 2 rows — workshop, obrigado-workshop — bug do CP
+               save handler — ver §2)
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
-               (sem novo deploy esta sessão — só DB + tracker snippets)
+               (REDEPLOYADO 2026-05-05 — version dff44d61 — fix event_config
+               schema mismatch canonical/custom + parse defensivo string)
 Tracker CDN:   https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js
+               (REBUILT + REUPLOADED 2026-05-05 — fix race init→identify
+               que zerava state.leadToken em browsers sem cookie __ftk)
 WP plugin:     WPCode Lite (pra snippets per-page com Smart Conditional Logic).
                Wordfence bloqueia POST com <script> — usar "Allowlist This Action"
                ao salvar (1× por padrão de request).
+URL canônica:  obrigado-workshop = /wk-obg/ (renomeado nesta sessão de
+               /wk-societario-obrigado/ — slug menor pra caber no limite de
+               caracteres do redirect Guru).
 
 Pages WP completas (workshop + obrigado-workshop):
   workshop          → https://contratosnovaeconomia.com.br/wk-societarios-1/
@@ -79,28 +98,55 @@ Pages WP completas (workshop + obrigado-workshop):
                       • Submit → POST /v1/lead → __gt_ftk localStorage → Lead event
                         → redirect Guru com query (name, email, phone, utms)
                       • URL Guru: https://clkdmg.site/pay/wk-contratos-societarios
-  obrigado-workshop → https://contratosnovaeconomia.com.br/wk-societario-obrigado/
+  obrigado-workshop → https://contratosnovaeconomia.com.br/wk-obg/  (renomeado
+                      nesta sessão pra economizar caracteres no redirect Guru)
                       • Botão WhatsApp → SendFlow (https://sndflw.com/i/3bhG8XexRRKwLxF4SGtk)
                       • CSS ID widget: gt-btn-wpp-join → click dispara
                         custom:click_wpp_join (NÃO `Contact` — Contact virá do
-                        webhook SendFlow em Sprint 13)
+                        webhook SendFlow em Sprint 13/T-13-011)
+                      • COLD PATH ATIVO: snippet lê params da URL (email, phone,
+                        lead_name, utm_source/medium/campaign/content/term),
+                        strippa PII via history.replaceState, e POST /v1/lead
+                        pra resolver lead cross-device.
 
-Lead E2E desta sessão (sintético — fluxo validado, sem compra real):
-  lead 2b8f0cda-188b-4d69-bf0d-3b18a4a6822c
-  eventos accepted:
-    • PageView (workshop)        06:34:10
-    • custom:click_buy_workshop  06:34:32
-    • lead_identify              06:34:53
-    • Lead                       06:34:54
-  redirect verificado: ?name=Teste+Tiago+E2E&email=teste-e2e@globaltracker.dev&phone=+5511988887777
+Guru "URL Aprovada" (configurada nesta sessão — limite de chars do Guru aceitou
+apenas 5 params: phone + email + 3 utms):
+  contratosnovaeconomia.com.br/wk-obg/
+    ?phone=[contact_phone_full_number]
+    &utm_source=[utm_source]
+    &utm_campaign=[utm_campaign]
+    &utm_content=[utm_content]
+    &email=[contact_email]
+  NOTA: snippet aceita também `lead_name` (Contato → Nome) e `utm_medium`/`utm_term`
+  se Guru permitir aumentar a URL no futuro. NÃO usar `name` puro — query var
+  reservado do WP (gera 404).
 
-  Lead da sessão anterior 74f1d1bf-3666-49ac-a7c9-5f155e7895b6 (Framer) —
-  obsoleto após migração WP. Não tem stages no DB v3.
+Leads E2E desta sessão (sintéticos — fluxo validado, sem compra real):
+  • lead 2b8f0cda-188b-4d69-bf0d-3b18a4a6822c (HOT path — sessão anterior, ainda
+    vivo no DB; usado em testes de regressão hoje)
+  • lead 979bc579-7aa0-4e50-bf81-cf7e5671accc (COLD path — Guru-style URL
+    com lead_name explícito, validado em 2026-05-05 08:06)
+  • lead 1404da92-a86a-43ba-98be-cfdc96016856 (COLD path — Guru-style URL real
+    do Tiago: phone+email+utm_source/campaign/content, sem lead_name —
+    validado E2E em 2026-05-05 08:16:
+      lead_identify → PageView → custom:click_wpp_join
+    todos com lead_id resolvido no DB)
+
+  Lead 74f1d1bf-3666-49ac-a7c9-5f155e7895b6 (Framer) — obsoleto.
 
 Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
-  Não foram criadas no WordPress ainda. Próxima sessão decide qual prio.
+  ADIADAS — lançamento real é só em junho. Foco agora: SendFlow webhook
+  (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
+  (Purchase real via Guru cartão).
 
-Próxima ação:  Continuar com 1 das duas trilhas — escolher na próxima sessão:
+Próxima ação:  Tiago decidiu priorizar SendFlow (T-13-011 — webhook inbound
+  que dispara Contact event quando lead efetivamente entra no grupo WhatsApp).
+  Pendência crítica antes de começar: doc do payload do webhook SendFlow
+  (URL outbound, payload schema, auth method, identifier — phone? lead_token via
+  query no link de convite?). Tiago precisa fornecer.
+
+  Trilha A (Purchase real) destravada também — pode ser feita em paralelo
+  ou depois do SendFlow. Trilhas anteriores:
   TRILHA A — Validar Purchase + Contact server-side (server fluxo completo):
     1. Comprar workshop via Guru com cartão real → webhook deve disparar
        Purchase → stage purchased_workshop preenchido no DB
@@ -353,10 +399,23 @@ Onda 4 (EM ANDAMENTO 2026-05-05 madrugada — migração Framer → WordPress):
   T-FUNIL-052 page obrigado-workshop WP — botão SendFlow + 2 snippets + E2E ✓
               (custom:click_wpp_join validado em DB)
   T-FUNIL-053 URL workshop preenchida no CP                                ✓
-  T-FUNIL-054 page aula-workshop WP                                        ⏳ (futuro)
-  T-FUNIL-055 page oferta-principal WP                                     ⏳ (futuro)
-  T-FUNIL-056 page obrigado-principal WP                                   ⏳ (futuro)
-  T-FUNIL-057 Trilha A — Purchase via Guru + Contact via SendFlow webhook  ⏳
+  T-FUNIL-054 page aula-workshop WP                                        ⏳ (lançamento jun)
+  T-FUNIL-055 page oferta-principal WP                                     ⏳ (lançamento jun)
+  T-FUNIL-056 page obrigado-principal WP                                   ⏳ (lançamento jun)
+  T-FUNIL-057 Trilha A — Purchase via Guru cartão real                     ⏳ (destravado)
+
+Sub-T-IDs criadas durante Onda 4 — sessão 2026-05-05 manhã (cold path validation):
+  T-FUNIL-058 Edge fix event_config schema mismatch (ler canonical+custom em
+              vez de allowed_event_names, parse defensivo string→object)        ✓
+  T-FUNIL-059 Tracker fix race init→identify (init não zera state.leadToken
+              quando cookie __ftk vazio, preserva o que identify setou)         ✓
+  T-FUNIL-060 Snippet obrigado-workshop COLD PATH — lê params da URL,
+              strippa PII via history.replaceState, POST /v1/lead defensivo
+              cross-device, re-identify defensivo no click                      ✓
+              (validado E2E com lead 1404da92 via URL Guru-style)
+  T-FUNIL-061 DB normalize event_config double-stringified rows
+              (workshop, obrigado-workshop)                                     ✓
+  T-FUNIL-062 Renomear page obrigado-workshop slug /wk-obg/ + URL no CP        ✓
 
 Onda 5 (após Onda 4):
   T-FUNIL-038 br-auditor pré-merge
@@ -373,6 +432,11 @@ Onda 5 (após Onda 4):
 | O4-5 | Atomic form: `name` dos inputs mutável via campo "ID" (não óbvio — mesmo nome do "CSS ID") | Renomear pra `name`/`email`/`phone`. |
 | O4-6 | CSS ID do widget Botão Elementor vai pro **wrapper DIV**, não no `<a>` interno | Selector compatível: `#gt-btn-buy-workshop1 a, #gt-btn-buy-workshop1`. |
 | O4-7 | Page workshop tinha 5 CTAs externos `#checkout` (scroll only) + 1 dentro de #checkout. Decisão D5: só o de dentro de #checkout é o intent | CTAs externos sem listener (só scroll UX). 1 botão `#gt-btn-buy-workshop1` = `custom:click_buy_workshop` + abre popup. |
+| O4-8 | `/v1/config` retornava `allowed_event_names: []` mesmo com event_config populado no DB → todos eventos client-side eram rejeitados pelo Edge | Schema mismatch: Edge lia `ec.allowed_event_names` mas DB usa `{canonical, custom}`. Fix em `apps/edge/src/index.ts:248-282`: monta lista a partir de canonical + `custom:`-prefixed, com parse defensivo string→object. Deploy `dff44d61`. |
+| O4-9 | event_config das pages `workshop` e `obrigado-workshop` armazenado como **string JSON dentro do JSONB** (double-stringify), enquanto outras 3 pages estão como objeto. Causa: bug no save handler do CP. | UPDATE manual: `event_config = (event_config #>> '{}')::jsonb WHERE jsonb_typeof(event_config)='string'`. Edge fix (O4-8) também tem parse defensivo p/ proteção. Bug do save handler virou T-13-013 (Sprint 13). |
+| O4-10 | Tracker `init()` zerava `state.leadToken` que o snippet acabou de setar via `Funil.identify(token)` (token de localStorage). PageView levava token, mas custom events 25s+ depois iam anônimos. | Race init/snippet: snippet roda no DOMContentLoaded, init é async (fetch /v1/config). Fix em `apps/tracker/src/index.ts:175`: `if (leadToken) setLeadToken(leadToken)` — preserva o que identify setou quando cookie está vazio. + re-identify defensivo no click handler do snippet. |
+| O4-11 | URL `/wk-obg/?name=foo` retorna 404 do WP. `name` é query var reservado do WordPress (lookup de post por slug). | Snippet usa `lead_name` na URL, mantém `body.name` no schema do `/v1/lead`. Documentado no header do snippet — qualquer page nova evitar `name` cru. |
+| O4-12 | Limite de chars do redirect Guru: aceita só ~5 params. | Configurar prioridade: phone + email + utm_source/campaign/content. Snippet aceita todos os 8 keys, mas degrada graciosamente se Guru mandar subconjunto. |
 
 ### Bugs encontrados e corrigidos durante Onda 3 (2026-05-05)
 

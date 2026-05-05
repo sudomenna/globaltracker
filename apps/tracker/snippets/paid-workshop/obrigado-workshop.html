@@ -1,15 +1,34 @@
 <!--
   Snippet canônico — Page `obrigado-workshop` (role: thankyou, funnel_role: workshop)
-  Funil B v3 — `lancamento_pago_workshop_com_main_offer` — Sprint 12 Onda 3 (WordPress)
+  Funil B v3 — `lancamento_pago_workshop_com_main_offer` — Sprint 12 Onda 4 (WordPress)
 
-  Papel desta page no funil v3 (D1-D4 desta sessão):
-    - É a thank-you do Purchase do workshop. Conteúdo MVP: 1 botão CTA pro grupo
+  Papel desta page no funil v3:
+    - Thank-you do Purchase do workshop. Conteúdo MVP: 1 botão CTA pro grupo
       WhatsApp via SendFlow (`https://sndflw.com/i/...`). Form de pesquisa virá depois (T-13-012).
     - Stages disparados aqui:
-        * PageView (manual, auto_page_view=false)         → identidade primeiro
+        * PageView (manual, auto_page_view=false)         → após identidade
         * Purchase                                        → via webhook Guru server-side (NÃO client-side)
         * `clicked_wpp_join` via `custom:click_wpp_join`  → click no botão (intent)
         * `wpp_joined` via Contact (server-side)          → SendFlow webhook (T-13-011, Sprint 13)
+
+  Identidade cross-device — 2 caminhos:
+    1) HOT (mesmo browser que comprou): localStorage('__gt_ftk') existe → identify direto.
+    2) COLD (outro device / storage limpo): Guru redireciona com query params
+       (email, phone, name, utm_*). Snippet faz POST /v1/lead → resolve/cria
+       lead → grava novo __gt_ftk → identify. PII é STRIPPADA da URL antes
+       de qualquer fetch (history.replaceState).
+    3) Sem token e sem params → fica anônimo. click_wpp_join dispara sem lead_id;
+       webhook SendFlow (futuro) resolve por phone.
+
+  Configuração no Guru — "Redirecionamento após aprovação" com Parâmetros:
+       email          ← Contato → E-Mail
+       phone          ← Contato → Telefone (completo, com DDI)
+       lead_name      ← Contato → Nome   (NOTA: NÃO usar `name` — é query var reservado do WP, gera 404)
+       utm_source     ← UTM Source
+       utm_medium     ← UTM Medium
+       utm_campaign   ← UTM Campaign
+       utm_content    ← UTM Content
+       utm_term       ← UTM Term
 
   Contrato com o tracker.js:
     - `auto_page_view=false`. Body script chama Funil.page() depois do identify.
@@ -19,8 +38,10 @@
     - Fallback opcional: `a[href*="sndflw.com"]` (caso o ID seja perdido em refactor).
 
   BRs aplicáveis:
-    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato no processor).
-    - BR-IDENTITY-005: lead_token vem de `localStorage('__gt_ftk')` (cross-origin).
+    - BR-EVENT-001: custom events trafegam com prefixo `custom:` (matching exato).
+    - BR-IDENTITY-005: lead_token em localStorage('__gt_ftk').
+    - BR-PRIVACY-001: PII (email/phone/name) na querystring é strippada
+      via history.replaceState ANTES de qualquer request sair (evita Referer leak).
     - BR-CONSENT-004: tracker já gate consent_analytics='denied' internamente.
 
   WPCode setup:
@@ -49,7 +70,14 @@
 <!-- ============================== -->
 <script>
 (function(){
-  // Tracker.js não emite evento `gt:ready` no bundle — polling defensivo.
+  var EDGE_URL = 'https://globaltracker-edge.globaltracker.workers.dev';
+  var LAUNCH_PUBLIC_ID = 'wkshop-cs-jun26';
+  var PAGE_PUBLIC_ID = 'obrigado-workshop';
+  var UTM_KEYS = ['utm_source','utm_medium','utm_campaign','utm_content','utm_term'];
+  // WP reserva o query var `name` (lookup de post por slug — gera 404 quando não casa).
+  // Usamos `lead_name` na URL, mas mandamos como `name` no body do /v1/lead.
+  var IDENTITY_KEYS = ['email','phone','lead_name'];
+
   function withTracker(cb){
     if (window.Funil) { try { cb(window.Funil); } catch (e) {} return; }
     var tries = 0;
@@ -60,36 +88,135 @@
     }, 50);
   }
 
-  // Cross-page identity: __gt_ftk foi setado em workshop após /v1/lead.
-  function bootIdentity(){
-    var token = null;
-    try { token = localStorage.getItem('__gt_ftk'); } catch (e) {}
-    withTracker(function(F){
-      if (token) F.identify({ lead_token: token });
-      // PageView manual — auto_page_view=false p/ disparar APÓS identify.
-      F.page();
+  // Lê query params relevantes e remove TODA a querystring antes de qualquer
+  // request sair (PII hygiene — BR-PRIVACY-001). Mantém path + hash.
+  function readParamsAndStrip(){
+    var sp;
+    try { sp = new URLSearchParams(location.search || ''); }
+    catch (e) { return {}; }
+
+    var got = {};
+    var any = false;
+    IDENTITY_KEYS.concat(UTM_KEYS).forEach(function(k){
+      var v = sp.get(k);
+      if (v) { got[k] = v.trim(); any = true; }
+    });
+
+    if (any) {
+      try {
+        history.replaceState(null, '', location.pathname + (location.hash || ''));
+      } catch (e) { /* navegação privada/iframes podem bloquear; OK falhar silente */ }
+    }
+    return got;
+  }
+
+  function getStoredToken(){
+    try { return localStorage.getItem('__gt_ftk'); } catch (e) { return null; }
+  }
+
+  function setStoredToken(token){
+    try { localStorage.setItem('__gt_ftk', token); } catch (e) {}
+  }
+
+  function getSiteToken(){
+    var tag = document.querySelector('script[data-site-token]');
+    return tag ? tag.getAttribute('data-site-token') : '';
+  }
+
+  function genEventId(){
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return Date.now() + '-' + Math.random().toString(36).slice(2);
+  }
+
+  // POST /v1/lead com email/phone/name + UTMs vindos do redirect Guru.
+  // Edge resolve via aliases (lead_resolver) — se já existe lead com esse
+  // email/phone, retorna mesmo lead_id; senão cria. Token novo é bound a esta page.
+  function postLead(params, cb){
+    if (!params.email && !params.phone) { cb(null); return; }
+
+    var attribution = {};
+    UTM_KEYS.forEach(function(k){ if (params[k]) attribution[k] = params[k]; });
+
+    var body = {
+      event_id: genEventId(),
+      schema_version: 1,
+      launch_public_id: LAUNCH_PUBLIC_ID,
+      page_public_id: PAGE_PUBLIC_ID,
+      attribution: attribution,
+      consent: { analytics: false, marketing: false, functional: true }
+    };
+    if (params.email)     body.email = params.email;
+    if (params.phone)     body.phone = params.phone;
+    if (params.lead_name) body.name  = params.lead_name;
+
+    var siteToken = getSiteToken();
+    fetch(EDGE_URL + '/v1/lead', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Funil-Site': siteToken },
+      body: JSON.stringify(body)
+    })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(resp){
+      if (resp && resp.lead_token) {
+        setStoredToken(resp.lead_token);
+        cb(resp.lead_token);
+      } else {
+        cb(null);
+      }
+    })
+    .catch(function(e){
+      console.warn('[gt] lead resolve from URL params failed', e);
+      cb(null);
     });
   }
 
-  // Fire-and-forget: tracker usa sendBeacon/keepalive para garantir entrega
-  // antes do unload pela navegação ao SendFlow.
+  function bootIdentity(params){
+    function finish(token){
+      withTracker(function(F){
+        if (token) F.identify({ lead_token: token });
+        F.page(); // PageView APÓS identify (auto_page_view=false)
+      });
+    }
+
+    var existing = getStoredToken();
+    if (existing) {
+      // Hot path: já temos identidade do mesmo browser. Skip POST mesmo se URL
+      // tiver params (token vale 60d, não há ganho em renovar).
+      finish(existing);
+      return;
+    }
+
+    if (params.email || params.phone) {
+      // Cold path: outro device / storage limpo. Resolve via /v1/lead.
+      postLead(params, finish);
+    } else {
+      // Sem identidade nenhuma. Anônimo.
+      finish(null);
+    }
+  }
+
+  // Click no botão WhatsApp → custom:click_wpp_join.
+  // tracker usa sendBeacon/keepalive p/ garantir entrega antes do unload.
   function wireWhatsApp(){
-    // Selector primário: ID setado no widget Elementor.
-    // Fallback: link SendFlow direto (caso ID seja removido).
     var sel = '#gt-btn-wpp-join a, a[href*="sndflw.com"]';
     var links = document.querySelectorAll(sel);
     for (var i = 0; i < links.length; i++){
       links[i].addEventListener('click', function(){
         withTracker(function(F){
-          // BR-EVENT-001: prefixo `custom:` é matching exato.
-          F.track('custom:click_wpp_join');
+          // Re-identify defensively: protege contra races em que o init() async
+          // do tracker zerou state.leadToken depois do bootIdentity inicial.
+          var t = getStoredToken();
+          if (t) F.identify({ lead_token: t });
+          F.track('custom:click_wpp_join'); // BR-EVENT-001: prefixo `custom:`
         });
       }, { passive: true });
     }
   }
 
   function boot(){
-    bootIdentity();
+    var params = readParamsAndStrip();
+    bootIdentity(params);
     wireWhatsApp();
   }
 
