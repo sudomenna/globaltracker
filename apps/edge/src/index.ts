@@ -681,7 +681,14 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           typeof mapEventToMetaPayload
         >[0]['custom_data'],
       },
-      lead ? { email_hash: lead.emailHash, phone_hash: lead.phoneHash } : null,
+      lead
+        ? {
+            email_hash_external: lead.emailHashExternal,
+            phone_hash_external: lead.phoneHashExternal,
+            fn_hash: lead.fnHash,
+            ln_hash: lead.lnHash,
+          }
+        : null,
       { testEventCode: resolvedTestEventCode },
     );
 
@@ -1074,7 +1081,14 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           typeof mapEventToEnhancedConversion
         >[0]['consent_snapshot'],
       },
-      lead ? { email_hash: lead.emailHash, phone_hash: lead.phoneHash } : null,
+      lead
+        ? {
+            email_hash_external: lead.emailHashExternal,
+            phone_hash_external: lead.phoneHashExternal,
+            fn_hash: lead.fnHash,
+            ln_hash: lead.lnHash,
+          }
+        : null,
       launchConfig ?? { tracking: null },
     );
 

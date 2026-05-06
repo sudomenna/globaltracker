@@ -62,6 +62,12 @@ function makeLead(
   overrides: Partial<DispatchableLead & EligibilityLead> = {},
 ): DispatchableLead & EligibilityLead {
   return {
+    // DispatchableLead fields (mapper) — SHA-256 puro externos
+    email_hash_external:
+      'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3',
+    phone_hash_external:
+      'b3a8e0e1f9ab1bfe3a36f231f676f78bb28a2d0b2a6f4e8f3d3f4a2e9c1d7b5e',
+    // EligibilityLead fields — workspace-scoped hashes used for eligibility check
     email_hash:
       'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3',
     phone_hash:
@@ -420,9 +426,9 @@ describe('mapEventToEnhancedConversion', () => {
     expect(payload.adjustmentDateTime).toBe('2024-05-02 12:30:00+00:00');
   });
 
-  it('BR-CONSENT-003: includes hashedEmail from lead.email_hash (no re-hashing)', () => {
+  it('BR-CONSENT-003: includes hashedEmail from lead.email_hash_external (no re-hashing)', () => {
     const lead = makeLead({
-      email_hash:
+      email_hash_external:
         'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3',
     });
     const payload = mapEventToEnhancedConversion(
@@ -436,9 +442,9 @@ describe('mapEventToEnhancedConversion', () => {
     });
   });
 
-  it('BR-CONSENT-003: includes hashedPhoneNumber from lead.phone_hash (no re-hashing)', () => {
+  it('BR-CONSENT-003: includes hashedPhoneNumber from lead.phone_hash_external (no re-hashing)', () => {
     const lead = makeLead({
-      phone_hash:
+      phone_hash_external:
         'b3a8e0e1f9ab1bfe3a36f231f676f78bb28a2d0b2a6f4e8f3d3f4a2e9c1d7b5e',
     });
     const payload = mapEventToEnhancedConversion(
@@ -452,8 +458,8 @@ describe('mapEventToEnhancedConversion', () => {
     });
   });
 
-  it('omits email identifier when lead.email_hash is null', () => {
-    const lead = makeLead({ email_hash: null });
+  it('omits email identifier when lead.email_hash_external is null', () => {
+    const lead = makeLead({ email_hash_external: null });
     const payload = mapEventToEnhancedConversion(
       makeEvent(),
       lead,
@@ -463,8 +469,8 @@ describe('mapEventToEnhancedConversion', () => {
     expect(hasEmail).toBe(false);
   });
 
-  it('omits phone identifier when lead.phone_hash is null', () => {
-    const lead = makeLead({ phone_hash: null });
+  it('omits phone identifier when lead.phone_hash_external is null', () => {
+    const lead = makeLead({ phone_hash_external: null });
     const payload = mapEventToEnhancedConversion(
       makeEvent(),
       lead,
@@ -485,7 +491,7 @@ describe('mapEventToEnhancedConversion', () => {
     expect(payload.userIdentifiers).toHaveLength(0);
   });
 
-  it('produces two userIdentifiers when both email_hash and phone_hash present', () => {
+  it('produces two userIdentifiers when both email_hash_external and phone_hash_external present', () => {
     const payload = mapEventToEnhancedConversion(
       makeEvent(),
       makeLead(),

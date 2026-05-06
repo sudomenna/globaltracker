@@ -13,6 +13,8 @@ import {
   decryptPii,
   encryptPii,
   hashPii,
+  hashPiiExternal,
+  splitName,
 } from '../../../apps/edge/src/lib/pii';
 
 // ---------------------------------------------------------------------------
@@ -249,5 +251,93 @@ describe('decryptPii', () => {
     expect(dec.ok).toBe(true);
     if (!dec.ok) return;
     expect(dec.value).toBe(PHONE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hashPiiExternal
+// ---------------------------------------------------------------------------
+
+describe('hashPiiExternal', () => {
+  it('returns a 64-char hex string for a valid email', async () => {
+    const hash = await hashPiiExternal('tiago@email.com');
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('is deterministic — same input always produces same hash', async () => {
+    const h1 = await hashPiiExternal('tiago@email.com');
+    const h2 = await hashPiiExternal('tiago@email.com');
+    expect(h1).toBe(h2);
+  });
+
+  it('is NOT workspace-scoped: differs from hashPii() for same value', async () => {
+    // hashPiiExternal("tiago@email.com") hashes the bare value;
+    // hashPii("tiago@email.com", "ws_aaa") hashes "ws_aaa:tiago@email.com"
+    const external = await hashPiiExternal('tiago@email.com');
+    const internal = await hashPii('tiago@email.com', WORKSPACE_A);
+    expect(external).not.toBe(internal);
+  });
+
+  it('result matches expected SHA-256 of the raw value', async () => {
+    // Calculate expected hash inline using the same Web Crypto API
+    const expected = await (async () => {
+      const input = new TextEncoder().encode('test@example.com');
+      const buf = await crypto.subtle.digest('SHA-256', input);
+      return Array.from(new Uint8Array(buf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    })();
+    const actual = await hashPiiExternal('test@example.com');
+    expect(actual).toBe(expected);
+  });
+
+  it('hashes empty string without throwing (returns 64-char hex)', async () => {
+    const hash = await hashPiiExternal('');
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// splitName
+// ---------------------------------------------------------------------------
+
+describe('splitName', () => {
+  it('splits multi-word name: first = first word, last = remainder', () => {
+    expect(splitName('Tiago Menna Barreto Silveira')).toEqual({
+      first: 'tiago',
+      last: 'menna barreto silveira',
+    });
+  });
+
+  it('single-word name: last is null', () => {
+    expect(splitName('Madonna')).toEqual({ first: 'madonna', last: null });
+  });
+
+  it('collapses extra whitespace around and between words', () => {
+    expect(splitName('  Maria  da  Silva  ')).toEqual({
+      first: 'maria',
+      last: 'da silva',
+    });
+  });
+
+  it("strips accents and apostrophes (José D'Ávila)", () => {
+    // NFD strips combining marks; apostrophe is replaced by space via non-letter regex;
+    // collapse → 'd avila' not 'davila'
+    const result = splitName("José D'Ávila");
+    expect(result.first).toBe('jose');
+    // The apostrophe becomes a space, so last = 'd avila'
+    expect(result.last).toBe('d avila');
+  });
+
+  it('empty string returns { first: null, last: null }', () => {
+    expect(splitName('')).toEqual({ first: null, last: null });
+  });
+
+  it('null returns { first: null, last: null }', () => {
+    expect(splitName(null)).toEqual({ first: null, last: null });
+  });
+
+  it('undefined returns { first: null, last: null }', () => {
+    expect(splitName(undefined)).toEqual({ first: null, last: null });
   });
 });

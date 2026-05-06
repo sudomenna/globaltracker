@@ -36,10 +36,14 @@ export interface DispatchableEvent {
 
 /** Minimal shape of a lead row as consumed by this dispatcher. */
 export interface DispatchableLead {
-  /** SHA-256 hex of normalized email — already hashed, do NOT re-hash. */
-  email_hash?: string | null;
-  /** SHA-256 hex of E.164-normalized phone — already hashed, do NOT re-hash. */
-  phone_hash?: string | null;
+  /** SHA-256 hex puro de email normalizado. */
+  email_hash_external?: string | null;
+  /** SHA-256 hex puro de phone E.164. */
+  phone_hash_external?: string | null;
+  /** SHA-256 hex puro do first name lowercase. */
+  fn_hash?: string | null;
+  /** SHA-256 hex puro do last name lowercase. */
+  ln_hash?: string | null;
 }
 
 /** Subset of launches.config relevant to Google Enhanced Conversions. */
@@ -59,10 +63,18 @@ export interface EnhancedConversionsLaunchConfig {
 
 /** A single user identifier in the Google Ads format. */
 export interface GoogleUserIdentifier {
-  /** SHA-256 hex of normalized email. */
+  /** SHA-256 hex de email normalizado. */
   hashedEmail?: string;
-  /** SHA-256 hex of E.164-normalized phone. */
+  /** SHA-256 hex de phone E.164. */
   hashedPhoneNumber?: string;
+  /**
+   * Address info for Enhanced Conversions for leads.
+   * Google Ads API spec: ConversionAdjustment.userIdentifiers[].addressInfo
+   */
+  addressInfo?: {
+    hashedFirstName?: string;
+    hashedLastName?: string;
+  };
 }
 
 /** The conversionAdjustment object sent to Google Ads API. */
@@ -151,11 +163,18 @@ export function mapEventToEnhancedConversion(
   // Normalization pre-hash is the responsibility of the ingestion layer (lib/pii.ts).
   const userIdentifiers: GoogleUserIdentifier[] = [];
 
-  if (lead?.email_hash) {
-    userIdentifiers.push({ hashedEmail: lead.email_hash });
+  // BR-CONSENT-003: usar hashes externos (SHA-256 puro)
+  if (lead?.email_hash_external) {
+    userIdentifiers.push({ hashedEmail: lead.email_hash_external });
   }
-  if (lead?.phone_hash) {
-    userIdentifiers.push({ hashedPhoneNumber: lead.phone_hash });
+  if (lead?.phone_hash_external) {
+    userIdentifiers.push({ hashedPhoneNumber: lead.phone_hash_external });
+  }
+  if (lead?.fn_hash || lead?.ln_hash) {
+    const addressInfo: { hashedFirstName?: string; hashedLastName?: string } = {};
+    if (lead.fn_hash) addressInfo.hashedFirstName = lead.fn_hash;
+    if (lead.ln_hash) addressInfo.hashedLastName = lead.ln_hash;
+    userIdentifiers.push({ addressInfo });
   }
 
   return {

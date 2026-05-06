@@ -25,12 +25,14 @@
 import type { Db } from '@globaltracker/db';
 import { leads } from '@globaltracker/db';
 import { and, eq, isNull, or } from 'drizzle-orm';
+import { safeLog } from '../middleware/sanitize-logs.js';
 import {
-  encryptPii,
   type MasterKeyRegistry,
   type PiiKeyVersion,
+  encryptPii,
+  hashPiiExternal,
+  splitName,
 } from './pii.js';
-import { safeLog } from '../middleware/sanitize-logs.js';
 
 export type EnrichLeadPiiInput = {
   email?: string;
@@ -129,6 +131,32 @@ export async function enrichLeadPii(
         ),
       ),
     );
+
+  // T-OPB-003b: Populate fn_hash / ln_hash from plaintext name (pure SHA-256 for Meta/Google).
+  // This UPDATE is unconditional — fn/ln hashes always reflect the latest known name.
+  // BR-PRIVACY-002: only hash is persisted — plaintext name is transient.
+  if (input.name) {
+    const { first, last } = splitName(input.name);
+    const fnHashVal = first ? await hashPiiExternal(first) : null;
+    const lnHashVal = last ? await hashPiiExternal(last) : null;
+
+    if (fnHashVal !== null || lnHashVal !== null) {
+      await opts.db
+        .update(leads)
+        .set({
+          ...(fnHashVal ? { fnHash: fnHashVal } : {}),
+          ...(lnHashVal ? { lnHash: lnHashVal } : {}),
+        })
+        .where(
+          and(
+            eq(leads.id, opts.leadId),
+            eq(leads.workspaceId, opts.workspaceId),
+          ),
+        );
+      if (fnHashVal) updatedColumns.push('fnHash');
+      if (lnHashVal) updatedColumns.push('lnHash');
+    }
+  }
 
   return { ok: true, updated_columns: updatedColumns };
 }

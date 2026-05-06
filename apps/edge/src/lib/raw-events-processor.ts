@@ -22,11 +22,12 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, launches, leadStages, rawEvents } from '@globaltracker/db';
+import { events, launches, leadStages, rawEvents, workspaces } from '@globaltracker/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type AttributionParams, recordTouches } from './attribution.js';
+import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
 import { hashPii } from './pii.js';
@@ -760,13 +761,67 @@ export async function processRawEvent(
   }
 
   // -------------------------------------------------------------------------
-  // Step 9: Create dispatch_jobs
+  // Step 9: Create dispatch_jobs for enabled integrations
   //
-  // OQ-011: dispatch_jobs creation requires integration config per workspace
-  // (table not yet implemented — Sprint 3+). Skip silently.
-  // dispatch_jobs_created = 0 until MOD-DISPATCH.createDispatchJobs() is wired.
+  // Only for events with an insertedEventId (new events, not duplicates).
+  // Reads workspaces.config.integrations to determine enabled destinations.
   // -------------------------------------------------------------------------
-  const dispatchJobsCreated = 0;
+  let dispatchJobsCreated = 0;
+  const dispatchJobIds: Array<{ id: string; destination: string }> = [];
+
+  if (insertedEventId) {
+    try {
+      const ws = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, rawEvent.workspaceId),
+        columns: { config: true },
+      });
+
+      type IntegrationConfig = {
+        meta?: { pixel_id?: string; capi_token?: string } | null;
+        ga4?: { measurement_id?: string; api_secret?: string } | null;
+      };
+      const integrations = (ws?.config as Record<string, unknown> | null)
+        ?.integrations as IntegrationConfig | undefined;
+
+      const jobInputs: DispatchJobInput[] = [];
+
+      if (integrations?.meta?.pixel_id && integrations.meta.capi_token) {
+        jobInputs.push({
+          workspace_id: rawEvent.workspaceId,
+          event_id: insertedEventId,
+          lead_id: resolvedLeadId ?? null,
+          destination: 'meta_capi',
+          destination_account_id: integrations.meta.pixel_id,
+          destination_resource_id: integrations.meta.pixel_id,
+        });
+      }
+
+      if (integrations?.ga4?.measurement_id && integrations.ga4.api_secret) {
+        jobInputs.push({
+          workspace_id: rawEvent.workspaceId,
+          event_id: insertedEventId,
+          lead_id: resolvedLeadId ?? null,
+          destination: 'ga4_mp',
+          destination_account_id: integrations.ga4.measurement_id,
+          destination_resource_id: integrations.ga4.measurement_id,
+        });
+      }
+
+      if (jobInputs.length > 0) {
+        const created = await createDispatchJobs(jobInputs, db);
+        dispatchJobsCreated = created.length;
+        for (const job of created) {
+          dispatchJobIds.push({ id: job.id, destination: job.destination });
+        }
+      }
+    } catch (dispatchErr) {
+      safeLog('error', {
+        event: 'dispatch_jobs_creation_failed',
+        raw_event_id,
+        error: dispatchErr instanceof Error ? dispatchErr.message.slice(0, 200) : String(dispatchErr),
+      });
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Step 10: Mark raw_event as processed
@@ -778,7 +833,7 @@ export async function processRawEvent(
     value: {
       event_id: payload.event_id,
       dispatch_jobs_created: dispatchJobsCreated,
-      dispatch_job_ids: [],
+      dispatch_job_ids: dispatchJobIds,
     },
   };
 }

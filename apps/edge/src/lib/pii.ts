@@ -144,6 +144,50 @@ export async function hashPii(
 }
 
 /**
+ * SHA-256 hex puro do valor normalizado (sem workspace scope).
+ * Para dispatchers externos: Meta CAPI (em/ph), Google Enhanced Conversions,
+ * Google Customer Match.
+ * NÃO usar para resolução interna de identidade — use hashPii() para isso.
+ *
+ * BR-PRIVACY-002: only hash is persisted — plaintext is transient.
+ */
+export async function hashPiiExternal(
+  normalizedValue: string,
+): Promise<string> {
+  const input = new TextEncoder().encode(normalizedValue);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', input);
+  return bytesToHex(new Uint8Array(hashBuffer));
+}
+
+/**
+ * Splita nome completo em first/last conforme spec Meta/Google.
+ * - First = primeira palavra
+ * - Last = todas as demais palavras (espaço-separadas)
+ * Normalização: NFD → remove combining marks → lowercase → trim → collapse whitespace.
+ * Acentos REMOVIDOS (Meta/Google preferem ASCII para matching consistente).
+ * Edge cases: 1 palavra → { first, last: null }; vazio/null → { first: null, last: null }
+ *
+ * BR-PRIVACY-002: normalização sem persistência de plaintext.
+ */
+export function splitName(fullName: string | null | undefined): {
+  first: string | null;
+  last: string | null;
+} {
+  if (!fullName) return { first: null, last: null };
+  const normalized = fullName
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '') // remove combining marks (accents, diacritics) after NFD
+    .replace(/[^\p{L}\s]/gu, ' ')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!normalized) return { first: null, last: null };
+  const parts = normalized.split(' ');
+  if (parts.length === 1) return { first: parts[0] ?? null, last: null };
+  return { first: parts[0] ?? null, last: parts.slice(1).join(' ') };
+}
+
+/**
  * Encrypt a PII value with AES-256-GCM using a HKDF-derived key per workspace.
  *
  * BR-PRIVACY-003: AES-GCM with HKDF-derived key per workspace.

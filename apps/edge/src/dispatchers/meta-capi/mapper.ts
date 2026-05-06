@@ -30,10 +30,14 @@ export interface DispatchableEvent {
 
 /** Minimal shape of a lead row as consumed by this dispatcher. */
 export interface DispatchableLead {
-  /** SHA-256 hex of normalized email — already hashed, do NOT re-hash. */
-  email_hash?: string | null;
-  /** SHA-256 hex of E.164-normalized phone — already hashed, do NOT re-hash. */
-  phone_hash?: string | null;
+  /** SHA-256 hex puro de email normalizado — para Meta CAPI em. */
+  email_hash_external?: string | null;
+  /** SHA-256 hex puro de phone E.164 — para Meta CAPI ph. */
+  phone_hash_external?: string | null;
+  /** SHA-256 hex puro do first name lowercase — para Meta CAPI fn. */
+  fn_hash?: string | null;
+  /** SHA-256 hex puro do last name lowercase — para Meta CAPI ln. */
+  ln_hash?: string | null;
 }
 
 /** Context passed to the mapper (env vars, etc.) */
@@ -48,10 +52,14 @@ export interface MapperContext {
 
 /** Meta user_data object — only fields relevant to server-side dispatch. */
 export interface MetaUserData {
-  /** SHA-256 hex of normalized email. Meta field: em. Do NOT re-hash. */
+  /** SHA-256 hex de email normalizado. Meta: em. */
   em?: string;
-  /** SHA-256 hex of E.164 phone. Meta field: ph. Do NOT re-hash. */
+  /** SHA-256 hex de phone E.164. Meta: ph. */
   ph?: string;
+  /** SHA-256 hex de first name lowercase. Meta: fn. */
+  fn?: string;
+  /** SHA-256 hex de last name lowercase. Meta: ln. */
+  ln?: string;
   /** Facebook click ID cookie value. Not hashed. */
   fbc?: string;
   /** Facebook browser ID cookie value. Not hashed. */
@@ -156,11 +164,18 @@ export function mapEventToMetaPayload(
   // BR-CONSENT-003: em and ph only from lead lookup; do NOT re-hash — already SHA-256 hex.
   const userData: MetaUserData = {};
 
-  if (lead?.email_hash) {
-    userData.em = lead.email_hash;
+  // BR-CONSENT-003: usar hashes externos (SHA-256 puro) — NÃO re-hashear
+  if (lead?.email_hash_external) {
+    userData.em = lead.email_hash_external;
   }
-  if (lead?.phone_hash) {
-    userData.ph = lead.phone_hash;
+  if (lead?.phone_hash_external) {
+    userData.ph = lead.phone_hash_external;
+  }
+  if (lead?.fn_hash) {
+    userData.fn = lead.fn_hash;
+  }
+  if (lead?.ln_hash) {
+    userData.ln = lead.ln_hash;
   }
   if (event.user_data?.fbc) {
     userData.fbc = event.user_data.fbc;

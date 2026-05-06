@@ -19,7 +19,7 @@
 import type { Db } from '@globaltracker/db';
 import { leadAliases, leadMerges, leads } from '@globaltracker/db';
 import { and, eq, inArray } from 'drizzle-orm';
-import { hashPii } from './pii.js';
+import { hashPii, hashPiiExternal } from './pii.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,7 +40,8 @@ export type ResolveLeadError =
 
 export type ResolvedAlias = {
   identifier_type: 'email_hash' | 'phone_hash' | 'external_id_hash';
-  identifier_hash: string;
+  identifier_hash: string; // workspace-scoped SHA-256
+  external_hash?: string; // pure SHA-256 para dispatchers externos (Meta CAPI, Google)
 };
 
 // ---------------------------------------------------------------------------
@@ -232,9 +233,11 @@ export async function resolveLeadByAliases(
       const normalized = normalizeEmail(input.email);
       // BR-IDENTITY-002: normalizar antes de hashear
       const hash = await hashPii(normalized, workspace_id);
+      const externalHash = await hashPiiExternal(normalized);
       resolvedAliases.push({
         identifier_type: 'email_hash',
         identifier_hash: hash,
+        external_hash: externalHash,
       });
     }
 
@@ -252,9 +255,11 @@ export async function resolveLeadByAliases(
       }
       // BR-IDENTITY-002: normalizar antes de hashear
       const hash = await hashPii(normalized, workspace_id);
+      const externalHash = await hashPiiExternal(normalized);
       resolvedAliases.push({
         identifier_type: 'phone_hash',
         identifier_hash: hash,
+        external_hash: externalHash,
       });
     }
 
@@ -356,8 +361,12 @@ async function createNewLead(
 
   // Extract hashes for denormalized columns — enables dispatcher eligibility checks
   // without a join to lead_aliases on every dispatch.
-  const emailAlias = resolvedAliases.find((a) => a.identifier_type === 'email_hash');
-  const phoneAlias = resolvedAliases.find((a) => a.identifier_type === 'phone_hash');
+  const emailAlias = resolvedAliases.find(
+    (a) => a.identifier_type === 'email_hash',
+  );
+  const phoneAlias = resolvedAliases.find(
+    (a) => a.identifier_type === 'phone_hash',
+  );
 
   // Insert new lead row
   const inserted = await db
@@ -369,6 +378,8 @@ async function createNewLead(
       lastSeenAt: now,
       emailHash: emailAlias?.identifier_hash ?? null,
       phoneHash: phoneAlias?.identifier_hash ?? null,
+      emailHashExternal: emailAlias?.external_hash ?? null, // T-OPB-003a: pure SHA-256 para dispatchers externos
+      phoneHashExternal: phoneAlias?.external_hash ?? null, // T-OPB-003a: pure SHA-256 para dispatchers externos
     })
     .returning({ id: leads.id });
 
@@ -420,8 +431,12 @@ async function updateExistingLead(
   const now = new Date();
 
   // Update last_seen_at + denormalized hash columns if newly provided.
-  const emailAlias = resolvedAliases.find((a) => a.identifier_type === 'email_hash');
-  const phoneAlias = resolvedAliases.find((a) => a.identifier_type === 'phone_hash');
+  const emailAlias = resolvedAliases.find(
+    (a) => a.identifier_type === 'email_hash',
+  );
+  const phoneAlias = resolvedAliases.find(
+    (a) => a.identifier_type === 'phone_hash',
+  );
   await db
     .update(leads)
     .set({
@@ -429,6 +444,12 @@ async function updateExistingLead(
       updatedAt: now,
       ...(emailAlias ? { emailHash: emailAlias.identifier_hash } : {}),
       ...(phoneAlias ? { phoneHash: phoneAlias.identifier_hash } : {}),
+      ...(emailAlias?.external_hash
+        ? { emailHashExternal: emailAlias.external_hash }
+        : {}), // T-OPB-003a: pure SHA-256 para dispatchers externos
+      ...(phoneAlias?.external_hash
+        ? { phoneHashExternal: phoneAlias.external_hash }
+        : {}), // T-OPB-003a: pure SHA-256 para dispatchers externos
     })
     .where(and(eq(leads.id, leadId), eq(leads.workspaceId, workspace_id)));
 

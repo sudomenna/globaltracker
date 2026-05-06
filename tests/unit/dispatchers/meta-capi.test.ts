@@ -57,9 +57,9 @@ function makeEvent(
 
 function makeLead(overrides: Partial<DispatchableLead> = {}): DispatchableLead {
   return {
-    email_hash:
+    email_hash_external:
       'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2',
-    phone_hash:
+    phone_hash_external:
       'b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3',
     ...overrides,
   };
@@ -161,14 +161,14 @@ describe('mapEventToMetaPayload', () => {
     expect(payload.event_name).toBe('CustomMyEvent');
   });
 
-  it('BR-CONSENT-003: includes em from lead.email_hash (no re-hashing)', () => {
-    const lead = makeLead({ email_hash: 'deadbeef1234' });
+  it('BR-CONSENT-003: includes em from lead.email_hash_external (no re-hashing)', () => {
+    const lead = makeLead({ email_hash_external: 'deadbeef1234' });
     const payload = mapEventToMetaPayload(makeEvent(), lead);
     expect(payload.user_data.em).toBe('deadbeef1234');
   });
 
-  it('BR-CONSENT-003: includes ph from lead.phone_hash (no re-hashing)', () => {
-    const lead = makeLead({ phone_hash: 'cafebabe5678' });
+  it('BR-CONSENT-003: includes ph from lead.phone_hash_external (no re-hashing)', () => {
+    const lead = makeLead({ phone_hash_external: 'cafebabe5678' });
     const payload = mapEventToMetaPayload(makeEvent(), lead);
     expect(payload.user_data.ph).toBe('cafebabe5678');
   });
@@ -178,10 +178,10 @@ describe('mapEventToMetaPayload', () => {
     expect(payload.user_data.em).toBeUndefined();
   });
 
-  it('omits ph when lead.phone_hash is null', () => {
+  it('omits ph when lead.phone_hash_external is null', () => {
     const payload = mapEventToMetaPayload(
       makeEvent(),
-      makeLead({ phone_hash: null }),
+      makeLead({ phone_hash_external: null }),
     );
     expect(payload.user_data.ph).toBeUndefined();
   });

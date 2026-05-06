@@ -9,7 +9,8 @@ import { workspaces } from './workspace.js';
 // BR-PRIVACY-003: Sensitive PII must be encrypted — *_enc columns hold AES-256-GCM base64.
 //
 // INV-IDENTITY-002: erased lead has email_enc IS NULL, phone_enc IS NULL, name_enc IS NULL,
-//   and all hash fields IS NULL. Enforced at service layer (eraseLead).
+//   email_hash, phone_hash, name_hash, email_hash_external, phone_hash_external, fn_hash, ln_hash all IS NULL.
+//   Enforced at service layer (eraseLead).
 // INV-IDENTITY-003: merged lead does not receive new aliases or events — enforced at Edge layer.
 
 export const leads = pgTable('leads', {
@@ -36,6 +37,23 @@ export const leads = pgTable('leads', {
 
   // BR-PRIVACY-002: name_hash is SHA-256 of name (lowercase + trim)
   nameHash: text('name_hash'),
+
+  // T-OPB-001: external hashes — SHA-256(normalized_value) pure, no workspace scope.
+  // Used by Meta CAPI and Google Enhanced Conversions dispatchers.
+  // DIFFERENT from emailHash/phoneHash which are workspace-scoped (internal lead-resolver use).
+  // BR-PRIVACY-002: same normalization rules apply before hashing.
+
+  // SHA-256(email.toLowerCase().trim()) — for Meta CAPI em / Google hashedEmail
+  emailHashExternal: text('email_hash_external'),
+
+  // SHA-256(E.164 phone) — for Meta CAPI ph / Google hashedPhoneNumber
+  phoneHashExternal: text('phone_hash_external'),
+
+  // SHA-256(firstName.toLowerCase().trim()) — for Meta CAPI fn / Google hashedFirstName
+  fnHash: text('fn_hash'),
+
+  // SHA-256(lastName.toLowerCase().trim()) — for Meta CAPI ln / Google hashedLastName
+  lnHash: text('ln_hash'),
 
   // BR-PRIVACY-003: email_enc is AES-256-GCM encrypted value (base64)
   emailEnc: text('email_enc'),
