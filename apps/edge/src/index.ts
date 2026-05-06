@@ -87,6 +87,7 @@ import { eventsRoute } from './routes/events.js';
 import { createFunnelTemplatesRoute } from './routes/funnel-templates.js';
 import { healthCpRoute } from './routes/health-cp.js';
 import { helpRoute } from './routes/help.js';
+import { integrationsGoogleRoute } from './routes/integrations-google.js';
 import { integrationsSendflowRoute } from './routes/integrations-sendflow.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
 import { launchesRoute } from './routes/launches.js';
@@ -432,6 +433,7 @@ app.route('/v1/health', healthCpRoute);
 // `/sendflow/credentials` is not intercepted. The test route only handles
 // POST `/:provider/test`, so there's no conflict — but mounting first is
 // defensive ordering. BR-PRIVACY-001: never echoes raw sendtok.
+app.route('/v1/integrations/google', integrationsGoogleRoute);
 app.route('/v1/integrations/sendflow', integrationsSendflowRoute);
 app.route('/v1/integrations', integrationsTestRoute);
 
