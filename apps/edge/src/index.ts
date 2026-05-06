@@ -91,7 +91,7 @@ import { integrationsSendflowRoute } from './routes/integrations-sendflow.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
 import { launchesRoute } from './routes/launches.js';
 import { leadRoute } from './routes/lead.js';
-import { leadsTimelineRoute } from './routes/leads-timeline.js';
+import { createLeadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
 import { orchestratorRoute } from './routes/orchestrator.js';
 import { createPagesStatusRoute } from './routes/pages-status.js';
@@ -446,7 +446,13 @@ app.route(
 app.route('/v1/onboarding', onboardingStateRoute);
 app.route('/v1/dispatch-jobs', dispatchReplayRoute);
 app.route('/v1/help', helpRoute);
-app.route('/v1/leads', leadsTimelineRoute);
+app.route(
+  '/v1/leads',
+  createLeadsTimelineRoute({
+    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
+  }),
+);
 app.route('/v1/orchestrator/workflows', orchestratorRoute);
 
 // Workspace config endpoint (Sprint 11 — T-FUNIL-021)

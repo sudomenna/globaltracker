@@ -38,6 +38,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { createLeadsQueryFns } from '../lib/leads-queries.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -47,6 +48,9 @@ import { safeLog } from '../middleware/sanitize-logs.js';
 type AppBindings = {
   HYPERDRIVE: Hyperdrive;
   ENVIRONMENT: string;
+  DATABASE_URL?: string;
+  PII_MASTER_KEY_V1?: string;
+  DEV_WORKSPACE_ID?: string;
 };
 
 type AppVariables = {
@@ -74,33 +78,30 @@ const TimelineQuerySchema = z
 // TimelineNode type
 // ---------------------------------------------------------------------------
 
-export type TimelineNodeStatus =
-  | 'success'
-  | 'warning'
-  | 'error'
-  | 'pending'
-  | 'unknown';
-
-export type TimelineNodeType =
-  | 'event'
-  | 'identity'
-  | 'attribution'
-  | 'stage'
-  | 'consent'
-  | 'dispatch'
-  | 'sar';
 
 export type TimelineNode = {
   id: string;
-  type: TimelineNodeType;
-  timestamp: string;
-  status: TimelineNodeStatus;
+  // CP client NodeType compound names
+  type:
+    | 'event_captured'
+    | 'dispatch_queued'
+    | 'dispatch_success'
+    | 'dispatch_failed'
+    | 'dispatch_skipped'
+    | 'attribution_set'
+    | 'stage_changed'
+    | 'merge'
+    | 'consent_updated';
+  occurred_at: string;
+  // CP client NodeStatus
+  status: 'ok' | 'failed' | 'skipped' | 'pending';
   label: string;
   detail?: string;
   destination?: string;
   job_id?: string;
-  payload?: Record<string, unknown>;
-  can_replay?: boolean;
+  payload: Record<string, unknown>;
+  skip_reason: string | null;
+  can_replay: boolean;
 };
 
 export type TimelineResponse = {
@@ -188,6 +189,33 @@ export type GetLeadStagesFn = (opts: {
   leadId: string;
   workspaceId: string;
 }) => Promise<LeadStageRow[]>;
+
+export type GetLeadSummaryFn = (
+  publicId: string,
+  workspaceId: string,
+) => Promise<{
+  lead_public_id: string;
+  display_name: string | null;
+  status: 'active' | 'merged' | 'erased';
+  first_seen_at: string;
+  last_seen_at: string;
+} | null>;
+
+export type ListLeadsFn = (opts: {
+  workspaceId: string;
+  q?: string;
+  launchPublicId?: string;
+  cursor?: Date | null;
+  limit: number;
+}) => Promise<
+  Array<{
+    lead_public_id: string;
+    display_name: string | null;
+    status: 'active' | 'merged' | 'erased';
+    first_seen_at: string;
+    last_seen_at: string;
+  }>
+>;
 
 // ---------------------------------------------------------------------------
 // Label helpers
@@ -281,11 +309,13 @@ function buildEventNode(row: EventRow, role: string): TimelineNode {
 
   return {
     id: row.id,
-    type: 'event',
-    timestamp: ts,
-    status: 'success',
+    type: 'event_captured',
+    occurred_at: ts,
+    status: 'ok',
     label: labelForEventName(row.eventName),
     payload: sanitizePayload(fullPayload, role),
+    skip_reason: null,
+    can_replay: false,
   };
 }
 
@@ -294,51 +324,49 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
   const destLabel = labelForDestination(row.destination);
 
   let label: string;
-  let status: TimelineNodeStatus;
+  let status: TimelineNode['status'];
+  let nodeType: TimelineNode['type'];
   let detail: string | undefined;
 
   switch (row.status) {
     case 'succeeded':
       label = `Despachado para ${destLabel}`;
-      status = 'success';
+      status = 'ok';
+      nodeType = 'dispatch_success';
       break;
     case 'skipped':
       label = `Não despachado: ${translateSkipReason(row.skipReason)}`;
-      status = 'warning';
+      status = 'skipped';
+      nodeType = 'dispatch_skipped';
       break;
     case 'failed':
-      if (row.nextAttemptAt) {
-        label = 'Falhou — vai tentar novamente';
-        status = 'warning';
-        detail = `Próxima tentativa: ${row.nextAttemptAt.toISOString()}`;
-      } else {
-        label = 'Falhou definitivamente';
-        status = 'error';
-      }
-      break;
     case 'dead_letter':
-      label = 'Falhou e parou de tentar';
-      status = 'error';
-      break;
-    case 'pending':
-    case 'processing':
-      label = 'Aguardando despacho';
-      status = 'pending';
+      label =
+        row.nextAttemptAt
+          ? 'Falhou — vai tentar novamente'
+          : 'Falhou definitivamente';
+      status = 'failed';
+      nodeType = 'dispatch_failed';
+      if (row.nextAttemptAt)
+        detail = `Próxima tentativa: ${row.nextAttemptAt.toISOString()}`;
       break;
     case 'retrying':
       label = 'Falhou — vai tentar novamente';
-      status = 'warning';
+      status = 'failed';
+      nodeType = 'dispatch_failed';
       detail = row.nextAttemptAt
         ? `Próxima tentativa: ${row.nextAttemptAt.toISOString()}`
         : undefined;
       break;
+    case 'pending':
+    case 'processing':
     default:
-      label = `Status: ${row.status}`;
-      status = 'unknown';
+      label = 'Aguardando despacho';
+      status = 'pending';
+      nodeType = 'dispatch_queued';
   }
 
   // can_replay: only for dead_letter/failed, and only for OPERATOR+
-  // BR-PRIVACY-001: MARKETER never gets can_replay=true
   const canReplay =
     (row.status === 'dead_letter' || row.status === 'failed') &&
     (role === 'operator' || role === 'admin');
@@ -346,7 +374,6 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
   const basePayload: Record<string, unknown> = {
     destination: row.destination,
     status: row.status,
-    skip_reason: translateSkipReason(row.skipReason),
   };
 
   const fullPayload: Record<string, unknown> = {
@@ -362,35 +389,36 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
 
   return {
     id: row.id,
-    type: 'dispatch',
-    timestamp: ts,
+    type: nodeType,
+    occurred_at: ts,
     status,
     label,
     ...(detail ? { detail } : {}),
     destination: row.destination,
     job_id: row.id,
     payload: sanitizePayload(fullPayload, role),
+    skip_reason: row.skipReason ? translateSkipReason(row.skipReason) : null,
     can_replay: canReplay,
   };
 }
 
 function buildAttributionNode(row: LeadAttributionRow): TimelineNode {
   const ts = row.createdAt.toISOString();
-  // BR-ATTRIBUTION-001/002: first-touch vs last-touch
   const isFirstTouch = row.touchType === 'first';
 
   return {
     id: row.id,
-    type: 'attribution',
-    timestamp: ts,
-    status: 'success',
+    type: 'attribution_set',
+    occurred_at: ts,
+    status: 'ok',
     label: isFirstTouch ? 'First-touch atribuído' : 'Last-touch atualizado',
     payload: {
-      // UTM fields are not PII — safe to expose to all roles
       utm_source: row.source,
       utm_campaign: row.campaign,
       utm_medium: row.medium,
     },
+    skip_reason: null,
+    can_replay: false,
   };
 }
 
@@ -398,10 +426,13 @@ function buildStageNode(row: LeadStageRow): TimelineNode {
   const ts = row.ts.toISOString();
   return {
     id: row.id,
-    type: 'stage',
-    timestamp: ts,
-    status: 'success',
+    type: 'stage_changed',
+    occurred_at: ts,
+    status: 'ok',
     label: `Stage alterado: ${row.stage}`,
+    payload: { stage: row.stage },
+    skip_reason: null,
+    can_replay: false,
   };
 }
 
@@ -419,12 +450,12 @@ function mergeAndSort(
 ): { nodes: TimelineNode[]; next_cursor: string | null } {
   allNodes.sort((a, b) => {
     // Descending — more recent first
-    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    return new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime();
   });
 
   const sliced = allNodes.slice(0, limit);
   const last = sliced[sliced.length - 1];
-  const next_cursor = allNodes.length > limit && last ? last.timestamp : null;
+  const next_cursor = allNodes.length > limit && last ? last.occurred_at : null;
 
   return { nodes: sliced, next_cursor };
 }
@@ -433,14 +464,139 @@ function mergeAndSort(
 // Route factory
 // ---------------------------------------------------------------------------
 
-export function createLeadsTimelineRoute(deps?: {
+export function createLeadsTimelineRoute(opts?: {
+  getConnStr?: (env: AppBindings) => string;
+  getMasterKey?: (env: AppBindings) => string;
+  // legacy injected deps (for tests)
   getLeadByPublicId?: GetLeadByPublicIdFn;
   getEvents?: GetEventsFn;
   getDispatchJobs?: GetDispatchJobsFn;
   getLeadAttributions?: GetLeadAttributionsFn;
   getLeadStages?: GetLeadStagesFn;
+  getLeadSummary?: GetLeadSummaryFn;
+  listLeads?: ListLeadsFn;
 }): Hono<AppEnv> {
   const route = new Hono<AppEnv>();
+
+  function resolveQueryFns(env: AppBindings) {
+    if (opts?.getConnStr) {
+      const connStr = opts.getConnStr(env);
+      const masterKey = opts.getMasterKey ? opts.getMasterKey(env) : '';
+      const registry: Record<number, string> = masterKey
+        ? { 1: masterKey }
+        : {};
+      return createLeadsQueryFns(connStr, registry);
+    }
+    // legacy injected deps (tests / no-op default)
+    return {
+      getLeadByPublicId: opts?.getLeadByPublicId,
+      getLeadSummary: opts?.getLeadSummary,
+      getEvents: opts?.getEvents,
+      getDispatchJobs: opts?.getDispatchJobs,
+      getLeadAttributions: opts?.getLeadAttributions,
+      getLeadStages: opts?.getLeadStages,
+      listLeads: opts?.listLeads,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // GET / — list leads (paginated, optional search + launch filter)
+  // -------------------------------------------------------------------------
+  route.get('/', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ') || !authHeader.slice(7).trim()) {
+      return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const workspaceId =
+      (c.get('workspace_id') as string | undefined) ??
+      c.env.DEV_WORKSPACE_ID ??
+      '';
+
+    const rawQuery = c.req.query();
+    const q = rawQuery.q?.trim() || undefined;
+    const launchPublicId = rawQuery.launch_public_id?.trim() || undefined;
+    const rawLimit = Math.min(
+      Math.max(1, Number(rawQuery.limit ?? 30)),
+      100,
+    );
+    const cursorRaw = rawQuery.cursor;
+    const cursor = cursorRaw ? new Date(cursorRaw) : null;
+
+    const qfns = resolveQueryFns(c.env);
+
+    if (!qfns.listLeads) {
+      return c.json({ items: [], next_cursor: null }, 200, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const items = await qfns.listLeads({
+      workspaceId,
+      q,
+      launchPublicId,
+      cursor,
+      limit: rawLimit + 1,
+    });
+
+    const hasMore = items.length > rawLimit;
+    const page = hasMore ? items.slice(0, rawLimit) : items;
+    const nextCursor =
+      hasMore && page.length > 0
+        ? page[page.length - 1]!.last_seen_at
+        : null;
+
+    return c.json({ items: page, next_cursor: nextCursor }, 200, {
+      'X-Request-Id': requestId,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /:public_id — lead summary (display_name, status, timestamps)
+  // -------------------------------------------------------------------------
+  route.get('/:public_id', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader?.startsWith('Bearer ') || !authHeader.slice(7).trim()) {
+      return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const workspaceId =
+      (c.get('workspace_id') as string | undefined) ??
+      c.env.DEV_WORKSPACE_ID ??
+      '';
+    const publicId = c.req.param('public_id');
+
+    const qfnsSummary = resolveQueryFns(c.env);
+
+    if (!qfnsSummary.getLeadSummary) {
+      return c.json(
+        { code: 'not_found', request_id: requestId },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const summary = await qfnsSummary.getLeadSummary(publicId, workspaceId);
+    if (!summary) {
+      return c.json(
+        { code: 'lead_not_found', request_id: requestId },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    return c.json(summary, 200, { 'X-Request-Id': requestId });
+  });
 
   // -------------------------------------------------------------------------
   // GET /:public_id/timeline
@@ -558,12 +714,17 @@ export function createLeadsTimelineRoute(deps?: {
     // -----------------------------------------------------------------------
 
     // workspace_id — if available from auth middleware context
-    const workspaceId = (c.get('workspace_id') as string | undefined) ?? '';
+    const workspaceId =
+      (c.get('workspace_id') as string | undefined) ??
+      c.env.DEV_WORKSPACE_ID ??
+      '';
 
-    if (deps?.getLeadByPublicId) {
+    const timelineFns = resolveQueryFns(c.env);
+
+    if (timelineFns.getLeadByPublicId) {
       let lookupResult: LeadLookupResult;
       try {
-        lookupResult = await deps.getLeadByPublicId(publicId, workspaceId);
+        lookupResult = await timelineFns.getLeadByPublicId(publicId, workspaceId);
       } catch (err) {
         // BR-PRIVACY-001: no PII in log — public_id is opaque
         safeLog('error', {
@@ -595,27 +756,27 @@ export function createLeadsTimelineRoute(deps?: {
       try {
         [eventRows, dispatchRows, attributionRows, stageRows] =
           await Promise.all([
-            deps.getEvents
-              ? deps.getEvents({
+            timelineFns.getEvents
+              ? timelineFns.getEvents({
                   leadId,
                   workspaceId,
                   cursor: cursorDate,
                   limit,
                 })
               : Promise.resolve([]),
-            deps.getDispatchJobs
-              ? deps.getDispatchJobs({
+            timelineFns.getDispatchJobs
+              ? timelineFns.getDispatchJobs({
                   leadId,
                   workspaceId,
                   cursor: cursorDate,
                   limit,
                 })
               : Promise.resolve([]),
-            deps.getLeadAttributions
-              ? deps.getLeadAttributions({ leadId, workspaceId })
+            timelineFns.getLeadAttributions
+              ? timelineFns.getLeadAttributions({ leadId, workspaceId })
               : Promise.resolve([]),
-            deps.getLeadStages
-              ? deps.getLeadStages({ leadId, workspaceId })
+            timelineFns.getLeadStages
+              ? timelineFns.getLeadStages({ leadId, workspaceId })
               : Promise.resolve([]),
           ]);
       } catch (err) {
