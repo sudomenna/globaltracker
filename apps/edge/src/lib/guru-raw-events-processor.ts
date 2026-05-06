@@ -17,7 +17,7 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, leadStages, leads, rawEvents } from '@globaltracker/db';
+import { events, leadStages, leads, rawEvents, workspaces } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
@@ -30,6 +30,7 @@ import {
   getBlueprintForLaunch,
   matchesStageFilters,
 } from './raw-events-processor.js';
+import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 
 // Re-export ProcessingError for callers that want to type the error union.
 export type { ProcessingError, Result };
@@ -710,19 +711,135 @@ export async function processGuruRawEvent(
   }
 
   // -------------------------------------------------------------------------
-  // Step 6: Mark raw_event as processed
+  // Step 6: Create dispatch_jobs for enabled integrations
+  //
+  // Mirrors raw-events-processor.ts Step 9. Guru events (Purchase etc.) are
+  // always canonical — no internal-only filter needed.
+  // -------------------------------------------------------------------------
+  let dispatchJobsCreated = 0;
+  const dispatchJobIds: Array<{ id: string; destination: string }> = [];
+
+  try {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, rawEvent.workspaceId),
+      columns: { config: true },
+    });
+
+    type IntegrationConfig = {
+      meta?: { pixel_id?: string; capi_token?: string } | null;
+      ga4?: { measurement_id?: string; api_secret?: string } | null;
+      google_ads?: {
+        customer_id?: string | null;
+        login_customer_id?: string | null;
+        oauth_token_state?: 'pending' | 'connected' | 'expired' | null;
+        conversion_actions?: Record<string, string | null> | null;
+        enabled?: boolean | null;
+      } | null;
+    };
+
+    const rawConfig = ws?.config as
+      | Record<string, unknown>
+      | string
+      | null
+      | undefined;
+    const config: Record<string, unknown> | null =
+      typeof rawConfig === 'string'
+        ? (() => {
+            try {
+              return JSON.parse(rawConfig) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })()
+        : (rawConfig ?? null);
+    const integrations = config?.integrations as IntegrationConfig | undefined;
+
+    const jobInputs: DispatchJobInput[] = [];
+
+    if (integrations?.meta?.pixel_id && integrations.meta.capi_token) {
+      jobInputs.push({
+        workspace_id: rawEvent.workspaceId,
+        event_id: insertedEventId,
+        lead_id: resolvedLeadId ?? null,
+        destination: 'meta_capi',
+        destination_account_id: integrations.meta.pixel_id,
+        destination_resource_id: integrations.meta.pixel_id,
+      });
+    }
+
+    if (integrations?.ga4?.measurement_id && integrations.ga4.api_secret) {
+      jobInputs.push({
+        workspace_id: rawEvent.workspaceId,
+        event_id: insertedEventId,
+        lead_id: resolvedLeadId ?? null,
+        destination: 'ga4_mp',
+        destination_account_id: integrations.ga4.measurement_id,
+        destination_resource_id: integrations.ga4.measurement_id,
+      });
+    }
+
+    // ADR-030: only canonical events fan out to Google Ads.
+    // Guru event types (Purchase, RefundProcessed) are always canonical.
+    const ga = integrations?.google_ads;
+    if (
+      ga?.enabled === true &&
+      ga.oauth_token_state === 'connected' &&
+      typeof ga.customer_id === 'string' &&
+      ga.customer_id.length > 0 &&
+      ga.conversion_actions
+    ) {
+      const conversionActionId = ga.conversion_actions[payload._guru_event_type];
+      if (typeof conversionActionId === 'string' && conversionActionId.length > 0) {
+        jobInputs.push({
+          workspace_id: rawEvent.workspaceId,
+          event_id: insertedEventId,
+          lead_id: resolvedLeadId ?? null,
+          destination: 'google_ads_conversion',
+          destination_account_id: ga.customer_id,
+          destination_resource_id: conversionActionId,
+          destination_subresource: conversionActionId,
+        });
+        jobInputs.push({
+          workspace_id: rawEvent.workspaceId,
+          event_id: insertedEventId,
+          lead_id: resolvedLeadId ?? null,
+          destination: 'google_enhancement',
+          destination_account_id: ga.customer_id,
+          destination_resource_id: conversionActionId,
+          destination_subresource: conversionActionId,
+        });
+      }
+    }
+
+    if (jobInputs.length > 0) {
+      const created = await createDispatchJobs(jobInputs, db);
+      dispatchJobsCreated = created.length;
+      for (const job of created) {
+        dispatchJobIds.push({ id: job.id, destination: job.destination });
+      }
+    }
+  } catch (dispatchErr) {
+    safeLog('error', {
+      event: 'dispatch_jobs_creation_failed',
+      raw_event_id,
+      error: dispatchErr instanceof Error ? dispatchErr.message.slice(0, 200) : String(dispatchErr),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 7: Mark raw_event as processed
   // -------------------------------------------------------------------------
   await markRawEventProcessed(raw_event_id, db);
 
   // -------------------------------------------------------------------------
-  // Step 7: Return
+  // Step 8: Return
   // -------------------------------------------------------------------------
   return {
     ok: true,
     value: {
       event_id: payload._guru_event_id,
-      dispatch_jobs_created: 0,
-      dispatch_job_ids: [],
+      dispatch_jobs_created: dispatchJobsCreated,
+      dispatch_job_ids: dispatchJobIds,
     },
   };
 }
