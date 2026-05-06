@@ -229,16 +229,30 @@ function buildCustomData(event: DispatchableEvent): MetaCustomData | null {
   const result: MetaCustomData = {};
   let hasFields = false;
 
-  if (typeof cd.value === 'number') {
-    result.value = cd.value;
+  // Accept both `value` (canonical) and `amount` (Guru processor convention).
+  const numericValue =
+    typeof cd.value === 'number'
+      ? cd.value
+      : typeof cd.amount === 'number'
+        ? cd.amount
+        : null;
+  if (numericValue !== null) {
+    result.value = numericValue;
     hasFields = true;
   }
   if (typeof cd.currency === 'string') {
     result.currency = cd.currency;
     hasFields = true;
   }
-  if (typeof cd.order_id === 'string') {
-    result.order_id = cd.order_id;
+  // Accept `order_id` (canonical) or fallback to `product_id` (Guru convention).
+  const orderId =
+    typeof cd.order_id === 'string'
+      ? cd.order_id
+      : typeof cd.product_id === 'string'
+        ? cd.product_id
+        : null;
+  if (orderId !== null) {
+    result.order_id = orderId;
     hasFields = true;
   }
 

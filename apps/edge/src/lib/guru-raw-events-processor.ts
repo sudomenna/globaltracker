@@ -515,8 +515,9 @@ export async function processGuruRawEvent(
       const newCustomData = {
         ...((existingEvent[0].customData ?? {}) as Record<string, unknown>),
         funnel_role: payload.funnel_role ?? null,
-        amount:
-          payload.payment?.total != null ? payload.payment.total / 100 : null,
+        // Guru envia payment.total já em unidade de moeda (BRL), NÃO em centavos.
+        // Confirmado em 70+ webhooks reais: total=37 = R$37,00.
+        amount: payload.payment?.total ?? null,
         currency: payload.payment?.currency ?? null,
         product_id: payload.product?.id ?? null,
         product_name: payload.product?.name ?? null,
@@ -585,11 +586,9 @@ export async function processGuruRawEvent(
         userData: {},
         customData: {
           funnel_role: payload.funnel_role ?? null,
-          // BR-EVENT-002: amount stored in base unit (currency units), not centavos
-          amount:
-            payload.payment?.total != null
-              ? payload.payment.total / 100
-              : null,
+          // BR-EVENT-002: amount em unidade de moeda (BRL), NÃO em centavos.
+          // Guru envia payment.total já em BRL — confirmado em 70+ webhooks reais.
+          amount: payload.payment?.total ?? null,
           currency: payload.payment?.currency ?? null,
           product_id: payload.product?.id ?? null,
           product_name: payload.product?.name ?? null,

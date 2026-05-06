@@ -86,7 +86,18 @@ export async function sendToMetaCapi(
 ): Promise<MetaCapiResult> {
   const url = `${META_GRAPH_BASE_URL}/${META_GRAPH_API_VERSION}/${encodeURIComponent(config.pixelId)}/events`;
 
-  const body = JSON.stringify({ data: [payload] });
+  // Meta expects test_event_code at the TOP LEVEL of the request body (sibling of `data`),
+  // NOT inside each event in the data array. Strip from event payload (legacy mapper bug)
+  // and re-attach at top level when configured.
+  const { test_event_code: _embeddedTestCode, ...payloadWithoutTestCode } =
+    payload as MetaCapiPayload & { test_event_code?: string };
+  const requestBody: { data: MetaCapiPayload[]; test_event_code?: string } = {
+    data: [payloadWithoutTestCode as MetaCapiPayload],
+  };
+  if (config.testEventCode) {
+    requestBody.test_event_code = config.testEventCode;
+  }
+  const body = JSON.stringify(requestBody);
 
   let response: Response;
   try {
