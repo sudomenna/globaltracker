@@ -363,6 +363,27 @@ const LEAD_STAGE_IDENTIFY_EVENT_NAMES = new Set(['Lead', 'lead_identify']);
 /** Event names that should create a 'purchased' lead_stage. */
 const PURCHASE_EVENT_NAMES = new Set(['Purchase']);
 
+/**
+ * Event names that are internal-only and must NEVER create dispatch_jobs.
+ *
+ * Rationale:
+ *   - `lead_identify` is fired by tracker.js on identity rebind (multiple times per
+ *     session); it represents `visitor_id` ↔ `lead_id` linkage, not a marketing
+ *     conversion. Sending to Meta/Google as a custom event is noise — Meta flags
+ *     it under "Eventos personalizados que pertencem a você" requiring manual
+ *     confirmation, and it has no value for ad optimization.
+ *   - `event_duplicate_accepted` is the dedup signal returned by /v1/events when
+ *     the same event_id is replayed within a session window; pure telemetry.
+ *
+ * Adding an event here prevents dispatch_jobs creation entirely (Step 9) — saves
+ * DB rows, eligibility-check compute, and prevents accidental delivery if
+ * eligibility logic changes.
+ */
+const INTERNAL_ONLY_EVENT_NAMES = new Set([
+  'lead_identify',
+  'event_duplicate_accepted',
+]);
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -769,7 +790,7 @@ export async function processRawEvent(
   let dispatchJobsCreated = 0;
   const dispatchJobIds: Array<{ id: string; destination: string }> = [];
 
-  if (insertedEventId) {
+  if (insertedEventId && !INTERNAL_ONLY_EVENT_NAMES.has(payload.event_name)) {
     try {
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, rawEvent.workspaceId),
