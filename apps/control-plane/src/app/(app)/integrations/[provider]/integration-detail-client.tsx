@@ -134,6 +134,8 @@ export function IntegrationDetailClient({
   canEdit,
 }: IntegrationDetailClientProps) {
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' });
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   const { data: healthData } = useSWR<IntegrationsHealthResponse>(
     '/v1/health/integrations',
@@ -181,6 +183,25 @@ export function IntegrationDetailClient({
         result: { status: 'error', phases: [] },
         message: 'Não foi possível conectar ao servidor.',
       });
+    }
+  }
+
+  async function handleSave() {
+    setSaveState('saving');
+    try {
+      const supabase = createSupabaseBrowser();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token ?? '';
+      const providerKey = provider === 'meta' ? 'meta' : 'ga4';
+      const res = await edgeFetch('/v1/workspace/config', token, {
+        method: 'PATCH',
+        body: JSON.stringify({ integrations: { [providerKey]: fieldValues } }),
+      });
+      setSaveState(res.ok ? 'saved' : 'error');
+    } catch {
+      setSaveState('error');
     }
   }
 
@@ -304,6 +325,16 @@ export function IntegrationDetailClient({
                         ? '(configurado via painel de administração)'
                         : ''
                     }
+                    value={f.readOnly ? undefined : (fieldValues[f.field] ?? '')}
+                    onChange={
+                      f.readOnly
+                        ? undefined
+                        : (e) =>
+                            setFieldValues((prev) => ({
+                              ...prev,
+                              [f.field]: e.target.value,
+                            }))
+                    }
                     className={cn(
                       'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm',
                       'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -324,12 +355,28 @@ export function IntegrationDetailClient({
                 </div>
               ))}
             </div>
-            <Button size="sm" disabled>
-              Salvar configuração
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              Salvamento de credenciais disponível em próxima versão.
-            </p>
+            {(provider === 'meta' || provider === 'ga4') && (
+              <div className="space-y-2">
+                <Button
+                  size="sm"
+                  onClick={() => void handleSave()}
+                  disabled={saveState === 'saving'}
+                >
+                  {saveState === 'saving' ? (
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  ) : null}
+                  Salvar configuração
+                </Button>
+                {saveState === 'saved' && (
+                  <p className="text-xs text-green-600">Configuração salva.</p>
+                )}
+                {saveState === 'error' && (
+                  <p className="text-xs text-red-600">
+                    Erro ao salvar. Tente novamente.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

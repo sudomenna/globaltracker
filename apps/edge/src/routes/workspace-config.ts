@@ -147,10 +147,27 @@ const GoogleAdsConfigSchema = z
   })
   .strict();
 
+const MetaConfigSchema = z
+  .object({
+    pixel_id: z.string().optional(),
+    capi_token: z.string().optional(),
+    test_event_code: z.string().optional(),
+  })
+  .strict();
+
+const Ga4ConfigSchema = z
+  .object({
+    measurement_id: z.string().optional(),
+    api_secret: z.string().optional(),
+  })
+  .strict();
+
 const IntegrationsSchema = z
   .object({
     guru: GuruConfigSchema.optional(),
     google_ads: GoogleAdsConfigSchema.optional(),
+    meta: MetaConfigSchema.optional(),
+    ga4: Ga4ConfigSchema.optional(),
   })
   .strict();
 

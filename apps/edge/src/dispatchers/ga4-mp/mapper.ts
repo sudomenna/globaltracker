@@ -83,6 +83,16 @@ export interface Ga4EventParams {
   session_id?: string;
   /** Engagement time in milliseconds (recommended for all events). */
   engagement_time_msec?: number;
+  /**
+   * Items array — required for GA4 Purchase audiences (remarketing, purchase audiences).
+   * T-14-013: populated only for Purchase events when product_id or product_name present.
+   */
+  items?: Array<{
+    item_id?: string;
+    item_name?: string;
+    price?: number;
+    quantity: number;
+  }>;
   [key: string]: unknown;
 }
 
@@ -281,22 +291,58 @@ function resolveUserId(
 
 /**
  * Builds GA4 event params from event custom_data and user_data.
+ *
+ * T-14-013 — four enhancements:
+ *   1. value reads cd.value ?? cd.amount (Guru events use amount, not value).
+ *   2. items array populated for Purchase when product_id or product_name present.
+ *   3. transaction_id falls back to event.event_id for Purchase when order_id absent.
+ *   4. Lead events also pick up amount as value (same cd.value ?? cd.amount path).
  */
 function buildEventParams(event: Ga4DispatchableEvent): Ga4EventParams {
   const params: Ga4EventParams = {};
+  const cd = event.custom_data ?? {};
 
-  if (event.custom_data) {
-    const cd = event.custom_data;
+  // value: prefer cd.value; fall back to cd.amount (Guru webhook shape uses amount).
+  const rawValue =
+    typeof cd.value === 'number'
+      ? cd.value
+      : typeof cd.amount === 'number'
+        ? cd.amount
+        : undefined;
 
-    if (typeof cd.value === 'number') {
-      params.value = cd.value;
-    }
-    if (typeof cd.currency === 'string') {
-      params.currency = cd.currency;
-    }
-    // order_id → transaction_id (GA4 Purchase)
-    if (typeof cd.order_id === 'string') {
-      params.transaction_id = cd.order_id;
+  if (rawValue !== undefined) {
+    params.value = rawValue;
+  }
+
+  if (typeof cd.currency === 'string') {
+    params.currency = cd.currency;
+  }
+
+  // transaction_id: order_id takes precedence; for Purchase, fall back to event_id.
+  if (event.event_name === 'Purchase') {
+    params.transaction_id =
+      typeof cd.order_id === 'string' ? cd.order_id : event.event_id;
+  } else if (typeof cd.order_id === 'string') {
+    params.transaction_id = cd.order_id;
+  }
+
+  // items: only for Purchase, only when at least item_id or item_name is available.
+  // Required by GA4 for purchase audience membership (remarketing, purchase audiences).
+  if (event.event_name === 'Purchase') {
+    const itemId =
+      typeof cd.product_id === 'string' ? cd.product_id : undefined;
+    const itemName =
+      typeof cd.product_name === 'string' ? cd.product_name : undefined;
+
+    if (itemId !== undefined || itemName !== undefined) {
+      params.items = [
+        {
+          ...(itemId !== undefined && { item_id: itemId }),
+          ...(itemName !== undefined && { item_name: itemName }),
+          ...(rawValue !== undefined && { price: rawValue }),
+          quantity: 1,
+        },
+      ];
     }
   }
 
