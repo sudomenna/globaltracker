@@ -66,6 +66,53 @@ const PROVIDERS = [
 // metrics. Render it with state="unknown" + dedicated copy and no test button.
 const INBOUND_ONLY_PROVIDERS = new Set<string>(['sendflow']);
 
+// Health state severity order (higher index = worse)
+const STATE_SEVERITY: HealthState[] = ['unknown', 'healthy', 'degraded', 'unhealthy'];
+
+function worstState(a: HealthState, b: HealthState): HealthState {
+  const ia = STATE_SEVERITY.indexOf(a);
+  const ib = STATE_SEVERITY.indexOf(b);
+  return ia >= ib ? a : b;
+}
+
+// Aggregate backend destinations into the virtual provider ids shown in the UI.
+// Backend returns `google_ads_conversion` + `google_enhancement`;
+// we merge them into `google_ads` for the list card.
+function buildProviderMap(
+  providers: ProviderHealth[],
+): Map<string, ProviderHealth> {
+  const map = new Map<string, ProviderHealth>(
+    providers.map((p) => [p.provider, p]),
+  );
+
+  const conv = map.get('google_ads_conversion');
+  const enh = map.get('google_enhancement');
+
+  if (conv != null || enh != null) {
+    const state = worstState(
+      conv?.state ?? 'unknown',
+      enh?.state ?? 'unknown',
+    );
+    const metrics_24h =
+      conv?.metrics_24h != null || enh?.metrics_24h != null
+        ? {
+            dispatched:
+              (conv?.metrics_24h?.dispatched ?? 0) +
+              (enh?.metrics_24h?.dispatched ?? 0),
+            skipped:
+              (conv?.metrics_24h?.skipped ?? 0) +
+              (enh?.metrics_24h?.skipped ?? 0),
+            failed:
+              (conv?.metrics_24h?.failed ?? 0) +
+              (enh?.metrics_24h?.failed ?? 0),
+          }
+        : undefined;
+    map.set('google_ads', { provider: 'google_ads', state, metrics_24h });
+  }
+
+  return map;
+}
+
 interface IntegrationsListClientProps {
   role: string;
 }
@@ -115,9 +162,7 @@ export function IntegrationsListClient({
     );
   }
 
-  const providerMap = new Map<string, ProviderHealth>(
-    data.providers.map((p) => [p.provider, p]),
-  );
+  const providerMap = buildProviderMap(data.providers);
 
   return (
     <div className="grid gap-4 sm:grid-cols-2">
