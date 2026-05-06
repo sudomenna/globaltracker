@@ -55,10 +55,11 @@ let EDGE_BASE_URL = '';
 
 /** Default consent snapshot — returned when config is unavailable. */
 const DEFAULT_CONSENT: ConsentSnapshot = {
-  analytics: 'unknown',
-  marketing: 'unknown',
-  ad_user_data: 'unknown',
-  ad_personalization: 'unknown',
+  analytics: 'granted',
+  marketing: 'granted',
+  ad_user_data: 'granted',
+  ad_personalization: 'granted',
+  customer_match: 'granted',
 };
 
 /**
@@ -262,7 +263,7 @@ function track(eventName: string, customData?: Record<string, unknown>): void {
         marketing: consent.marketing,
         ad_user_data: consent.ad_user_data,
         ad_personalization: consent.ad_personalization,
-        customer_match: 'unknown',
+        customer_match: consent.customer_match ?? 'granted',
       },
     };
 

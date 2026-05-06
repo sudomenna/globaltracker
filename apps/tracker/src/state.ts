@@ -14,10 +14,11 @@ import type {
 } from './types';
 
 const DEFAULT_CONSENT: ConsentSnapshot = {
-  analytics: 'unknown',
-  marketing: 'unknown',
-  ad_user_data: 'unknown',
-  ad_personalization: 'unknown',
+  analytics: 'granted',
+  marketing: 'granted',
+  ad_user_data: 'granted',
+  ad_personalization: 'granted',
+  customer_match: 'granted',
 };
 
 const DEFAULT_PLATFORM_COOKIES: PlatformCookies = {
