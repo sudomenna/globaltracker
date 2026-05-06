@@ -32,6 +32,12 @@ export const workspaces = pgTable('workspaces', {
   // Populated by onboarding wizard on step='complete'. Dispatchers read from here with env var fallback.
   config: jsonb('config').notNull().default({}),
 
+  // Google Ads developer token — credencial do operador GlobalTracker (não do tenant).
+  // ADR-028 (refinado) / T-14-002 / migration 0038. Length 5-1024 (chk_*_length).
+  // Quando NULL, runtime usa env var GOOGLE_ADS_DEVELOPER_TOKEN como fallback global.
+  // BR-PRIVACY-001: não logar; respostas API mascaram.
+  googleAdsDeveloperToken: text('google_ads_developer_token'),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

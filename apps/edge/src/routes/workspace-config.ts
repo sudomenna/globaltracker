@@ -79,9 +79,78 @@ const GuruConfigSchema = z
   })
   .strict();
 
+/**
+ * Canonical event names supported (Sprint 14 — só canonical, ADR-030).
+ * Custom events (custom:*) podem ser adicionados manualmente em conversion_actions
+ * mas a UI da CP não os listará — fica como FUTURE-001.
+ *
+ * Nota: lista informativa (referência para CP/UI). O schema Zod aceita qualquer
+ * string como chave em conversion_actions para permitir extensão por custom:*
+ * events sem quebrar este endpoint.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- referência de UI, ADR-030
+const CANONICAL_EVENT_NAMES = [
+  'Lead',
+  'Purchase',
+  'InitiateCheckout',
+  'AddToCart',
+  'ViewContent',
+  'CompleteRegistration',
+  'Subscribe',
+  'StartTrial',
+  'AddPaymentInfo',
+  'Schedule',
+  'SubmitApplication',
+  'Contact',
+  'Search',
+  'AddToWishlist',
+] as const;
+
+/**
+ * Estado do OAuth flow do Google Ads (T-14-001 / ADR-028).
+ * O refresh_token em si NÃO entra em workspace.config — vive em
+ * `workspace_integrations` (BR-PRIVACY-001). Aqui guardamos só o estado
+ * do flow para a CP exibir badges e disparar reconexão.
+ */
+const GoogleAdsOAuthState = z.enum(['pending', 'connected', 'expired']);
+
+/**
+ * Configuração Google Ads por workspace (T-14-001 — ADR-028, ADR-030).
+ *
+ * BR-PRIVACY-001: refresh_token NÃO entra no JSONB; vive em workspace_integrations.
+ * BR-RBAC-002: workspace_id continua vindo do auth context.
+ *
+ * conversion_actions: mapeia canonical_event_name → conversion_action_id (string id Google).
+ *   - string = upsert do mapping
+ *   - null = tombstone (remove o mapping; deepMerge() em PATCH trata).
+ */
+const GoogleAdsConfigSchema = z
+  .object({
+    // 10 dígitos sem hífen — formato Google Ads customer_id.
+    customer_id: z
+      .string()
+      .regex(/^\d{10}$/)
+      .optional(),
+    // Manager account opcional (10 dígitos sem hífen).
+    login_customer_id: z
+      .string()
+      .regex(/^\d{10}$/)
+      .optional(),
+    // Estado do OAuth flow (refresh_token em si fica em workspace_integrations).
+    oauth_token_state: GoogleAdsOAuthState.optional(),
+    // Mapeamento canonical_event → conversion_action_id (string id Google).
+    // null = tombstone (remove o mapping para esse evento). String = upsert.
+    conversion_actions: z
+      .record(z.string().min(1).or(z.null()))
+      .optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict();
+
 const IntegrationsSchema = z
   .object({
     guru: GuruConfigSchema.optional(),
+    google_ads: GoogleAdsConfigSchema.optional(),
   })
   .strict();
 

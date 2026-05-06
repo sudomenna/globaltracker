@@ -28,6 +28,12 @@ export const workspaceIntegrations = pgTable('workspace_integrations', {
   // BR-PRIVACY-001: nunca logado.
   sendflowSendtok: text('sendflow_sendtok'),
 
+  // Google Ads OAuth refresh_token, criptografado AES-256-GCM workspace-scoped.
+  // ADR-028 (refinado) / T-14-002 / migration 0038. Length 50-2048 (chk_*_length).
+  // Padrão consistente com guruApiToken e sendflowSendtok.
+  // BR-PRIVACY-001: nunca logado, nunca retornado em responses (UI usa flag has_token).
+  googleAdsRefreshTokenEnc: text('google_ads_refresh_token_enc'),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),

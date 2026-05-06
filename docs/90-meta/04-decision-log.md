@@ -777,7 +777,11 @@ Schemas Zod que aceitam `null` em values devem usar `.or(z.null())` explícito (
 **Contexto:** Sprint 14 (fanout multi-destination conversion) precisa autenticar contra a Google Ads API pra (a) listar accessible customers, (b) enumerar conversion actions e (c) fazer upload de conversões offline + enhanced conversions. A Google Ads API exige OAuth 2.0 com `refresh_token` por conta — não aceita API key simples.
 
 ### Decisão
-**OAuth 2.0 user flow completo no Edge (CP)**, com refresh_token criptografado por workspace via `encryptPii` (mesmo `PII_MASTER_KEY_V1`). Workspaces conectam via botão "Conectar Google Ads" → redirect ao consent screen → callback grava token. `getGoogleAdsAccessToken(workspaceId)` faz cache em-memória (5min TTL) e auto-refresh.
+**OAuth 2.0 user flow completo no Edge (CP)**, com refresh_token criptografado por workspace via `encryptPii` (mesmo `PII_MASTER_KEY_V1`+HKDF). Workspaces conectam via botão "Conectar Google Ads" → redirect ao consent screen → callback grava token. `getGoogleAdsAccessToken(workspaceId)` faz cache em-memória (5min TTL) e auto-refresh.
+
+**Onde armazenar (refinado 2026-05-06 durante T-14-002)**: refresh_token criptografado vai em **coluna dedicada `workspace_integrations.google_ads_refresh_token_enc`** (text nullable), seguindo o padrão pré-existente de `guru_api_token` e `sendflow_sendtok`. Restante da config (customer_id, login_customer_id, conversion_actions, oauth_token_state, enabled) vai em `workspaces.config.integrations.google_ads` (JSONB, sob Zod do PATCH `/v1/workspace/config`). Developer token (credencial operador GlobalTracker) vai em coluna `workspaces.google_ads_developer_token` ou env var fallback.
+
+Razões: (a) consistência com convenção projeto (segredos opacos em coluna dedicada de `workspace_integrations`, config visível em JSONB), (b) GET /v1/workspace/config nunca expõe ciphertext acidentalmente, (c) length constraint SQL nativo (50-2048).
 
 ### Alternativas consideradas
 - **Service account com domain-wide delegation**: rejeitado — Google Ads API **não suporta** service accounts diretamente (requer Google Workspace + delegation indireta via OAuth ainda assim).
@@ -794,7 +798,10 @@ Schemas Zod que aceitam `null` em values devem usar `.or(z.null())` explícito (
 - `apps/edge/src/routes/integrations-google.ts` (start + callback).
 - `apps/edge/src/lib/google-ads-oauth.ts` (helper de access_token).
 - `apps/control-plane/src/app/(app)/integrations/google-ads/page.tsx` (UI do flow).
-- `apps/edge/src/lib/workspace-config-schema.ts` (Zod `google_ads.oauth_*`).
+- `apps/edge/src/routes/workspace-config.ts` (Zod `google_ads.*` no IntegrationsSchema — sem refresh_token).
+- `packages/db/src/schema/workspace_integrations.ts` (`googleAdsRefreshTokenEnc`).
+- `packages/db/src/schema/workspace.ts` (`googleAdsDeveloperToken`).
+- `packages/db/migrations/0038_google_ads_secrets.sql`.
 - `docs/40-integrations/03-google-ads-conversion-upload.md` (doc canônica).
 
 ---

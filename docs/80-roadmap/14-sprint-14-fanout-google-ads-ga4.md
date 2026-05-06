@@ -39,19 +39,21 @@ Fechar o pipeline de **conversion fanout** para todos os destinations já implem
 
 ### Onda 1 — Schema + config (parallel-safe=yes)
 
-- **T-14-001** [`schema-author`] Estender Zod do `workspace_config_integrations` em `apps/edge/src/lib/workspace-config-schema.ts` para incluir bloco `google_ads`:
+- **T-14-001** [`edge-author`] Estender Zod `IntegrationsSchema` em `apps/edge/src/routes/workspace-config.ts` para incluir bloco `google_ads`:
   ```
   google_ads: {
-    customer_id: string,                    // 10 dígitos sem hífen
-    login_customer_id?: string,             // manager account
-    oauth_refresh_token_enc?: string,       // criptografado workspace-scoped via encryptPii
-    oauth_token_state: 'pending'|'connected'|'expired',
-    conversion_actions: Record<canonical_event, conversion_action_id>,
-    enabled: boolean,
+    customer_id?: string,                   // 10 dígitos sem hífen
+    login_customer_id?: string,             // manager account, 10 dígitos
+    oauth_token_state?: 'pending'|'connected'|'expired',
+    conversion_actions?: Record<canonical_event, conversion_action_id | null>,  // null = tombstone
+    enabled?: boolean,
   }
   ```
-  Reutilizar `encryptPii`/`decryptPii` de [apps/edge/src/lib/pii.ts](apps/edge/src/lib/pii.ts) com o mesmo `PII_MASTER_KEY_V1` — não adicionar novo segredo.
-- **T-14-002** [`schema-author`] Migration `0038_workspaces_developer_token.sql` — adicionar coluna `google_ads_developer_token` em `workspaces` (compartilhável entre workspaces; vem do Tiago/CNE como conta gerenciadora). Default NULL.
+  **Refresh token NÃO entra no JSONB** — vai em coluna dedicada `workspace_integrations.google_ads_refresh_token_enc` (T-14-002), seguindo o padrão de `guruApiToken` e `sendflowSendtok`. BR-PRIVACY-001: GET /v1/workspace/config nunca expõe refresh_token.
+- **T-14-002** [`schema-author`] Migration `0038_google_ads_secrets.sql` adicionando **duas colunas**:
+  1. `workspace_integrations.google_ads_refresh_token_enc` (text nullable, ciphertext AES-256-GCM workspace-scoped via `encryptPii`/`PII_MASTER_KEY_V1`, length 50-2048).
+  2. `workspaces.google_ads_developer_token` (text nullable, plain text — credencial do operador GlobalTracker, não do cliente; compartilhável via env var fallback).
+  Drizzle schema atualizado em `packages/db/src/schema/workspace_integrations.ts` (campo `googleAdsRefreshTokenEnc`) e `packages/db/src/schema/workspace.ts` (campo `googleAdsDeveloperToken`).
 - **T-14-003** [`domain-author`] Helper `getGoogleAdsConfig(workspaceId)` em `apps/edge/src/lib/google-ads-config.ts` — descriptografa refresh_token, retorna config validada. Lança erro tipado se incompleta.
 
 ### Onda 2 — OAuth backend (parallel-safe=no — depende de Onda 1)
