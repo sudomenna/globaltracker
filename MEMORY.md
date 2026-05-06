@@ -71,7 +71,9 @@
 | Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **in progress** — Onda 3 parcial: passos 1-4 do E2E validados (2026-05-05) | `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` |
 | Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
-| Sprint 14 | **planned** (separado de 13 em 2026-05-05 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/14-sprint-14-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 14 | **planned** (NOVO em 2026-05-06 — fanout Google Ads/GA4/Enhanced Conversions, OAuth Google completo) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
+| Sprint 15 | **planned** (renumerado de Sprint 14 antigo em 2026-05-06 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md` |
+| Sprint 16 | **planned** (NOVO em 2026-05-06 — Custom Audiences Meta + Customer Match Google + UI DSL audience) | a criar |
 
 ## §5 Ponto atual de desenvolvimento
 
@@ -290,8 +292,10 @@ PARADAS de respeito:
 ### Plano canônico de sprints restantes
 
 - **Sprint 12** — Realinhamento template `lancamento_pago_workshop_com_main_offer` v3 (popup Lead, custom events de intent, page aula-workshop, click_wpp_join, survey_responded). Migração Framer → WordPress + Elementor + WPCode em andamento. Ver [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md).
-- **Sprint 13** (refocado 2026-05-05) — Funil B foundation: **phone normalizer BR-aware** (T-13-014, bloqueia tudo abaixo), **wire encryptPii pipeline** (T-13-015, novo — admin recovery + DSAR), **SendFlow inbound** (T-13-011), **survey form** (T-13-012, novo), **CP double-stringify fix** (T-13-013), **identity/Guru cleanups** (T-13-008/-009/-010), **cleanups S12** (T-13-005/-006). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md). T-13-001..004 + T-13-007 migrados pro Sprint 14.
-- **Sprint 14** (separado de 13 em 2026-05-05) — Webhook adapters Hotmart/Kiwify/Stripe (T-14-001..004) + cleanup Stripe signature off-by-one (T-14-005). Ver [`14-sprint-14-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/14-sprint-14-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 13** (refocado 2026-05-05) — Funil B foundation: **phone normalizer BR-aware** (T-13-014, bloqueia tudo abaixo), **wire encryptPii pipeline** (T-13-015, novo — admin recovery + DSAR), **SendFlow inbound** (T-13-011), **survey form** (T-13-012, novo), **CP double-stringify fix** (T-13-013), **identity/Guru cleanups** (T-13-008/-009/-010), **cleanups S12** (T-13-005/-006). Ver [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md). T-13-001..004 + T-13-007 migrados pro Sprint 15 (originalmente 14).
+- **Sprint 14** (NOVO em 2026-05-06) — **Fanout multi-destination conversion**: Google Ads Conversion Upload + Enhanced Conversions + GA4 enrichment. Wire Step 9 do `raw-events-processor.ts` pros 4 destinations. OAuth Google completo no CP. Mapping canonical event → conversion_action_id. T-14-001..017 em 7 ondas. Ver [`14-sprint-14-fanout-google-ads-ga4.md`](docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md).
+- **Sprint 15** (renumerado de Sprint 14 antigo em 2026-05-06) — Webhook adapters Hotmart/Kiwify/Stripe (T-15-001..004) + cleanup Stripe signature off-by-one (T-15-005). Ver [`15-sprint-15-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md).
+- **Sprint 16** (planejado, NOVO em 2026-05-06) — Custom Audiences (Meta) + Customer Match (Google) + UI DSL builder de audience definitions + monitor de sync. Schema/cron já existem em `apps/edge/src/dispatchers/audience-sync/`. Doc canônica a criar quando entrar no plano.
 
 ### O que foi entregue nesta sessão (Onda 4 — migração Framer → WordPress)
 

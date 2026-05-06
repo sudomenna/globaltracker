@@ -152,6 +152,12 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-022 | Stripe webhook signature: `constructEvent` + tolerância 5min + comparação tempo-constante | aceito |
 | ADR-023 | Page token rotation com janela de overlap configurável (default 14 dias); status `active`/`rotating`/`revoked` | aceito |
 | ADR-024 | Cloudflare Turnstile como camada principal de bot mitigation em `/v1/lead`; honeypot como camada complementar futura | aceito |
+| ADR-025 | dispatch-replay: criar novo job filho (Opção A) | aceito |
+| ADR-026 | Realinhamento template `lancamento_pago_workshop_com_main_offer` ao fluxo operacional real (Sprint 12) | aceito |
+| ADR-027 | `null=tombstone` em PATCH de configs JSONB | aceito |
+| ADR-028 | Google Ads OAuth flow no Edge (não service account) — refresh_token criptografado workspace-scoped via PII_MASTER_KEY_V1 | aceito |
+| ADR-029 | Data Manager API como default para Customer Match (Sprint 16); allowlist legacy mantida; auto-demote em `CUSTOMER_NOT_ALLOWLISTED` | aceito |
+| ADR-030 | Custom events em Google Ads ficam como pendência manual (FUTURE-001); Sprint 14 cobre só canonical events na UI de mapping | aceito |
 
 ## OQ-*
 

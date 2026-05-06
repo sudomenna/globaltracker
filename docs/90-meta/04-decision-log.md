@@ -770,6 +770,90 @@ Schemas Zod que aceitam `null` em values devem usar `.or(z.null())` explícito (
 
 ---
 
+## ADR-028 — Google Ads OAuth flow no Edge (não service account)
+
+**Data:** 2026-05-06
+**Status:** aceito
+**Contexto:** Sprint 14 (fanout multi-destination conversion) precisa autenticar contra a Google Ads API pra (a) listar accessible customers, (b) enumerar conversion actions e (c) fazer upload de conversões offline + enhanced conversions. A Google Ads API exige OAuth 2.0 com `refresh_token` por conta — não aceita API key simples.
+
+### Decisão
+**OAuth 2.0 user flow completo no Edge (CP)**, com refresh_token criptografado por workspace via `encryptPii` (mesmo `PII_MASTER_KEY_V1`). Workspaces conectam via botão "Conectar Google Ads" → redirect ao consent screen → callback grava token. `getGoogleAdsAccessToken(workspaceId)` faz cache em-memória (5min TTL) e auto-refresh.
+
+### Alternativas consideradas
+- **Service account com domain-wide delegation**: rejeitado — Google Ads API **não suporta** service accounts diretamente (requer Google Workspace + delegation indireta via OAuth ainda assim).
+- **Refresh token manual colado em form**: rejeitado como permanente — operadores não têm como gerar refresh_token sem rodar script local. Aceitável só pra dev (não bloqueia o sprint).
+
+### Consequências
+- (+) Autosserviço — outros workspaces conectam sem intervenção do dev.
+- (+) Refresh token criptografado workspace-scoped reutiliza infra de PII existente (BR-PRIVACY-001).
+- (+) Token rotation automatizado; `invalid_grant` força workspace para `oauth_token_state='expired'` + UI prompt pra reconectar.
+- (−) OAuth flow exige callback URL fixo registrado no Google Cloud Console — adicionar `https://app.globaltracker.com.br/v1/integrations/google/oauth/callback` (ou domínio do Edge prod) na lista de Authorized redirect URIs.
+- (−) Refresh tokens podem ser revogados unilateralmente pelo Google em casos de abuse — handler precisa lidar e expor estado pra UI.
+
+### Impacta
+- `apps/edge/src/routes/integrations-google.ts` (start + callback).
+- `apps/edge/src/lib/google-ads-oauth.ts` (helper de access_token).
+- `apps/control-plane/src/app/(app)/integrations/google-ads/page.tsx` (UI do flow).
+- `apps/edge/src/lib/workspace-config-schema.ts` (Zod `google_ads.oauth_*`).
+- `docs/40-integrations/03-google-ads-conversion-upload.md` (doc canônica).
+
+---
+
+## ADR-029 — Data Manager API como default para Customer Match (Sprint 16)
+
+**Data:** 2026-05-06
+**Status:** aceito (override de ADR-012 para workspaces novos)
+**Contexto:** ADR-012 já formalizava "Customer Match Google: estratégia condicional" com 3 paths (`google_data_manager`, `google_ads_api_allowlisted`, `disabled_not_eligible`). Pra Sprint 16 (Custom Audiences + Customer Match), precisa fechar qual é o default pra workspaces novos.
+
+### Decisão
+**Data Manager API é o default** para workspaces criados pós-2026-04. Workspaces com allowlist legacy `google_ads_api_allowlisted` continuam no caminho antigo até deprecation forçado pelo Google. `disabled_not_eligible` segue como fallback automático em erro `CUSTOMER_NOT_ALLOWLISTED`.
+
+### Alternativas consideradas
+- **Manter Google Ads API legacy como default**: rejeitado — Google está migrando ofertas pra Data Manager; novos clientes não conseguem allowlist do path legacy.
+- **Forçar migração imediata de workspaces antigos**: rejeitado — sem benefício técnico imediato e Google ainda mantém compat dual.
+
+### Consequências
+- (+) Alinhado com direção do Google (anúncios públicos 2025-Q4 sobre Data Manager prevalence).
+- (+) Workspaces novos não esbarram em allowlist application time.
+- (−) Dispatcher `audience-sync/google` precisa manter os dois clients vivos (já tem `strategy.ts` com switch).
+- (−) Schema de erro entre as duas APIs é diferente — handler de erro deve mapear para o mesmo enum `audience_sync_error_code` interno.
+
+### Impacta
+- `apps/edge/src/dispatchers/audience-sync/google/strategy.ts` (default switch).
+- `docs/40-integrations/05-google-customer-match.md` (doc canônica).
+- `docs/90-meta/04-decision-log.md` (esta ADR; ADR-012 vira referência).
+
+---
+
+## ADR-030 — Custom events em Google Ads ficam como pendência manual (FUTURE-001)
+
+**Data:** 2026-05-06
+**Status:** aceito (limita escopo do Sprint 14)
+**Contexto:** O tracker captura eventos custom canonical-prefixed (`custom:click_buy_workshop`, `custom:click_wpp_join`, `custom:survey_responded`, `custom:wpp_joined`, etc). Pra Meta CAPI eles vão como custom event direto. Pra GA4, idem (custom event no measurement). Mas Google Ads Conversion Upload **só aceita** `conversion_action_id`s pré-cadastradas no painel Google Ads — não há "custom event" automático.
+
+### Decisão
+**Sprint 14 cobre só eventos canonical** (Lead, Purchase, InitiateCheckout, ViewContent, AddToCart, CompleteRegistration, Subscribe, etc) na UI de mapping → conversion_action. Eventos custom ficam fora do MVP.
+
+Schema permanece extensível: `workspaces.config.integrations.google_ads.conversion_actions` é `Record<event_name, conversion_action_id>` — operador pode adicionar `custom:click_buy_workshop` no JSONB cru hoje (sem UI), pra teste manual ou edge cases.
+
+### Alternativas consideradas
+- **UI completa per-launch para mapear todo custom event a uma conversion_action**: rejeitado — explosão combinatória, UX confusa, exige cadastro manual no painel Google primeiro (não tem como pré-popular dropdown sem operador criar conversion_action lá antes). Reabrir como FUTURE-001 quando houver demanda concreta.
+- **Pular Google Ads conversion totalmente**: rejeitado — perde sinal pra remarketing dos eventos canonical principais.
+
+### Consequências
+- (+) Sprint 14 fecha com escopo definido (~1 semana).
+- (+) Upgrade futuro pra custom events não exige migration — só UI nova.
+- (−) Eventos como `custom:click_wpp_join` (alta intenção) **não** alimentam Google Ads conversion automaticamente. Pra remarketing baseado nesses, operador depende de Custom Audiences (Sprint 16) ou do GA4 (que aceita custom event nativamente).
+- (−) Confusão UX possível — operador vê "Lead" mapeado mas não acha "click_wpp_join". Mitigação: copy explícito na UI ("Eventos custom não suportados — use audiences").
+
+### Impacta
+- `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` (escopo).
+- `apps/control-plane/src/app/(app)/integrations/google-ads/page.tsx` (lista de eventos no dropdown — só canonical).
+- `apps/edge/src/lib/raw-events-processor.ts` (Step 9 wiring usa allowlist canonical).
+- Pendência futura: **FUTURE-001** — UI per-launch pra custom events → conversion_action.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

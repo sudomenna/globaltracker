@@ -33,7 +33,7 @@ Falhas pré-existentes detectadas durante a verificação consolidada do Sprint 
 - **T-13-005** — `tests/integration/routes/config.test.ts:443` — fallback "200 quando DB binding ausente" não retorna o esperado. Investigar `apps/edge/src/routes/config.ts` para o caminho `env.DB === undefined`.
 - **T-13-006** — `tests/integration/routes/integrations-test.test.ts:235` — Zod `.strict()` não rejeita extra fields no `POST /v1/integrations/:provider/test`. Possível downgrade do schema em refactor recente — verificar com `git log -p apps/edge/src/routes/integrations-test.ts`.
 
-> **Nota**: T-13-007 (Stripe signature tolerance off-by-one) foi migrado pra Sprint 14 por proximidade de domínio com o adapter Stripe (lá é T-14-005).
+> **Nota**: T-13-007 (Stripe signature tolerance off-by-one) foi migrado pra Sprint 15 (originalmente Sprint 14, renumerado em 2026-05-06 quando o novo Sprint 14 — fanout Google Ads/GA4/Enhanced — foi inserido na frente) por proximidade de domínio com o adapter Stripe (lá é T-15-005).
 
 ### Identidade & integrações inbound — foundational
 
