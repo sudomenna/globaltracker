@@ -242,15 +242,12 @@ Próxima ação (atualizada 2026-05-06 tarde):
   TRILHA 1 (Purchase real via Guru cartão — destrava lançamento jun)
 
   Pendências operacionais (não bloqueiam trilhas, fazer ad-hoc):
-  - Confirmar lead_identify + bloquear TestEvent no Meta Events Manager UI
-    (Conjuntos de dados → Pixel de CNE → Confirme eventos personalizados)
-  - Investigar fonte browser do lead_identify em Meta (PixelYourSite ainda
-    ativo no WP? — desativar se sim, conforme decisão original)
+  - ✅ PixelYourSite removido do WP (Tiago, 2026-05-06)
+  - ✅ lead_identify confirmado no Events Manager Meta (Tiago, 2026-05-06)
+  - ✅ META_CAPI_TEST_EVENT_CODE removido do worker (2026-05-06)
   - Restaurar HYPERDRIVE binding em prod quando descobrirmos como deploy
     com wrangler 4.x (hoje rodando via DATABASE_URL fallback — funcional
     mas perde caching de conexão Hyperdrive)
-  - Remover secret META_CAPI_TEST_EVENT_CODE do worker (não crítico — só
-    é usado se algum event tem is_test=true, hoje todos false)
 
   Tracker.js R2 atual: build com fix race init→identify (preserva token quando
   cookie __ftk vazio). Snippet workshop em prod já tem stopImmediatePropagation
