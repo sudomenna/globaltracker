@@ -35,6 +35,10 @@
 
 - **PHONE-normalizer-9-prefix-BR**: `normalizePhone` em `apps/edge/src/lib/lead-resolver.ts:67` não reconcilia mobiles BR sem o "9" extra (mandato de 2014). Sistemas legados como SendFlow enviam phone sem o 9 → `phone_hash` divergente do que o form do site gera com 9. Tracking de T-13-014 (Sprint 13). Após implementação, atualizar `docs/50-business-rules/BR-IDENTITY.md` BR-IDENTITY-002 + nova INV-IDENTITY-008 (mobile canônico = 13 dígitos `+55DD9XXXXXXXX`).
 
+- **CRITICAL-PII-HASH-WORKSPACE-SCOPED (descoberto 2026-05-05 noite)**: `hashPii()` em [`apps/edge/src/lib/pii.ts:141`](apps/edge/src/lib/pii.ts#L141) faz `sha256("${workspaceId}:${value}")` (scoped). Meta CAPI / Google Customer Match / Enhanced Conversions esperam `sha256(normalized_value)` puro. Implicação: **TODOS os dispatch_jobs Meta CAPI / Google que enviam `em`/`ph` têm match rate = 0%** desde Sprint 3. Comentários em `dispatchers/meta-capi/mapper.ts:51` e `dispatchers/google-enhanced-conversions/mapper.ts:11` mentem ("already SHA-256 hex — do NOT re-hash"). Decisão Tiago: **Opção B** — adicionar colunas paralelas `email_hash_external`, `phone_hash_external`, `fn_hash`, `ln_hash` (SHA-256 puro do valor normalizado lowercase), manter `email_hash`/`phone_hash` como hoje (uso interno lead-resolver). Plano detalhado em §10. NÃO enfileirar dispatch_jobs em QUEUE_DISPATCH antes de implementar — match rate seria 0%.
+
+- **DISPATCH-JOBS-WIRING (parcial 2026-05-05 noite)**: `apps/edge/src/lib/raw-events-processor.ts` Step 9 estava hardcoded `dispatchJobsCreated = 0` desde Sprint 2 (comentário "OQ-011 — Sprint 3+"). Wiring implementado nesta sessão (lê `workspaces.config.integrations.{meta,ga4}`, monta DispatchJobInput[], chama `createDispatchJobs`). **Deploy aplicado** (worker version `ab75fb89-b456-4265-beb0-5efe6e73df24`). **Mudanças não commitadas** — working tree dirty em `raw-events-processor.ts`. Não commitar até implementar Opção B do hashPii porque os dispatch_jobs já criados (68, vide §10) terão match rate 0% até backfill com hashes externos.
+
 - **PII-encrypt-órfão (RESOLVIDO 2026-05-05)**: descoberta crítica que a função `encryptPii` em `pii.ts:157` nunca era chamada → leads tinham `email_enc/phone_enc/name_enc` todos NULL. T-13-015 implementado (helper `pii-enrich.ts` + wire em `routes/lead.ts`). `wrangler secret put PII_MASTER_KEY_V1` aplicado, deploy `a5d9a7e5`, validado E2E (4 leads c/ ciphertext em produção). Os 13 leads sintéticos pré-fix continuam sem ciphertext (perda aceita por Tiago). T-13-011 SendFlow também chama enrichLeadPii. Adapters Hotmart/Kiwify/Stripe (Sprint 14) idem.
 
 - **CP-DOUBLE-STRINGIFY-workspaces.config (RESOLVIDO 2026-05-05 — T-13-013)**: o mesmo bug do `pages.event_config` afetava `workspaces.config`. Fix aplicado conforme T-13-013 abaixo.
@@ -72,7 +76,19 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 12 — Onda 4 PARCIALMENTE FECHADA (2026-05-05 manhã).
+Estado:        SPRINT 13 — Trilha 2 ENCERRADA. Sessão 2026-05-05 noite descobriu
+               2 bugs críticos:
+                 1) DISPATCH-JOBS-WIRING (corrigido + deploy, NÃO commitado)
+                 2) CRITICAL-PII-HASH-WORKSPACE-SCOPED (NÃO corrigido — bloqueia
+                    dispatch real para Meta/Google. Plano Opção B em §10.)
+
+               Vendas reais começaram 2026-05-05 (60+ vendas) e foram recuperadas
+               via Guru REST API. 70 Purchase events em produção. 68 dispatch_jobs
+               status='pending' destination='meta_capi' AGUARDANDO Opção B antes
+               de serem enfileirados (ver §10).
+
+               Estado anterior (Sprint 12): preservado abaixo para histórico.
+               Sprint 12 — Onda 4 PARCIALMENTE FECHADA (2026-05-05 manhã).
                MIGRAÇÃO PLATAFORMA: Funil B Framer → WordPress + Elementor Pro 4.0
                (contratosnovaeconomia.com.br). Template v3 ativo no DB (migration
                0034). 2/5 pages WordPress 100% funcionais. Pages aula-workshop,
@@ -152,24 +168,50 @@ Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
   (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
   (Purchase real via Guru cartão).
 
-Próxima ação (decidida 2026-05-05 fim-de-tarde — ordem fixa):
-  TRILHA 2 → TRILHA 3 → TRILHA 4 → TRILHA 1
-  Detalhes operacionais de cada uma estão em §9 (NOVO). Resumo:
-    Trilha 2 = T-13-005 + T-13-006 (cleanups de testes legados)
-    Trilha 3 = T-13-012 (survey form na obrigado-workshop)
-    Trilha 4 = T-13-016 (UI no Control Panel pra cadastrar SendFlow config)
-    Trilha 1 = Trilha A original — comprar workshop com cartão real via Guru
-               pra validar pipeline E2E completo (Purchase webhook + stages
-               purchased_workshop, e desbloqueia investigação T-13-009 do
-               source.utm_* null).
+Próxima ação (decidida 2026-05-05 noite):
+  Implementar Opção B (hashes externos puros) ANTES de enfileirar
+  dispatch_jobs em QUEUE_DISPATCH. Plano detalhado em §10.
 
-  Edge worker prod atual: version `f552f472-a8c5-4c47-ae7e-de0eb6f58126`
-  (deploy 2026-05-05 fim — inclui T-13-008 + T-13-010 + T-13-013 + T-13-014
-  + T-13-015 + T-13-011 SendFlow + fix snippet workshop stopImmediatePropagation).
+  Após Opção B: enfileirar 68 dispatch_jobs do dia (recovery), validar match
+  rate em Events Manager Meta com 1-2 leads, depois retomar
+  TRILHA 3 (T-13-012 survey) → TRILHA 4 (T-13-016 SendFlow UI) → TRILHA 1
+  (Purchase real via Guru cartão).
+
+  Edge worker prod atual: version `ab75fb89-b456-4265-beb0-5efe6e73df24`
+  (deploy 2026-05-05 noite — inclui dispatch_jobs wiring no Step 9 do
+  raw-events-processor, SEM commit — working tree dirty em
+  apps/edge/src/lib/raw-events-processor.ts).
 
   Tracker.js R2 atual: build com fix race init→identify (preserva token quando
   cookie __ftk vazio). Snippet workshop em prod já tem stopImmediatePropagation
-  no handler de submit (Tiago confirmou aplicado em WPCode 2026-05-05).
+  no handler de submit. URL botão atualizada nesta sessão de
+  `wk-contratos-societarios` → `workshop-contratos-societarios` (commit 2d913d2).
+
+ENTREGAS desta sessão (2026-05-05 noite — após commit 2d913d2):
+  ✅ Trilha 2 fechada: T-13-005 (config.ts fallback DB-absent) + T-13-006
+     (integrations-test.ts Zod .strict()) — commit 2d913d2.
+  ✅ Onboarding propagação imediata de credenciais (per-step) — commit 2d913d2.
+  ✅ Workshop button URL fix — commit 2d913d2.
+  ✅ Recovery 60+ vendas reais Guru via REST API: 69 transactions approved
+     2026-05-05 → 70 Purchase events + ~25 purchased_workshop stages. Scripts
+     em /tmp/pgquery/ (send-guru-recovery.mjs, guru-recovery-payloads.json,
+     check-purchases.mjs, recover-meta-creds.mjs).
+  ✅ DISPATCH-JOBS-WIRING: Step 9 raw-events-processor.ts agora cria jobs
+     reais para meta_capi e ga4_mp baseado em workspaces.config.integrations
+     — deploy ab75fb89 (NÃO commitado).
+  ✅ 68 dispatch_jobs criados via SQL direto (status='pending'
+     destination='meta_capi') — aguardando Opção B antes de enfileirar.
+  🔍 Investigação fn/ln Meta + Google Enhanced Conversions: nenhum dispatcher
+     envia hoje. Schema leads não tem fn_hash/ln_hash separados.
+  🔥 BUG CRÍTICO descoberto: hashPii() é workspace-scoped → match rate Meta/
+     Google = 0%. Plano Opção B aprovado por Tiago (§10).
+
+PARADAS de respeito:
+  ⚠ NÃO enfileirar os 68 dispatch_jobs em QUEUE_DISPATCH antes de Opção B.
+  ⚠ NÃO commitar raw-events-processor.ts isoladamente — espera Opção B
+    completa para commit conjunto (mantém working tree alinhado com plano).
+  ⚠ Opção B requer schema migration + backfill de leads existentes — fazer
+    BACKFILL só DEPOIS de validar pipeline com 1-2 vendas em test mode Meta.
 ```
 
 ### Plano canônico de sprints restantes
@@ -596,22 +638,45 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 - Aceita "começar mais simples e subir"
 - Quer credenciais reais validadas (não mockar dispatchers)
 
-## §9 Próxima sessão — playbook das 4 trilhas (ordem fixa: 2 → 3 → 4 → 1)
+## §9 Próxima sessão — playbook das 4 trilhas (ordem fixa: HASHPII-OPB → 3 → 4 → 1)
 
 > **Como retomar (cold start)**:
-> 1. `git log --oneline -10` — confirma últimos commits desta sessão (todos prefixados `T-13-*`).
-> 2. `cd apps/edge && npx wrangler whoami` — confirma auth Cloudflare (renovar com `npx wrangler login` se necessário).
-> 3. Edge prod version atual: `f552f472-a8c5-4c47-ae7e-de0eb6f58126`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
-> 4. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
-> 5. DB connect (consultas ad-hoc) usar `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
+> 1. `git log --oneline -10` — confirma último commit desta sessão (`2d913d2`).
+> 2. `git status` — você verá `apps/edge/src/lib/raw-events-processor.ts` modificado (uncommitted, mas DEPLOYADO em prod). Não reverter, não commitar isolado — vai junto com Opção B.
+> 3. `cd apps/edge && npx wrangler whoami` — confirma auth Cloudflare (renovar com `npx wrangler login` se necessário).
+> 4. Edge prod version atual: `ab75fb89-b456-4265-beb0-5efe6e73df24`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
+> 5. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
+> 6. DB connect (consultas ad-hoc) usar `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
+> 7. Verificar estado atual do dia:
+>    - `SELECT count(*) FROM events WHERE event_name='Purchase' AND received_at > '2026-05-05'` — deve ter 70+
+>    - `SELECT status, count(*) FROM dispatch_jobs WHERE workspace_id='74860330-a528-4951-bf49-90f0b5c72521' GROUP BY status` — deve ter 68 pending (não enfileirados)
 >
 > **Decisões já tomadas — não rediscutir**:
-> - Ordem das trilhas é 2 → 3 → 4 → 1 (Tiago confirmou).
+> - Ordem agora: **OPÇÃO B (hashPii) → enfileirar 68 jobs → validar match rate → Trilha 3 → Trilha 4 → Trilha 1**.
+> - Trilha 2 ENCERRADA (T-13-005 + T-13-006 + onboarding fix + workshop URL — commit 2d913d2).
+> - Hashes externos: NOVAS colunas `email_hash_external`, `phone_hash_external`, `fn_hash`, `ln_hash` em `leads`. Manter `email_hash`/`phone_hash` atuais (uso interno lead-resolver). Plano completo em §10.
+> - Recovery 60+ vendas via Guru REST API funcionou (script /tmp/pgquery/send-guru-recovery.mjs). Token Guru em memória do agent (`reference_guru_user_token.md`).
 > - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer = TUDO em produção. Pipeline funil B paid_workshop está OK fim-a-fim exceto pelo Purchase real (Trilha 1).
 > - SendFlow campaign_map cadastrado pros 2 grupos (compradores `3bhG8XexRRKwLxF4SGtk` → `Contact`/wpp_joined; VIP main `0b4IxLZFiYOxxRyO6ZmE` → `custom:wpp_joined_vip_main`/wpp_joined_vip_main).
 > - Helper `apps/edge/src/lib/jsonb-cast.ts` exporta `jsonb(value)`. Use em TODA escrita pra coluna jsonb daqui pra frente — Hyperdrive driver não cast implícito.
 
-### TRILHA 2 — T-13-005 + T-13-006 (cleanups de testes legados)
+### TRILHA 2 — ENCERRADA (commit 2d913d2)
+
+T-13-005 (config.ts DB-absent fallback) + T-13-006 (integrations-test.ts Zod
+`.strict()`) + onboarding propagação per-step de credenciais + workshop button
+URL fix. Validados, deployados, commitados. Nada a fazer aqui.
+
+### TRILHA 0 (NOVA, PRIORIDADE MÁXIMA) — Opção B do hashPii
+
+Plano completo em **§10**. Em uma frase: criar 4 colunas externas em `leads`,
+helper de hash sem scope, splitName, wire no resolver e nos mappers Meta CAPI
++ Google Enhanced Conversions. Validar com 1-2 leads em test mode Meta antes
+de backfill.
+
+**Importante**: dispatch_jobs já criados (68) ficam na tabela enquanto Opção B
+roda. Não enfileirar antes — match rate seria 0%.
+
+### TRILHA 2 — Histórico (NÃO REFAZER)
 
 Bugs herdados do Sprint 12 que nunca foram resolvidos. Pequenos, focados, sem dependências. Resolver em 1 PR junto.
 
@@ -727,6 +792,273 @@ SELECT id, email_enc IS NOT NULL AS has_ee, phone_enc IS NOT NULL AS has_pe
 **Cuidados**:
 - Compra real tem custo. Combinar com Tiago se ele quer com cartão pessoal ou test card. Guru aceita test cards em modo sandbox? Verificar painel.
 - Após teste, registrar no `MEMORY.md §5` o lead resultante e os event_ids pra futuras regressões.
+
+## §10 Plano Opção B — Hashes externos para Meta CAPI / Google (PRIORIDADE MÁXIMA)
+
+> **Contexto**: ver §2 [CRITICAL-PII-HASH-WORKSPACE-SCOPED]. `hashPii()` em
+> `apps/edge/src/lib/pii.ts` é workspace-scoped (`sha256("{workspace_id}:{value}")`),
+> mas Meta/Google esperam `sha256(normalized_value)` puro. Match rate atual = 0%.
+>
+> **Decisão Tiago (2026-05-05 noite)**: Opção B — adicionar colunas paralelas
+> com hashes externos puros. Manter `email_hash`/`phone_hash` atuais para uso
+> interno (lead-resolver, alias matching).
+>
+> **Estado bloqueante**: 68 dispatch_jobs no DB com status='pending' aguardando
+> esta implementação. Não enfileirar antes — match rate seria 0%.
+
+### Estado atual dos 4 dispatchers (2026-05-05)
+
+| Dispatcher | Envia em/ph? | Envia fn/ln? | Hash usado | Match rate atual |
+|---|---|---|---|---|
+| Meta CAPI (`meta-capi/mapper.ts`) | ✅ sim | ❌ não | `lead.email_hash` (workspace-scoped!) | **0%** |
+| GA4 MP (`ga4-mp/mapper.ts`) | ❌ não usa em/ph (usa `client_id`) | ❌ não usa nome | n/a | n/a |
+| Google Ads Conversion Upload (`google-ads-conversion/mapper.ts`) | ❌ usa gclid/order_id, não em/ph | ❌ não | n/a | n/a |
+| Google Enhanced Conversions (`google-enhanced-conversions/mapper.ts`) | ✅ sim | ❌ não | `lead.email_hash` (workspace-scoped!) | **0%** |
+
+**Conclusão**: só 2 dispatchers (Meta CAPI + Google Enhanced) precisam de fix.
+GA4 MP e Google Ads Conversion não usam hashes de email/phone/nome.
+
+### Sub-tarefas (T-OPB-001 a T-OPB-006)
+
+#### T-OPB-001 — Schema migration: adicionar colunas externas em `leads`
+
+Arquivo: nova migration `packages/db/migrations/0035_external_pii_hashes.sql`.
+
+```sql
+ALTER TABLE leads
+  ADD COLUMN email_hash_external text,    -- sha256(email.toLowerCase().trim())
+  ADD COLUMN phone_hash_external text,    -- sha256(normalizeE164(phone))
+  ADD COLUMN fn_hash text,                -- sha256(firstName.toLowerCase().trim())
+  ADD COLUMN ln_hash text;                -- sha256(lastName.toLowerCase().trim())
+
+-- Índices opcionais (decidir se necessário — não usado para resolução interna)
+-- CREATE INDEX idx_leads_email_hash_external ON leads(workspace_id, email_hash_external) WHERE email_hash_external IS NOT NULL;
+```
+
+Atualizar [`packages/db/src/schema/lead.ts`](packages/db/src/schema/lead.ts):
+
+```typescript
+emailHashExternal: text('email_hash_external'),
+phoneHashExternal: text('phone_hash_external'),
+fnHash: text('fn_hash'),
+lnHash: text('ln_hash'),
+```
+
+Comentários no schema:
+- `email_hash_external` = `SHA-256(email.toLowerCase().trim())` — para Meta/Google
+- `phone_hash_external` = `SHA-256(E.164)` — para Meta/Google
+- `fn_hash` / `ln_hash` = `SHA-256(parte.toLowerCase().trim())` — para Meta/Google
+- `email_hash` / `phone_hash` (existentes) = workspace-scoped, **uso interno** (lead-resolver)
+
+**INV-IDENTITY-002 (erased lead)**: estender para zerar também as 4 novas colunas.
+
+#### T-OPB-002 — Helpers em `apps/edge/src/lib/pii.ts`
+
+Adicionar funções **NOVAS** (sem mexer em `hashPii`):
+
+```typescript
+/**
+ * SHA-256 hex puro do valor normalizado (sem workspace scope).
+ * Para uso em dispatchers externos (Meta CAPI, Google Customer Match,
+ * Google Enhanced Conversions). NÃO usar para resolução interna de identidade
+ * — use hashPii() workspace-scoped para isso.
+ */
+export async function hashPiiExternal(normalizedValue: string): Promise<string> {
+  const input = new TextEncoder().encode(normalizedValue);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', input);
+  return bytesToHex(new Uint8Array(hashBuffer));
+}
+
+/**
+ * Splita nome completo em first name + last name conforme spec Meta/Google.
+ * - First name = primeira palavra
+ * - Last name = todas as outras palavras juntas (espaço-separadas)
+ *
+ * Para "Tiago Menna Barreto Silveira":
+ *   { first: "tiago", last: "menna barreto silveira" }
+ *
+ * Normalização: lowercase + trim + collapse whitespace múltiplo + remove pontuação.
+ * Acentos: REMOVIDOS (Meta/Google preferem ASCII puro p/ matching consistente).
+ * Edge cases:
+ *   - 1 palavra só ("Madonna") → { first: "madonna", last: null }
+ *   - vazio/null → null
+ */
+export function splitName(fullName: string | null | undefined): {
+  first: string | null;
+  last: string | null;
+} {
+  if (!fullName) return { first: null, last: null };
+  const normalized = fullName
+    .normalize('NFD')                          // separar acentos
+    .replace(/[̀-ͯ]/g, '')          // remover combining marks
+    .replace(/[^\p{L}\s]/gu, ' ')             // remove pontuação (mantém letras+espaço)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!normalized) return { first: null, last: null };
+  const parts = normalized.split(' ');
+  if (parts.length === 1) return { first: parts[0], last: null };
+  return { first: parts[0], last: parts.slice(1).join(' ') };
+}
+```
+
+Tests novos em `tests/unit/lib/pii.test.ts` (cobrir Tiago Menna Barreto Silveira,
+Madonna, "  Maria  da  Silva  ", "José D'Ávila", string vazia, null).
+
+#### T-OPB-003 — Wire em `lead-resolver.ts`
+
+No bloco `Step 1: Normalize and hash each provided identifier` (linha ~225),
+após o `hashPii(normalized, workspace_id)` existente, adicionar:
+
+```typescript
+if (input.email) {
+  const normalized = normalizeEmail(input.email);
+  const hash = await hashPii(normalized, workspace_id);          // EXISTENTE — workspace-scoped
+  const externalHash = await hashPiiExternal(normalized);        // NOVO — puro
+  resolvedAliases.push({
+    identifier_type: 'email_hash',
+    identifier_hash: hash,
+    external_hash: externalHash,                                  // novo campo
+  });
+}
+// ... idem para phone
+```
+
+E na inserção/update do lead, popular as 4 colunas externas. Para nome, fazer
+no caller que tem o nome cru (Guru webhook processor + lead-resolver quando
+`input.name` existe).
+
+**Cuidado**: `input.name` no `lead-resolver.ts` precisa ser confirmado se existe
+no schema atual. Se não, `lead.ts` schema tem `nameHash`/`nameEnc` mas não
+`name` cru — verificar como nome chega hoje no resolver. Se o nome só chega
+nos webhooks (Guru/SendFlow), é nesses lugares que populamos `fn_hash`/`ln_hash`.
+
+#### T-OPB-004 — Atualizar mapper Meta CAPI
+
+[`apps/edge/src/dispatchers/meta-capi/mapper.ts`](apps/edge/src/dispatchers/meta-capi/mapper.ts):
+
+```typescript
+export interface DispatchableLead {
+  email_hash_external?: string | null;     // RENOMEAR de email_hash
+  phone_hash_external?: string | null;     // RENOMEAR de phone_hash
+  fn_hash?: string | null;                 // NOVO
+  ln_hash?: string | null;                 // NOVO
+}
+
+export interface MetaUserData {
+  em?: string;
+  ph?: string;
+  fn?: string;                             // NOVO — SHA-256 lowercase first name
+  ln?: string;                             // NOVO — SHA-256 lowercase last name
+  fbc?: string;
+  fbp?: string;
+  client_ip_address?: string;
+  client_user_agent?: string;
+}
+
+// Em mapEventToMetaPayload:
+if (lead?.email_hash_external) userData.em = lead.email_hash_external;
+if (lead?.phone_hash_external) userData.ph = lead.phone_hash_external;
+if (lead?.fn_hash) userData.fn = lead.fn_hash;
+if (lead?.ln_hash) userData.ln = lead.ln_hash;
+```
+
+E atualizar caller em [`apps/edge/src/index.ts`](apps/edge/src/index.ts) (provavelmente em `buildMetaCapiDispatchFn`)
+para selecionar as 4 colunas externas no SELECT do lead, em vez das antigas.
+
+#### T-OPB-005 — Atualizar mapper Google Enhanced Conversions
+
+[`apps/edge/src/dispatchers/google-enhanced-conversions/mapper.ts`](apps/edge/src/dispatchers/google-enhanced-conversions/mapper.ts):
+
+```typescript
+export interface DispatchableLead {
+  email_hash_external?: string | null;
+  phone_hash_external?: string | null;
+  fn_hash?: string | null;
+  ln_hash?: string | null;
+}
+
+export interface GoogleUserIdentifier {
+  hashedEmail?: string;
+  hashedPhoneNumber?: string;
+  /** Address info para enhanced conversions for leads. */
+  addressInfo?: {
+    hashedFirstName?: string;
+    hashedLastName?: string;
+  };
+}
+
+// Em mapEventToEnhancedConversion:
+if (lead?.email_hash_external) userIdentifiers.push({ hashedEmail: lead.email_hash_external });
+if (lead?.phone_hash_external) userIdentifiers.push({ hashedPhoneNumber: lead.phone_hash_external });
+if (lead?.fn_hash || lead?.ln_hash) {
+  const addressInfo: { hashedFirstName?: string; hashedLastName?: string } = {};
+  if (lead.fn_hash) addressInfo.hashedFirstName = lead.fn_hash;
+  if (lead.ln_hash) addressInfo.hashedLastName = lead.ln_hash;
+  userIdentifiers.push({ addressInfo });
+}
+```
+
+Verificar Google Ads API spec se aceita `addressInfo` em userIdentifiers ou
+se precisa de outro shape. Pode ser que Customer Match aceite mas Enhanced
+Conversions tenha shape diferente — confirmar via doc Google.
+
+#### T-OPB-006 — Backfill leads existentes (executar APÓS validar 1-2 leads)
+
+Script Node em /tmp/pgquery/backfill-external-hashes.mjs.
+
+Para cada lead com `name_enc IS NOT NULL` ou `email_enc IS NOT NULL` ou `phone_enc IS NOT NULL`:
+1. Descriptografa via `decryptPii(name_enc, workspace_id, masterKeyRegistry, pii_key_version)`
+2. Normaliza
+3. Hash externo
+4. UPDATE leads SET ... WHERE id = ?
+
+**Cuidado**: precisa do `PII_MASTER_KEY_V1` (secret do Cloudflare) — Tiago
+tem que rodar em ambiente que pode acessar (ou abrir um endpoint admin).
+Alternativa: rodar via worker endpoint `/v1/admin/backfill-external-hashes`
+ativado por flag, autenticado.
+
+Leads sem PII encriptado (13 leads sintéticos pré-encryptPii fix) ficam sem
+hashes externos — perda aceita por Tiago (vide §2 PII-encrypt-órfão).
+
+### Ordem de execução (sequencial — não paralelizar entre si)
+
+1. **T-OPB-001** — schema migration aplicada na cloud Supabase
+2. **T-OPB-002** — helpers + tests verde
+3. **T-OPB-003** — wire no resolver + Guru processor
+4. **T-OPB-004 + T-OPB-005** — mappers atualizados + tests verde
+5. **Deploy worker** + commit conjunto (incluindo `raw-events-processor.ts` que
+   ficou pendente nesta sessão)
+6. **Validação** — provocar 1 nova compra (test mode Meta) → ver match rate em
+   Events Manager. Se >0%, prosseguir. Se 0%, debug com `test_event_code`.
+7. **T-OPB-006** — backfill 70 leads existentes
+8. **Enfileirar 68 dispatch_jobs** existentes em QUEUE_DISPATCH:
+   ```bash
+   # script via wrangler queues messages send (ou edge endpoint admin)
+   # cada msg = { dispatch_job_id, destination: 'meta_capi' }
+   ```
+9. **Confirmar match rate** em Events Manager Meta para os 68 jobs históricos.
+
+### Testes de aceitação
+
+- `splitName("Tiago Menna Barreto Silveira") === { first: "tiago", last: "menna barreto silveira" }` ✓
+- `hashPiiExternal("tiago@email.com") === sha256("tiago@email.com")` ✓ (compara com online sha256)
+- Lead novo via Guru → DB tem 4 colunas externas populadas + 2 colunas internas (existentes) ✓
+- Compra real test mode Meta → Events Manager mostra match rate > 0% para `em`+`ph`+`fn`+`ln` ✓
+- 68 dispatch_jobs históricos enfileirados → Events Manager mostra match rate > 0% ✓
+
+### Pendências relacionadas (após Opção B)
+
+- ADR novo: documentar a divergência intencional entre `email_hash` (interno,
+  workspace-scoped) e `email_hash_external` (puro, para dispatch externo).
+  Seção: `docs/90-meta/04-decision-log.md`.
+- Atualizar `docs/40-integrations/01-meta-capi.md` § "Mapping canônico" para
+  incluir `fn`, `ln` na tabela.
+- Atualizar `docs/40-integrations/04-google-ads-enhanced-conversions.md` idem.
+- BR-PRIVACY-002 em `docs/50-business-rules/BR-PRIVACY.md` — clarificar que
+  hashes externos NÃO são workspace-scoped (intencional para dispatch externo).
+- Atualizar comentários nos mappers (linha 51 do meta-capi, linha 11 do
+  google-enhanced-conversions) que mentem dizendo "already SHA-256 hex".
 
 ## Política de uso
 
