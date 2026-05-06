@@ -1,20 +1,29 @@
 /**
- * routes/workspace-config.ts — PATCH /v1/workspace/config
+ * routes/workspace-config.ts — GET /v1/workspace/config + PATCH /v1/workspace/config
  *
- * Updates workspace-level integration configuration (workspace.config JSONB).
- * Uses a safe SELECT → JS deep-merge → UPDATE pattern to avoid the `||` SQL
+ * Reads and updates workspace-level integration configuration (workspace.config JSONB).
+ * PATCH uses a safe SELECT → JS deep-merge → UPDATE pattern to avoid the `||` SQL
  * JSONB concatenation bug in the Cloudflare Worker Postgres driver.
  *
+ * PATCH semantics: `null` em qualquer chave do body funciona como tombstone — remove
+ * a chave do JSONB em vez de armazenar `null` (ex.: deletar entradas individuais de
+ * `sendflow.campaign_map`). Veja deepMerge() abaixo.
+ *
  * CONTRACT: docs/30-contracts/05-api-server-actions.md
- * T-ID: T-FUNIL-021
+ * T-ID: T-FUNIL-021, T-13-016a (extends with sendflow.campaign_map + GET),
+ *       T-13-016d (null-as-tombstone para PATCH semântico)
  *
  * Auth: Authorization: Bearer <token> (OPERATOR or ADMIN).
  *   workspace_id comes from the auth context (JWT/Bearer) — NEVER from body.
  *
  * BR-AUDIT-001: mutação de workspace.config registra audit_log
  *   action='workspace_config_updated', metadata.fields_updated = top-level keys do body.
- * BR-RBAC-002: workspace_id como âncora multi-tenant — UPDATE escopo por workspace.
+ *   GET é read-only e não dispara audit (BR-AUDIT-001 cobre apenas mutações sensíveis).
+ * BR-RBAC-002: workspace_id como âncora multi-tenant — SELECT/UPDATE escopo por workspace.
  * BR-PRIVACY-001: zero PII em logs e error responses.
+ *   Premissa atual: workspaces.config NÃO contém tokens/secrets — provider tokens
+ *   vivem em `workspace_integrations` (tabela dedicada, lida pelos dispatchers).
+ *   Se um dia config passar a hospedar segredos, GET deve mascará-los antes de retornar.
  */
 
 import { auditLog, createDb } from '@globaltracker/db';
@@ -77,12 +86,35 @@ const IntegrationsSchema = z
   .strict();
 
 /**
+ * Shape for sendflow.campaign_map entries (T-13-016).
+ * Each key is a SendFlow campaignId; value maps to a launch/stage/event.
+ * Consumer: apps/edge/src/routes/webhooks/sendflow.ts (lookup at lines ~263).
+ */
+const SendflowCampaignEntrySchema = z
+  .object({
+    launch: z.string().min(1),
+    stage: z.string().min(1),
+    event_name: z.string().min(1),
+  })
+  .strict();
+
+const SendflowConfigSchema = z
+  .object({
+    // null = tombstone (remove this campaignId from campaign_map). Object = upsert.
+    campaign_map: z
+      .record(SendflowCampaignEntrySchema.or(z.null()))
+      .optional(),
+  })
+  .strict();
+
+/**
  * Top-level PATCH body — partial workspace config.
  * .strict() guarantees unknown fields are rejected (400 validation_error).
  */
 const PatchWorkspaceConfigBodySchema = z
   .object({
     integrations: IntegrationsSchema.optional(),
+    sendflow: SendflowConfigSchema.optional(),
   })
   .strict();
 
@@ -108,6 +140,11 @@ export type InsertAuditEntryFn = (entry: {
 //
 // Recursively merges `patch` into `base`. Arrays are replaced (not merged).
 // Only plain objects are recursed; all other types are overwritten.
+//
+// PATCH semantics: `null` em qualquer chave do patch atua como TOMBSTONE — a
+// chave é REMOVIDA do resultado em vez de armazenada como null. Permite ao
+// cliente deletar entradas (ex.: campaign_map["abc"] = null remove "abc").
+// Se a chave já não existia, é no-op (não erra).
 // ---------------------------------------------------------------------------
 
 function deepMerge(
@@ -132,6 +169,10 @@ function deepMerge(
         baseVal as Record<string, unknown>,
         patchVal as Record<string, unknown>,
       );
+    } else if (patchVal === null) {
+      // BR-API-PATCH-NULL: null como tombstone — remove a chave em vez de armazenar null.
+      // Permite ao cliente deletar entradas (ex: campaign_map) via PATCH semântico.
+      delete result[key];
     } else {
       result[key] = patchVal;
     }
@@ -172,6 +213,104 @@ export function createWorkspaceConfigRoute(deps?: {
   insertAuditEntry?: InsertAuditEntryFn;
 }): Hono<AppEnv> {
   const route = new Hono<AppEnv>();
+
+  // -------------------------------------------------------------------------
+  // GET /config — return current workspace configuration (read-only)
+  //
+  // BR-RBAC-002: workspace_id from JWT/auth context — never from query/body.
+  // BR-PRIVACY-001: no PII in logs/error responses. Today workspaces.config
+  //   does not store tokens (those live in workspace_integrations); if that
+  //   changes, mask sensitive fields here before returning.
+  // BR-AUDIT-001: GET is read-only — no audit_log entry needed.
+  // -------------------------------------------------------------------------
+  route.get('/config', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const actorId = extractBearerToken(c.req.header('Authorization'));
+
+    if (!actorId) {
+      return c.json(
+        {
+          code: 'unauthorized',
+          message: 'Missing or invalid Authorization header',
+          request_id: requestId,
+        },
+        401,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // BR-RBAC-002: workspace_id must come from auth context — never from request.
+    const workspaceId: string =
+      (c.get('workspace_id') as string | undefined) ??
+      c.env.DEV_WORKSPACE_ID ??
+      actorId;
+
+    const db = deps?.getDb?.(c);
+
+    if (!db) {
+      safeLog('warn', {
+        event: 'workspace_config_get_no_db',
+        request_id: requestId,
+        workspace_id: workspaceId,
+      });
+      return c.json(
+        {
+          code: 'service_unavailable',
+          message: 'DB not configured',
+          request_id: requestId,
+        },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    try {
+      const rows = await db
+        .select({ config: workspaces.config })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
+        .limit(1);
+
+      // Parse defensively — jsonb may arrive as string from some driver versions.
+      const rawCfg = rows[0]?.config;
+      const config: Record<string, unknown> =
+        typeof rawCfg === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(rawCfg) as Record<string, unknown>;
+              } catch {
+                return {};
+              }
+            })()
+          : ((rawCfg as Record<string, unknown> | null | undefined) ?? {});
+
+      return c.json(
+        { config, request_id: requestId },
+        200,
+        { 'X-Request-Id': requestId },
+      );
+    } catch (err) {
+      // BR-PRIVACY-001: no PII in log — workspace_id is an opaque UUID.
+      safeLog('error', {
+        event: 'workspace_config_get_db_error',
+        request_id: requestId,
+        workspace_id: workspaceId,
+        error_type: err instanceof Error ? err.constructor.name : typeof err,
+      });
+
+      return c.json(
+        {
+          code: 'internal_error',
+          message: 'Failed to read workspace config',
+          request_id: requestId,
+        },
+        500,
+        { 'X-Request-Id': requestId },
+      );
+    }
+  });
 
   // -------------------------------------------------------------------------
   // PATCH /config — update workspace configuration (partial merge)

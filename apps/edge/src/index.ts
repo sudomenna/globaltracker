@@ -87,6 +87,7 @@ import { eventsRoute } from './routes/events.js';
 import { createFunnelTemplatesRoute } from './routes/funnel-templates.js';
 import { healthCpRoute } from './routes/health-cp.js';
 import { helpRoute } from './routes/help.js';
+import { integrationsSendflowRoute } from './routes/integrations-sendflow.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
 import { launchesRoute } from './routes/launches.js';
 import { leadRoute } from './routes/lead.js';
@@ -426,6 +427,12 @@ app.route(
   }),
 );
 app.route('/v1/health', healthCpRoute);
+// SendFlow credentials endpoint (Sprint 13 — T-13-016b).
+// Mount BEFORE the catch-all integrations test route so GET/PATCH
+// `/sendflow/credentials` is not intercepted. The test route only handles
+// POST `/:provider/test`, so there's no conflict — but mounting first is
+// defensive ordering. BR-PRIVACY-001: never echoes raw sendtok.
+app.route('/v1/integrations/sendflow', integrationsSendflowRoute);
 app.route('/v1/integrations', integrationsTestRoute);
 
 // Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
