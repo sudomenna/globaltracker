@@ -50,16 +50,16 @@ import {
 import {
   checkEligibility as checkGoogleAdsEligibility,
   mapEventToConversionUpload,
-  refreshAccessToken as refreshGoogleAdsToken,
   sendConversionUpload,
 } from './dispatchers/google-ads-conversion/index.js';
 import {
   type EnhancedConversionsLaunchConfig,
   checkEligibility as checkEnhancedEligibility,
   mapEventToEnhancedConversion,
-  refreshAccessToken as refreshEnhancedToken,
   sendEnhancedConversion,
 } from './dispatchers/google-enhanced-conversions/index.js';
+import { getGoogleAdsAccessToken } from './lib/google-ads-oauth.js';
+import { resolveGoogleAdsCredentials } from './lib/google-ads-config.js';
 import {
   checkEligibility,
   mapEventToMetaPayload,
@@ -128,6 +128,12 @@ type Bindings = {
   GOOGLE_ADS_CLIENT_SECRET: string;
   GOOGLE_ADS_REFRESH_TOKEN: string;
   GOOGLE_ADS_CURRENCY: string;
+  // T-14-005/006/009: Google OAuth client credentials shared across workspaces.
+  // Preferred over the legacy GOOGLE_ADS_CLIENT_ID/SECRET (which the cost
+  // ingestor still consumes). When unset, the dispatchers fall back to
+  // GOOGLE_ADS_CLIENT_ID/SECRET for backward compat.
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
   FX_RATES_PROVIDER?: string;
   FX_RATES_API_KEY?: string;
   // GA4 Measurement Protocol (T-4-007)
@@ -882,15 +888,33 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
  *
  * The returned function:
  *   1. Loads the event from DB.
- *   2. Loads the launch config (for conversion_actions + ads_customer_id).
- *   3. Checks eligibility (consent, click_id, conversion_action, customer_id).
- *   4. Maps to ConversionUploadPayload via mapEventToConversionUpload.
- *   5. Refreshes OAuth access token and calls sendConversionUpload.
+ *   2. Resolves per-workspace Google Ads credentials (refresh_token decrypted +
+ *      developer_token + customer_id) via resolveGoogleAdsCredentials.
+ *   3. Builds a virtual launchConfig using job.destinationAccountId (customer_id)
+ *      + job.destinationResourceId (conversion_action_id) — workspace-level
+ *      mapping resolved at enqueue time (T-14-008).
+ *   4. Checks eligibility (consent, click_id, conversion_action, customer_id).
+ *   5. Maps to ConversionUploadPayload via mapEventToConversionUpload.
+ *   6. Calls sendConversionUpload — the client refreshes access_token internally
+ *      using the per-workspace refresh_token resolved in step 2.
+ *
+ * T-14-009 (Sprint 14, Onda 3) — migrated from env-var-based credentials
+ *   (GOOGLE_ADS_CLIENT_ID/SECRET/REFRESH_TOKEN/DEVELOPER_TOKEN/CUSTOMER_ID) to
+ *   per-workspace credentials persisted via OAuth flow (T-14-005).
+ *
+ * Trade-off [SYNC-PENDING — refactor sendConversionUpload to accept accessToken
+ * directly]: the client at dispatchers/google-ads-conversion/client.ts still
+ * requires `oauth: OAuthConfig` and refreshes internally. We feed it the
+ * per-workspace OAuth tuple resolved here. The cache + invalid_grant detection
+ * provided by getGoogleAdsAccessToken is therefore not used on this path —
+ * a refresh failure surfaces as `server_error` (retry) instead of marking
+ * `oauth_token_state='expired'`. Acceptable for now; revisit when client.ts
+ * gains an `accessToken` injection mode.
  *
  * BR-DISPATCH-002: processDispatchJob already holds the atomic lock before calling this.
  * BR-DISPATCH-004: checkEligibility provides mandatory skip_reason on ineligible.
  * BR-CONSENT-003: ad_user_data consent enforced by checkGoogleAdsEligibility.
- * BR-PRIVACY-001: no PII logged.
+ * BR-PRIVACY-001: no PII (and no token material) logged.
  */
 function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
   return async (job): Promise<DispatchResult> => {
@@ -910,25 +934,65 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       return { ok: false, kind: 'skip', reason: 'test_mode' };
     }
 
-    // 2. Load launch config (for conversion_actions + ads_customer_id).
-    let launchConfig: {
-      tracking?: {
-        google?: {
-          ads_customer_id?: string | null;
-          conversion_actions?: Record<string, string> | null;
-        } | null;
-      } | null;
-    } | null = null;
-    if (event.launchId) {
-      const [launch] = await db
-        .select({ config: launches.config })
-        .from(launches)
-        .where(eq(launches.id, event.launchId));
-      // BR-DISPATCH-004: launchConfig drives eligibility checks.
-      launchConfig = (launch?.config as typeof launchConfig) ?? null;
+    // 2. Resolve per-workspace Google Ads credentials.
+    // T-14-003/005: workspace_integrations.google_ads_refresh_token_enc +
+    //   workspaces.config.integrations.google_ads + workspaces.google_ads_developer_token.
+    // BR-PRIVACY-001: refreshToken/developerToken returned only for in-memory use here.
+    const credentials = await resolveGoogleAdsCredentials({
+      db,
+      workspaceId: event.workspaceId,
+      masterKeyRegistry: { 1: env.PII_MASTER_KEY_V1 ?? '' },
+      envDeveloperToken: env.GOOGLE_ADS_DEVELOPER_TOKEN ?? null,
+    });
+
+    if (!credentials.ok) {
+      switch (credentials.error.code) {
+        case 'not_configured':
+          // BR-DISPATCH-004: skip_reason mandatory.
+          return {
+            ok: false,
+            kind: 'skip',
+            reason: 'integration_not_configured',
+          };
+        case 'invalid_state':
+          // OAuth flow not finished or token expired (state != 'connected').
+          return { ok: false, kind: 'skip', reason: 'oauth_pending' };
+        case 'decryption_failed':
+        case 'db_error':
+          // Transient — retry later (could be transient KMS/DB hiccup).
+          return {
+            ok: false,
+            kind: 'server_error',
+            status: 0,
+          };
+      }
     }
 
-    // 3. Check eligibility — pure function, no I/O.
+    // 3. Build virtual launchConfig from dispatch_job — destinationAccountId is
+    //    the workspace-level Google Ads customer_id, destinationResourceId is
+    //    the conversion_action_id resolved at enqueue (T-14-008).
+    //    Eligibility + mapper expect this shape (launches-scoped config); we
+    //    surface the workspace-scoped values through the same surface so neither
+    //    function needs to learn about the dispatch_job.
+    const virtualLaunchConfig: {
+      tracking: {
+        google: {
+          ads_customer_id: string | null;
+          conversion_actions: Record<string, string>;
+        };
+      };
+    } = {
+      tracking: {
+        google: {
+          ads_customer_id: job.destinationAccountId ?? credentials.value.customerId,
+          conversion_actions: job.destinationResourceId
+            ? { [event.eventName]: job.destinationResourceId }
+            : {},
+        },
+      },
+    };
+
+    // 4. Check eligibility — pure function, no I/O.
     // BR-CONSENT-003: ad_user_data consent required for Google Ads Conversion Upload.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
     const eligibility = checkGoogleAdsEligibility(
@@ -941,7 +1005,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           typeof checkGoogleAdsEligibility
         >[0]['attribution'],
       },
-      launchConfig,
+      virtualLaunchConfig,
     );
 
     if (!eligibility.eligible) {
@@ -949,7 +1013,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       return { ok: false, kind: 'skip', reason: eligibility.reason };
     }
 
-    // 4. Map internal event → ConversionUploadPayload.
+    // 5. Map internal event → ConversionUploadPayload.
     const payload = mapEventToConversionUpload(
       {
         event_id: event.id,
@@ -963,31 +1027,29 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           typeof mapEventToConversionUpload
         >[0]['custom_data'],
       },
-      launchConfig ?? {},
+      virtualLaunchConfig,
     );
 
-    // 5. Refresh OAuth token and send — injectable fetch.
+    // 6. Send — sendConversionUpload refreshes access_token internally using
+    //    the per-workspace refresh_token. BR-PRIVACY-001: no logging of tokens.
     const oauthConfig = {
-      clientId: env.GOOGLE_ADS_CLIENT_ID,
-      clientSecret: env.GOOGLE_ADS_CLIENT_SECRET,
-      refreshToken: env.GOOGLE_ADS_REFRESH_TOKEN,
+      clientId:
+        env.GOOGLE_OAUTH_CLIENT_ID ?? env.GOOGLE_ADS_CLIENT_ID,
+      clientSecret:
+        env.GOOGLE_OAUTH_CLIENT_SECRET ?? env.GOOGLE_ADS_CLIENT_SECRET,
+      refreshToken: credentials.value.refreshToken,
     };
-
-    const accessToken = await refreshGoogleAdsToken(oauthConfig, fetch);
 
     const gadsResult = await sendConversionUpload(
       payload,
       {
         oauth: oauthConfig,
-        developerToken: env.GOOGLE_ADS_DEVELOPER_TOKEN,
-        customerId: env.GOOGLE_ADS_CUSTOMER_ID,
+        developerToken: credentials.value.developerToken,
+        customerId: credentials.value.customerId,
+        managerCustomerId: credentials.value.loginCustomerId,
       },
       fetch,
     );
-
-    // accessToken is consumed inside sendConversionUpload via oauth.refreshAccessToken;
-    // the explicit call above is a no-op here — we pass the refreshed token via config.
-    void accessToken;
 
     if (gadsResult.ok) {
       return { ok: true };
@@ -1006,15 +1068,21 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
  * The returned function:
  *   1. Loads the event from DB.
  *   2. Loads the associated lead (if any).
- *   3. Loads the launch config (for conversion_actions + ads_customer_id).
- *   4. Checks eligibility (consent, order_id, user_data, conversion_action, 24h window).
- *   5. Maps to EnhancedConversionPayload via mapEventToEnhancedConversion.
- *   6. Refreshes OAuth token and calls sendEnhancedConversion.
+ *   3. Resolves a per-workspace Google Ads access_token via getGoogleAdsAccessToken
+ *      (cached, with invalid_grant detection that marks oauth_token_state='expired').
+ *   4. Builds a virtual launchConfig from dispatch_job (destinationAccountId +
+ *      destinationResourceId) — workspace-level mapping resolved at enqueue (T-14-008).
+ *   5. Checks eligibility (consent, order_id, user_data, conversion_action, 24h window).
+ *   6. Maps to EnhancedConversionPayload via mapEventToEnhancedConversion.
+ *   7. Calls sendEnhancedConversion with the access_token directly (no inner refresh).
+ *
+ * T-14-009 (Sprint 14, Onda 3) — migrated from env-var-based credentials
+ *   to per-workspace credentials persisted via OAuth flow (T-14-005).
  *
  * BR-DISPATCH-002: processDispatchJob already holds the atomic lock before calling this.
  * BR-DISPATCH-004: checkEligibility provides mandatory skip_reason on ineligible.
  * BR-CONSENT-003: ad_user_data consent enforced by checkEnhancedEligibility.
- * BR-PRIVACY-001: no PII logged.
+ * BR-PRIVACY-001: no PII (and no token material) logged.
  */
 function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
   return async (job): Promise<DispatchResult> => {
@@ -1044,21 +1112,61 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       lead = rows[0];
     }
 
-    // 3. Load launch config (for conversion_actions + ads_customer_id).
-    // Typed as EnhancedConversionsLaunchConfig so TypeScript's control-flow
-    // narrowing (post-eligibility guard) does not collapse it to `never`.
-    let launchConfig: EnhancedConversionsLaunchConfig | null = null;
-    if (event.launchId) {
-      const [launch] = await db
-        .select({ config: launches.config })
-        .from(launches)
-        .where(eq(launches.id, event.launchId));
-      // BR-DISPATCH-004: launchConfig drives eligibility checks.
-      launchConfig =
-        (launch?.config as EnhancedConversionsLaunchConfig) ?? null;
+    // 3. Resolve per-workspace access_token (cached + invalid_grant aware).
+    //    T-14-006: getGoogleAdsAccessToken handles refresh + caches per workspace_id.
+    //    On invalid_grant, the helper marks oauth_token_state='expired' before returning
+    //    the typed error — UI then surfaces "Reconectar Google Ads".
+    const tokenResult = await getGoogleAdsAccessToken({
+      db,
+      workspaceId: event.workspaceId,
+      masterKeyRegistry: { 1: env.PII_MASTER_KEY_V1 ?? '' },
+      envDeveloperToken: env.GOOGLE_ADS_DEVELOPER_TOKEN ?? null,
+      oauthClientId:
+        env.GOOGLE_OAUTH_CLIENT_ID ?? env.GOOGLE_ADS_CLIENT_ID,
+      oauthClientSecret:
+        env.GOOGLE_OAUTH_CLIENT_SECRET ?? env.GOOGLE_ADS_CLIENT_SECRET,
+      fetchFn: fetch,
+    });
+
+    if (!tokenResult.ok) {
+      switch (tokenResult.error.code) {
+        case 'not_configured':
+          return {
+            ok: false,
+            kind: 'skip',
+            reason: 'integration_not_configured',
+          };
+        case 'invalid_state':
+          return { ok: false, kind: 'skip', reason: 'oauth_pending' };
+        case 'oauth_token_revoked':
+          return {
+            ok: false,
+            kind: 'skip',
+            reason: 'oauth_token_revoked',
+          };
+        case 'oauth_refresh_failed':
+        case 'decryption_failed':
+        case 'db_error':
+          // Transient — retry later. server_error kind triggers backoff retry.
+          return { ok: false, kind: 'server_error', status: 0 };
+      }
     }
 
-    // 4. Check eligibility — pure function, no I/O.
+    // 4. Build virtual launchConfig from dispatch_job — same pattern as
+    //    Conversion Upload. eligibility + mapper expect launches-scoped shape.
+    const virtualLaunchConfig: EnhancedConversionsLaunchConfig = {
+      tracking: {
+        google: {
+          ads_customer_id:
+            job.destinationAccountId ?? tokenResult.value.customerId,
+          conversion_actions: job.destinationResourceId
+            ? { [event.eventName]: job.destinationResourceId }
+            : {},
+        },
+      },
+    };
+
+    // 5. Check eligibility — pure function, no I/O.
     // BR-CONSENT-003: ad_user_data consent required for Enhanced Conversions.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
     const eligibility = checkEnhancedEligibility(
@@ -1073,7 +1181,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
         >[0]['custom_data'],
       },
       lead ? { email_hash: lead.emailHash, phone_hash: lead.phoneHash } : null,
-      launchConfig,
+      virtualLaunchConfig,
     );
 
     if (!eligibility.eligible) {
@@ -1081,7 +1189,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       return { ok: false, kind: 'skip', reason: eligibility.reason };
     }
 
-    // 5. Map internal event → EnhancedConversionPayload.
+    // 6. Map internal event → EnhancedConversionPayload.
     const payload = mapEventToEnhancedConversion(
       {
         event_id: event.id,
@@ -1104,28 +1212,16 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
             ln_hash: lead.lnHash,
           }
         : null,
-      launchConfig ?? { tracking: null },
+      virtualLaunchConfig,
     );
 
-    // 6. Refresh OAuth token and send — injectable fetch.
-    const oauthConfig = {
-      clientId: env.GOOGLE_ADS_CLIENT_ID,
-      clientSecret: env.GOOGLE_ADS_CLIENT_SECRET,
-      refreshToken: env.GOOGLE_ADS_REFRESH_TOKEN,
-    };
-
-    const accessToken = await refreshEnhancedToken(oauthConfig, fetch);
-
-    const customerId =
-      launchConfig?.tracking?.google?.ads_customer_id ??
-      env.GOOGLE_ADS_CUSTOMER_ID;
-
+    // 7. Send — sendEnhancedConversion accepts accessToken directly (no inner refresh).
     const enhancedResult = await sendEnhancedConversion(
       payload,
       {
-        customerId,
-        developerToken: env.GOOGLE_ADS_DEVELOPER_TOKEN,
-        accessToken,
+        customerId: tokenResult.value.customerId,
+        developerToken: tokenResult.value.developerToken,
+        accessToken: tokenResult.value.accessToken,
       },
       fetch,
     );

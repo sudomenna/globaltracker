@@ -800,9 +800,35 @@ export async function processRawEvent(
       type IntegrationConfig = {
         meta?: { pixel_id?: string; capi_token?: string } | null;
         ga4?: { measurement_id?: string; api_secret?: string } | null;
+        google_ads?: {
+          customer_id?: string | null;
+          login_customer_id?: string | null;
+          oauth_token_state?: 'pending' | 'connected' | 'expired' | null;
+          conversion_actions?: Record<string, string | null> | null;
+          enabled?: boolean | null;
+        } | null;
       };
-      const integrations = (ws?.config as Record<string, unknown> | null)
-        ?.integrations as IntegrationConfig | undefined;
+
+      // Defensive parse: workspaces.config can arrive as string or object
+      // depending on the underlying driver/Hyperdrive serialization path.
+      const rawConfig = ws?.config as
+        | Record<string, unknown>
+        | string
+        | null
+        | undefined;
+      const config: Record<string, unknown> | null =
+        typeof rawConfig === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(rawConfig) as Record<string, unknown>;
+              } catch {
+                return null;
+              }
+            })()
+          : (rawConfig ?? null);
+      const integrations = config?.integrations as
+        | IntegrationConfig
+        | undefined;
 
       const jobInputs: DispatchJobInput[] = [];
 
@@ -826,6 +852,60 @@ export async function processRawEvent(
           destination_account_id: integrations.ga4.measurement_id,
           destination_resource_id: integrations.ga4.measurement_id,
         });
+      }
+
+      // Google Ads fanout (T-14-008).
+      // ADR-030: only canonical events fan out to Google Ads — `custom:*`
+      // events stay out of the conversion pipeline (mapping table is keyed
+      // by canonical names only).
+      // Effective-enabled gate: workspace must (a) have explicitly opted in
+      // (enabled === true), (b) hold a connected OAuth state, (c) have a
+      // customer_id, and (d) have a conversion_action mapped for the event.
+      // We intentionally do NOT log per-skip here: every event in workspaces
+      // without Google Ads would emit warns and pollute logs (BR-PRIVACY-001
+      // is satisfied trivially since no PII is touched).
+      // We always enqueue the `google_enhancement` job alongside
+      // `google_ads_conversion`; downstream consumer (T-14-009) decides
+      // eligibility based on event kind + PII availability and emits the
+      // skip_reason per BR-DISPATCH-004.
+      const isCanonicalEvent = !payload.event_name.startsWith('custom:');
+      const ga = integrations?.google_ads;
+      if (
+        isCanonicalEvent &&
+        ga?.enabled === true &&
+        ga.oauth_token_state === 'connected' &&
+        typeof ga.customer_id === 'string' &&
+        ga.customer_id.length > 0 &&
+        ga.conversion_actions
+      ) {
+        const conversionActionId =
+          ga.conversion_actions[payload.event_name];
+        if (
+          typeof conversionActionId === 'string' &&
+          conversionActionId.length > 0
+        ) {
+          // BR-DISPATCH-001: idempotency_key includes destination_subresource;
+          // we set it to the conversion_action_id so two different conversion
+          // actions on the same (workspace, event, customer) hash distinctly.
+          jobInputs.push({
+            workspace_id: rawEvent.workspaceId,
+            event_id: insertedEventId,
+            lead_id: resolvedLeadId ?? null,
+            destination: 'google_ads_conversion',
+            destination_account_id: ga.customer_id,
+            destination_resource_id: conversionActionId,
+            destination_subresource: conversionActionId,
+          });
+          jobInputs.push({
+            workspace_id: rawEvent.workspaceId,
+            event_id: insertedEventId,
+            lead_id: resolvedLeadId ?? null,
+            destination: 'google_enhancement',
+            destination_account_id: ga.customer_id,
+            destination_resource_id: conversionActionId,
+            destination_subresource: conversionActionId,
+          });
+        }
       }
 
       if (jobInputs.length > 0) {
