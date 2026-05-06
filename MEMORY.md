@@ -235,8 +235,14 @@ Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
   (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
   (Purchase real via Guru cartão).
 
-Próxima ação (atualizada 2026-05-06 tarde):
+Próxima ação (atualizada 2026-05-06 noite):
   TRILHAS 0, 2 e 4 FECHADAS. Restam 2 trilhas (ordem: 3 → 1):
+
+  ✅ BONUS (esta sessão): Leads lista + timeline no CP (commit e9b409b):
+     • GET /v1/leads (lista paginada + busca UUID + filtro launch) wired em prod
+     • GET /v1/leads/:id/timeline funcional — nodes tipados alinhados com lead-timeline-client.tsx
+     • CP /leads page substituída (era placeholder T-6-014)
+     • Deployado: prod IDs f9687cba + 3c996b2e (leads-timeline e lista)
 
   TRILHA 3 (T-13-012 survey form em obrigado-workshop)
   TRILHA 1 (Purchase real via Guru cartão — destrava lançamento jun)
