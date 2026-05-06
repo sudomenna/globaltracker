@@ -38,6 +38,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   ga4: 'Google Analytics 4',
   google_ads: 'Google Ads Conversion',
   google_ads_enhanced: 'Google Enhanced Conversions',
+  sendflow: 'SendFlow (WhatsApp)',
 };
 
 async function fetchIntegrationsHealth(
@@ -53,7 +54,17 @@ async function fetchIntegrationsHealth(
   return res.json() as Promise<IntegrationsHealthResponse>;
 }
 
-const PROVIDERS = ['meta', 'ga4', 'google_ads', 'google_ads_enhanced'] as const;
+const PROVIDERS = [
+  'meta',
+  'ga4',
+  'google_ads',
+  'google_ads_enhanced',
+  'sendflow',
+] as const;
+
+// SendFlow is webhook-inbound — not part of /v1/health/integrations dispatch
+// metrics. Render it with state="unknown" + dedicated copy and no test button.
+const INBOUND_ONLY_PROVIDERS = new Set<string>(['sendflow']);
 
 interface IntegrationsListClientProps {
   role: string;
@@ -111,9 +122,12 @@ export function IntegrationsListClient({
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {PROVIDERS.map((providerId) => {
+        const isInboundOnly = INBOUND_ONLY_PROVIDERS.has(providerId);
         const health = providerMap.get(providerId);
-        const state: HealthState = health?.state ?? 'unknown';
-        const metrics = health?.metrics_24h;
+        const state: HealthState = isInboundOnly
+          ? 'unknown'
+          : (health?.state ?? 'unknown');
+        const metrics = isInboundOnly ? undefined : health?.metrics_24h;
         const label = PROVIDER_LABELS[providerId] ?? providerId;
 
         return (
@@ -121,20 +135,28 @@ export function IntegrationsListClient({
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">{label}</CardTitle>
-                <HealthBadge
-                  size="sm"
-                  state={state}
-                  incidentCount={health?.incident_count}
-                />
+                {!isInboundOnly && (
+                  <HealthBadge
+                    size="sm"
+                    state={state}
+                    incidentCount={health?.incident_count}
+                  />
+                )}
               </div>
               <CardDescription>
-                {state === 'unknown'
-                  ? 'Nenhuma tentativa registrada'
-                  : 'Últimas 24 horas'}
+                {isInboundOnly
+                  ? 'Webhook inbound — sem métricas de saúde'
+                  : state === 'unknown'
+                    ? 'Nenhuma tentativa registrada'
+                    : 'Últimas 24 horas'}
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3 flex-1">
-              {metrics != null ? (
+              {isInboundOnly ? (
+                <p className="text-sm text-muted-foreground">
+                  Webhook inbound — verifique recebimentos no detalhe.
+                </p>
+              ) : metrics != null ? (
                 <ul
                   className="space-y-1 text-sm"
                   aria-label={`Métricas de ${label}`}
@@ -179,14 +201,16 @@ export function IntegrationsListClient({
                     Configurar
                   </Link>
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void mutate()}
-                  aria-label={`Testar agora ${label}`}
-                >
-                  Testar agora
-                </Button>
+                {!isInboundOnly && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void mutate()}
+                    aria-label={`Testar agora ${label}`}
+                  >
+                    Testar agora
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
