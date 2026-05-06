@@ -76,16 +76,47 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 13 — Trilha 2 ENCERRADA. Sessão 2026-05-05 noite descobriu
-               2 bugs críticos:
-                 1) DISPATCH-JOBS-WIRING (corrigido + deploy, NÃO commitado)
-                 2) CRITICAL-PII-HASH-WORKSPACE-SCOPED (NÃO corrigido — bloqueia
-                    dispatch real para Meta/Google. Plano Opção B em §10.)
+Estado:        SPRINT 13 — TRILHA 0 (T-OPB) ENCERRADA E VALIDADA EM PRODUÇÃO.
+               Sessão 2026-05-06 madrugada implementou Opção B + 4 bugs adicionais
+               descobertos durante validação E2E em test mode Meta:
 
-               Vendas reais começaram 2026-05-05 (60+ vendas) e foram recuperadas
-               via Guru REST API. 70 Purchase events em produção. 68 dispatch_jobs
-               status='pending' destination='meta_capi' AGUARDANDO Opção B antes
-               de serem enfileirados (ver §10).
+               ENTREGAS desta sessão (2026-05-06):
+                 ✅ T-OPB-001..005: 4 colunas hash externo (email_hash_external,
+                    phone_hash_external, fn_hash, ln_hash) em leads + helpers
+                    hashPiiExternal/splitName + wire em lead-resolver e pii-enrich
+                    + mappers Meta CAPI e Google Enhanced Conversions atualizados.
+                    Migration 0037 aplicada na cloud Supabase. Commit a929197.
+                 ✅ T-OPB-006: Backfill via endpoint admin temporário (já removido).
+                    53 leads atualizados com hashes externos descriptografados de
+                    email_enc/phone_enc/name_enc. 36/37 leads dos dispatch_jobs
+                    pendentes cobertos. Commit 148eb53.
+                 ✅ Guru contact.name → fn/ln: schema Zod do Guru processor agora
+                    parseia contact.name e popula fn_hash/ln_hash via splitName +
+                    hashPiiExternal após resolver lead. Commit 148eb53.
+                 ✅ FIX bug amount/100: guru-raw-events-processor dividia
+                    payment.total por 100 assumindo centavos. Guru envia em BRL
+                    direto (R$ 37 virava R$ 0,37). Fix + backfill 72 events.
+                    Commit 012d663.
+                 ✅ FIX mapper field-name mismatch: meta-capi/mapper.ts lia
+                    custom_data.value/order_id mas Guru salva como amount/product_id.
+                    Mapper agora aceita ambos. Commit 012d663.
+                 ✅ FIX test_event_code position: client.ts injetava test_event_code
+                    dentro de data[0] mas Meta exige no top-level do request body.
+                    Commit 012d663.
+                 ✅ Otimização: blocklist INTERNAL_ONLY_EVENT_NAMES no Step 9 do
+                    raw-events-processor — lead_identify e event_duplicate_accepted
+                    não criam mais dispatch_jobs (eram skipped). Commit 9cec0b3.
+
+               VALIDAÇÃO E2E:
+                 ✅ 1 dispatch_job em test mode Meta (TEST22888) → 200 OK,
+                    "Chaves de dados do usuário: Email, Nome, Sobrenome, Telefone"
+                    (4 hashes verdes no Events Manager).
+                 ✅ 67/68 dispatch_jobs históricos enfileirados em produção real.
+                    1 falha residual (lead sem PII recuperável — só email_hash
+                    interno workspace-scoped, irreversível).
+
+               TODOS os 4 commits desta sessão deployados em prod (deploy atual
+               a9823565, wrangler 2.20.0).
 
                Estado anterior (Sprint 12): preservado abaixo para histórico.
                Sprint 12 — Onda 4 PARCIALMENTE FECHADA (2026-05-05 manhã).
@@ -98,15 +129,19 @@ Estado:        SPRINT 13 — Trilha 2 ENCERRADA. Sessão 2026-05-05 noite descob
                COLD PATH (cross-device identity via Guru redirect) IMPLEMENTADO E
                VALIDADO E2E. obrigado-workshop agora lê email/phone/utms da URL,
                cria/resolve lead via /v1/lead, identifica e strippa PII da URL.
-Branch:        main (working tree pronto pra commit — 3 files: edge, tracker, snippet)
-DB Supabase:   migrations 0000–0034 aplicadas ✓
-               event_config das 5 pages NORMALIZADO nesta sessão (era double-
-               stringified em 2 rows — workshop, obrigado-workshop — bug do CP
-               save handler — ver §2)
+Branch:        main (clean — 4 commits a929197, 148eb53, 012d663, 9cec0b3 +
+               1 docs commit a serem pushados, 20 commits ahead origin/main)
+DB Supabase:   migrations 0000–0037 aplicadas ✓
+               leads: 4 novas colunas (email_hash_external, phone_hash_external,
+               fn_hash, ln_hash) populadas via T-OPB-006 backfill (53 leads).
+               72 Purchase events backfilled com amount × 100 (BRL correto).
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
-               (REDEPLOYADO 2026-05-05 — version dff44d61 — fix event_config
-               schema mismatch canonical/custom + parse defensivo string)
+               (deploy atual a9823565 — wrangler@2.20.0 + DATABASE_URL secret
+               como fallback do HYPERDRIVE; ver §6 nota crítica sobre wrangler)
+Meta CAPI:     67/68 dispatch_jobs históricos succeeded com em+ph+fn+ln verdes.
+               Test code TEST22888 secret ainda no worker (pode remover).
+               Pixel de CNE: 149334790553204 / capi_token em workspaces.config.
 Tracker CDN:   https://pub-e224c543d78644699af01a135279a5e2.r2.dev/tracker.js
                (REBUILT + REUPLOADED 2026-05-05 — fix race init→identify
                que zerava state.leadToken em browsers sem cookie __ftk)
@@ -168,19 +203,24 @@ Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
   (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
   (Purchase real via Guru cartão).
 
-Próxima ação (decidida 2026-05-05 noite):
-  Implementar Opção B (hashes externos puros) ANTES de enfileirar
-  dispatch_jobs em QUEUE_DISPATCH. Plano detalhado em §10.
+Próxima ação (decidida 2026-05-06 madrugada):
+  T-OPB FECHADO. Match rate Meta verde validado em test mode. 67/68
+  dispatch_jobs históricos sent. Sequência das próximas trilhas:
 
-  Após Opção B: enfileirar 68 dispatch_jobs do dia (recovery), validar match
-  rate em Events Manager Meta com 1-2 leads, depois retomar
-  TRILHA 3 (T-13-012 survey) → TRILHA 4 (T-13-016 SendFlow UI) → TRILHA 1
-  (Purchase real via Guru cartão).
+  TRILHA 3 (T-13-012 survey form em obrigado-workshop)
+  TRILHA 4 (T-13-016 SendFlow CP UI — campaign_map por campanha)
+  TRILHA 1 (Purchase real via Guru cartão — destrava lançamento jun)
 
-  Edge worker prod atual: version `ab75fb89-b456-4265-beb0-5efe6e73df24`
-  (deploy 2026-05-05 noite — inclui dispatch_jobs wiring no Step 9 do
-  raw-events-processor, SEM commit — working tree dirty em
-  apps/edge/src/lib/raw-events-processor.ts).
+  Pendências operacionais (não bloqueiam trilhas, fazer ad-hoc):
+  - Confirmar lead_identify + bloquear TestEvent no Meta Events Manager UI
+    (Conjuntos de dados → Pixel de CNE → Confirme eventos personalizados)
+  - Investigar fonte browser do lead_identify em Meta (PixelYourSite ainda
+    ativo no WP? — desativar se sim, conforme decisão original)
+  - Restaurar HYPERDRIVE binding em prod quando descobrirmos como deploy
+    com wrangler 4.x (hoje rodando via DATABASE_URL fallback — funcional
+    mas perde caching de conexão Hyperdrive)
+  - Remover secret META_CAPI_TEST_EVENT_CODE do worker (não crítico — só
+    é usado se algum event tem is_test=true, hoje todos false)
 
   Tracker.js R2 atual: build com fix race init→identify (preserva token quando
   cookie __ftk vazio). Snippet workshop em prod já tem stopImmediatePropagation
@@ -638,27 +678,26 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 - Aceita "começar mais simples e subir"
 - Quer credenciais reais validadas (não mockar dispatchers)
 
-## §9 Próxima sessão — playbook das 4 trilhas (ordem fixa: HASHPII-OPB → 3 → 4 → 1)
+## §9 Próxima sessão — playbook das 3 trilhas restantes (ordem: 3 → 4 → 1)
 
 > **Como retomar (cold start)**:
-> 1. `git log --oneline -10` — confirma último commit desta sessão (`2d913d2`).
-> 2. `git status` — você verá `apps/edge/src/lib/raw-events-processor.ts` modificado (uncommitted, mas DEPLOYADO em prod). Não reverter, não commitar isolado — vai junto com Opção B.
-> 3. `cd apps/edge && npx wrangler whoami` — confirma auth Cloudflare (renovar com `npx wrangler login` se necessário).
-> 4. Edge prod version atual: `ab75fb89-b456-4265-beb0-5efe6e73df24`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
+> 1. `git log --oneline -10` — último commit desta sessão é `9cec0b3` (perf dispatch). 5 commits novos: `a929197` `148eb53` `012d663` `9cec0b3` + docs.
+> 2. `git status` — working tree limpo. `facebook_docs.md` é untracked (referência local, não commitar).
+> 3. **Deploy**: usar `cd apps/edge && CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN npx wrangler@2.20.0 publish` (NÃO `deploy`, NÃO wrangler 3.x/4.x — ver §6 nota crítica). Token deve estar em `~/.zshrc`.
+> 4. Edge prod atual: `a9823565`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
 > 5. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
-> 6. DB connect (consultas ad-hoc) usar `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
-> 7. Verificar estado atual do dia:
->    - `SELECT count(*) FROM events WHERE event_name='Purchase' AND received_at > '2026-05-05'` — deve ter 70+
->    - `SELECT status, count(*) FROM dispatch_jobs WHERE workspace_id='74860330-a528-4951-bf49-90f0b5c72521' GROUP BY status` — deve ter 68 pending (não enfileirados)
+> 6. DB connect: `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
+> 7. Verificar estado atual:
+>    - `SELECT status, count(*) FROM dispatch_jobs WHERE workspace_id='74860330-a528-4951-bf49-90f0b5c72521' AND destination='meta_capi' GROUP BY status` — esperado: 67 succeeded, 1 failed, 6 skipped.
+>    - `SELECT count(*) FROM leads WHERE workspace_id='74860330-a528-4951-bf49-90f0b5c72521' AND email_hash_external IS NOT NULL` — esperado: 52+ (53 do backfill T-OPB-006 + novos via /v1/lead).
 >
 > **Decisões já tomadas — não rediscutir**:
-> - Ordem agora: **OPÇÃO B (hashPii) → enfileirar 68 jobs → validar match rate → Trilha 3 → Trilha 4 → Trilha 1**.
-> - Trilha 2 ENCERRADA (T-13-005 + T-13-006 + onboarding fix + workshop URL — commit 2d913d2).
-> - Hashes externos: NOVAS colunas `email_hash_external`, `phone_hash_external`, `fn_hash`, `ln_hash` em `leads`. Manter `email_hash`/`phone_hash` atuais (uso interno lead-resolver). Plano completo em §10.
-> - Recovery 60+ vendas via Guru REST API funcionou (script /tmp/pgquery/send-guru-recovery.mjs). Token Guru em memória do agent (`reference_guru_user_token.md`).
-> - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer = TUDO em produção. Pipeline funil B paid_workshop está OK fim-a-fim exceto pelo Purchase real (Trilha 1).
-> - SendFlow campaign_map cadastrado pros 2 grupos (compradores `3bhG8XexRRKwLxF4SGtk` → `Contact`/wpp_joined; VIP main `0b4IxLZFiYOxxRyO6ZmE` → `custom:wpp_joined_vip_main`/wpp_joined_vip_main).
-> - Helper `apps/edge/src/lib/jsonb-cast.ts` exporta `jsonb(value)`. Use em TODA escrita pra coluna jsonb daqui pra frente — Hyperdrive driver não cast implícito.
+> - **TRILHA 0 (T-OPB) FECHADA** em 2026-05-06 madrugada. 4 commits, deploy a9823565. Match rate Meta verde validado (em+ph+fn+ln). 67/68 dispatch_jobs históricos sent.
+> - **Wrangler workaround**: usar `wrangler@2.20.0 publish` (não 3.x/4.x — falha com code 10023 versioned-deployments + KV bindings). Stripa o binding HYPERDRIVE da config; secret `DATABASE_URL` no worker é o fallback que mantém DB conectividade.
+> - **PII master key**: `~/.zshrc` tem `CLOUDFLARE_API_TOKEN`. Se precisar do `PII_MASTER_KEY_V1` valor real (prod), só via endpoint admin temporário no worker (já tem padrão estabelecido em commits anteriores).
+> - Trilha 2 ENCERRADA (commit 2d913d2).
+> - Helper `apps/edge/src/lib/jsonb-cast.ts` exporta `jsonb(value)`. Use em TODA escrita pra coluna jsonb daqui pra frente.
+> - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer = produção. Pipeline funil B paid_workshop OK fim-a-fim exceto Purchase real (Trilha 1).
 
 ### TRILHA 2 — ENCERRADA (commit 2d913d2)
 
@@ -666,15 +705,29 @@ T-13-005 (config.ts DB-absent fallback) + T-13-006 (integrations-test.ts Zod
 `.strict()`) + onboarding propagação per-step de credenciais + workshop button
 URL fix. Validados, deployados, commitados. Nada a fazer aqui.
 
-### TRILHA 0 (NOVA, PRIORIDADE MÁXIMA) — Opção B do hashPii
+### TRILHA 0 (T-OPB) — ENCERRADA 2026-05-06
 
-Plano completo em **§10**. Em uma frase: criar 4 colunas externas em `leads`,
-helper de hash sem scope, splitName, wire no resolver e nos mappers Meta CAPI
-+ Google Enhanced Conversions. Validar com 1-2 leads em test mode Meta antes
-de backfill.
+Resumo do que foi feito (não refazer):
+- 4 colunas externas em `leads` populadas (email_hash_external,
+  phone_hash_external, fn_hash, ln_hash) — migration 0037
+- Helpers `hashPiiExternal` + `splitName` em `apps/edge/src/lib/pii.ts`
+- Wire em `lead-resolver.ts` (email/phone) e `pii-enrich.ts` (fn/ln)
+- Mappers Meta CAPI e Google Enhanced Conversions atualizados
+- Guru processor parseia `contact.name` e popula fn/ln após resolver lead
+- Backfill 53 leads existentes via endpoint admin temporário (já removido)
+- 3 bugs corrigidos durante validação:
+  - amount/100 (Guru envia BRL, não centavos) — fix + backfill 72 events
+  - mapper field-name mismatch (value/amount + order_id/product_id)
+  - test_event_code position (top-level, não dentro de data[])
+- Otimização: blocklist `INTERNAL_ONLY_EVENT_NAMES` evita dispatch_jobs
+  para `lead_identify` e `event_duplicate_accepted`
 
-**Importante**: dispatch_jobs já criados (68) ficam na tabela enquanto Opção B
-roda. Não enfileirar antes — match rate seria 0%.
+Validação E2E:
+- Test mode Meta TEST22888: 1 dispatch_job → 200 OK + 4 hashes verdes
+- Produção: 67/68 dispatch_jobs sent. 1 falha residual (lead sem
+  PII recuperável — só email_hash interno workspace-scoped).
+
+Commits: a929197, 148eb53, 012d663, 9cec0b3.
 
 ### TRILHA 2 — Histórico (NÃO REFAZER)
 
