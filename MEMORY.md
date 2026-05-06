@@ -534,7 +534,7 @@ Detalhe completo em [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/8
 | Hyperdrive | config `globaltracker-db`, id `39156b974a274f969ca96d4e0c32bce1` |
 | Worker prod | `globaltracker-edge.globaltracker.workers.dev` |
 | R2 bucket | `gt-tracker-cdn` (público) |
-| Wrangler | 4.87.0 (via npx) |
+| Wrangler | **2.20.0** (via `npx wrangler@2.20.0 publish`) — wrangler 3.x/4.x usa endpoint `/versions` que falha com KV bindings (code 10023). Workaround: `wrangler@2.20.0 publish` usa endpoint `/scripts` legado. Requer `CLOUDFLARE_API_TOKEN` env var (API token "Edit Cloudflare Workers" — NÃO usar OAuth de `wrangler login`). |
 | Supabase CLI | 2.90.0 |
 | Node | 24.x (v24.10.0) |
 | pnpm | 10.x |

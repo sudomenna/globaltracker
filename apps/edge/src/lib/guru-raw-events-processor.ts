@@ -22,6 +22,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
+import { hashPiiExternal, splitName } from './pii.js';
 import {
   type FunnelBlueprint,
   type Result,
@@ -52,6 +53,7 @@ const GuruRawEventPayloadSchema = z
     webhook_type: z.string(),
     contact: z
       .object({
+        name: z.string().nullish(),
         email: z.string().email().nullish(),
         phone_number: z.string().nullish(),
         phone_local_code: z.string().nullish(),
@@ -410,6 +412,32 @@ export async function processGuruRawEvent(
   }
 
   // Priority c: no identifier available — resolvedLeadId remains null
+
+  // T-OPB: populate fn_hash / ln_hash from contact.name on the resolved lead.
+  // Guru sends `contact.name` as a single full-name string. Meta CAPI / Google
+  // Enhanced Conversions expect first and last name hashed separately.
+  // Unconditional UPDATE — fn/ln hashes always reflect the latest known name.
+  // BR-PRIVACY-002: only hash is persisted — plaintext name is transient.
+  if (resolvedLeadId && payload.contact?.name) {
+    const { first, last } = splitName(payload.contact.name);
+    const fnHashVal = first ? await hashPiiExternal(first) : null;
+    const lnHashVal = last ? await hashPiiExternal(last) : null;
+
+    if (fnHashVal !== null || lnHashVal !== null) {
+      await db
+        .update(leads)
+        .set({
+          ...(fnHashVal ? { fnHash: fnHashVal } : {}),
+          ...(lnHashVal ? { lnHash: lnHashVal } : {}),
+        })
+        .where(
+          and(
+            eq(leads.id, resolvedLeadId),
+            eq(leads.workspaceId, rawEvent.workspaceId),
+          ),
+        );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Step 4: Insert events row
