@@ -76,9 +76,41 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 13 — TRILHA 0 (T-OPB) ENCERRADA E VALIDADA EM PRODUÇÃO.
-               Sessão 2026-05-06 madrugada implementou Opção B + 4 bugs adicionais
-               descobertos durante validação E2E em test mode Meta:
+Estado:        SPRINT 13 — TRILHAS 0 + 2 + 4 ENCERRADAS. Restam Trilhas 3 e 1.
+
+               ENTREGAS sessão 2026-05-06 (tarde — Onda T-13-016 SendFlow CP UI):
+                 ✅ Backend (commit b053c27 — feat(T-13-016): edge endpoints SendFlow):
+                    • Novo: GET /v1/workspace/config (Bearer, read-only, parse
+                      defensivo de JSONB string-or-object).
+                    • Estendido: PATCH /v1/workspace/config aceita top-level
+                      `sendflow.campaign_map` (Record<campaignId, {launch, stage,
+                      event_name}>). Schema continua .strict().
+                    • Semântica nova: `null` em qualquer chave do PATCH body
+                      (qualquer profundidade) é tombstone — deleta a chave do
+                      JSONB em vez de armazenar literal null. Implementado no
+                      deepMerge. Aplica genericamente, não só sendflow. Doc:
+                      ADR-027 + docs/30-contracts/05-api-server-actions.md.
+                    • Novo arquivo: apps/edge/src/routes/integrations-sendflow.ts
+                      → GET /v1/integrations/sendflow/credentials (devolve
+                      {has_sendtok, prefix, length} — NUNCA o token cru,
+                      BR-PRIVACY-001) + PATCH (upsert sendflow_sendtok com
+                      audit `workspace_sendflow_sendtok_updated` metadata
+                      length+prefix sem valor cru).
+                 ✅ Frontend (commit b60cdd7 — feat(T-13-016): UI control-plane):
+                    • UI em /integrations/sendflow com 3 cards consumindo os
+                      endpoints novos. Não muda contrato.
+                 ✅ Deploy edge: a3193c0e.
+                 ✅ Validação E2E completa: add entry → DB 3 entries; delete via
+                    tombstone (PATCH com null) → DB 2 entries. Confirma null=
+                    tombstone funcional fim-a-fim.
+                 ✅ Supabase auth: app_metadata.role='owner' setado pra
+                    tiagomenna@gmail.com (uid df511390-773d-4938-8b98-adf014109877)
+                    — sem essa mudança a UI ficava read-only.
+
+               ENTREGAS sessão 2026-05-06 madrugada (TRILHA 0 — T-OPB):
+                 (preservadas abaixo — NÃO refazer)
+
+
 
                ENTREGAS desta sessão (2026-05-06):
                  ✅ T-OPB-001..005: 4 colunas hash externo (email_hash_external,
@@ -203,12 +235,10 @@ Pages WP pendentes (3): aula-workshop, oferta-principal, obrigado-principal.
   (T-13-011) pra fechar o circuito Contact server-side, depois Trilha A
   (Purchase real via Guru cartão).
 
-Próxima ação (decidida 2026-05-06 madrugada):
-  T-OPB FECHADO. Match rate Meta verde validado em test mode. 67/68
-  dispatch_jobs históricos sent. Sequência das próximas trilhas:
+Próxima ação (atualizada 2026-05-06 tarde):
+  TRILHAS 0, 2 e 4 FECHADAS. Restam 2 trilhas (ordem: 3 → 1):
 
   TRILHA 3 (T-13-012 survey form em obrigado-workshop)
-  TRILHA 4 (T-13-016 SendFlow CP UI — campaign_map por campanha)
   TRILHA 1 (Purchase real via Guru cartão — destrava lançamento jun)
 
   Pendências operacionais (não bloqueiam trilhas, fazer ad-hoc):
@@ -678,13 +708,13 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 - Aceita "começar mais simples e subir"
 - Quer credenciais reais validadas (não mockar dispatchers)
 
-## §9 Próxima sessão — playbook das 3 trilhas restantes (ordem: 3 → 4 → 1)
+## §9 Próxima sessão — playbook das 2 trilhas restantes (ordem: 3 → 1)
 
 > **Como retomar (cold start)**:
-> 1. `git log --oneline -10` — último commit desta sessão é `9cec0b3` (perf dispatch). 5 commits novos: `a929197` `148eb53` `012d663` `9cec0b3` + docs.
+> 1. `git log --oneline -10` — últimos commits desta sessão (Onda T-13-016): `b60cdd7` (UI CP) e `b053c27` (edge endpoints). Commits anteriores T-OPB: `a929197` `148eb53` `012d663` `9cec0b3`.
 > 2. `git status` — working tree limpo. `facebook_docs.md` é untracked (referência local, não commitar).
 > 3. **Deploy**: usar `cd apps/edge && CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN npx wrangler@2.20.0 publish` (NÃO `deploy`, NÃO wrangler 3.x/4.x — ver §6 nota crítica). Token deve estar em `~/.zshrc`.
-> 4. Edge prod atual: `a9823565`. URL: `https://globaltracker-edge.globaltracker.workers.dev`.
+> 4. Edge prod atual: `a3193c0e` (T-13-016 backend). URL: `https://globaltracker-edge.globaltracker.workers.dev`.
 > 5. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
 > 6. DB connect: `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
 > 7. Verificar estado atual:
@@ -693,17 +723,53 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 >
 > **Decisões já tomadas — não rediscutir**:
 > - **TRILHA 0 (T-OPB) FECHADA** em 2026-05-06 madrugada. 4 commits, deploy a9823565. Match rate Meta verde validado (em+ph+fn+ln). 67/68 dispatch_jobs históricos sent.
+> - **TRILHA 4 (T-13-016) FECHADA** em 2026-05-06 tarde. Commits b053c27 (backend) + b60cdd7 (frontend), deploy edge a3193c0e. UI `/integrations/sendflow` no CP funcional E2E. Validado: add → 3 entries no DB; delete via tombstone (PATCH null) → 2 entries.
+> - **Semântica `null=tombstone` em PATCH JSONB** (ADR-027): `null` em qualquer chave do body do `PATCH /v1/workspace/config` (qualquer profundidade) deleta a chave do JSONB. Aplica genericamente a futuros PATCH sobre configs JSONB.
 > - **Wrangler workaround**: usar `wrangler@2.20.0 publish` (não 3.x/4.x — falha com code 10023 versioned-deployments + KV bindings). Stripa o binding HYPERDRIVE da config; secret `DATABASE_URL` no worker é o fallback que mantém DB conectividade.
 > - **PII master key**: `~/.zshrc` tem `CLOUDFLARE_API_TOKEN`. Se precisar do `PII_MASTER_KEY_V1` valor real (prod), só via endpoint admin temporário no worker (já tem padrão estabelecido em commits anteriores).
 > - Trilha 2 ENCERRADA (commit 2d913d2).
 > - Helper `apps/edge/src/lib/jsonb-cast.ts` exporta `jsonb(value)`. Use em TODA escrita pra coluna jsonb daqui pra frente.
-> - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer = produção. Pipeline funil B paid_workshop OK fim-a-fim exceto Purchase real (Trilha 1).
+> - SendFlow + phone normalizer + encryptPii + jsonb cast + tracker dedup + Guru update-if-newer + SendFlow CP UI = produção. Pipeline funil B paid_workshop OK fim-a-fim exceto Purchase real (Trilha 1).
 
 ### TRILHA 2 — ENCERRADA (commit 2d913d2)
 
 T-13-005 (config.ts DB-absent fallback) + T-13-006 (integrations-test.ts Zod
 `.strict()`) + onboarding propagação per-step de credenciais + workshop button
 URL fix. Validados, deployados, commitados. Nada a fazer aqui.
+
+### TRILHA 4 — ENCERRADA 2026-05-06 (commits b053c27 + b60cdd7, deploy a3193c0e)
+
+Resumo do que foi feito (não refazer):
+- Backend (b053c27 — `feat(T-13-016): edge endpoints para SendFlow autosserviço`):
+  - Novo `GET /v1/workspace/config` (Bearer, read-only, parse defensivo
+    string-or-object pra cobrir double-stringified legado).
+  - Estendido `PATCH /v1/workspace/config`: aceita top-level
+    `sendflow.campaign_map` (`Record<campaignId, {launch, stage, event_name}>`).
+  - **Semântica nova `null=tombstone`** no `deepMerge`: `null` em qualquer
+    chave (qualquer profundidade) deleta a chave em vez de armazenar literal
+    null. Aplica genericamente — não específico de sendflow. Schema permite
+    null em values via `.or(z.null())`. Doc: ADR-027 + 05-api-server-actions.md.
+  - Novo arquivo `apps/edge/src/routes/integrations-sendflow.ts`:
+    - `GET /v1/integrations/sendflow/credentials` → `{has_sendtok, prefix,
+      length}`. **Nunca** token cru (BR-PRIVACY-001). Sem audit.
+    - `PATCH /v1/integrations/sendflow/credentials` → upsert de
+      `workspace_integrations.sendflow_sendtok` (16-200 chars). Audit
+      action=`workspace_sendflow_sendtok_updated`, metadata=`{length, prefix}`
+      sem valor cru.
+  - Mount em `apps/edge/src/index.ts`.
+- Frontend (b60cdd7 — `feat(T-13-016): UI control-plane para configurar SendFlow`):
+  - UI em `/integrations/sendflow` com 3 cards consumindo os endpoints novos.
+    Não muda contrato — só consumidor.
+- Auth Supabase: `app_metadata.role='owner'` setado pra
+  `tiagomenna@gmail.com` (uid `df511390-773d-4938-8b98-adf014109877`) — sem
+  essa mudança a UI ficava read-only (autorização hard-codada no CP).
+
+Validação E2E:
+- Add entry via UI → DB confirma 3 entries em `sendflow.campaign_map`.
+- Delete entry via UI (PATCH com `null` no campaignId alvo) → DB confirma
+  2 entries (tombstone funcional fim-a-fim, em qualquer profundidade).
+
+Deploy edge: a3193c0e.
 
 ### TRILHA 0 (T-OPB) — ENCERRADA 2026-05-06
 
@@ -771,38 +837,6 @@ Formulário de pesquisa pós-compra do workshop, dispara `custom:survey_responde
 2. Em modo anônimo: visitar `/wk-obg/`, preencher form de pesquisa, submeter.
 3. Confirmar no DB: novo `events` row com `event_name='custom:survey_responded'` + `lead_stages` row novo com `stage='survey_responded'` pra esse lead.
 4. Confirmar audience: rodar resolução manual → lead deve aparecer em `respondeu_pesquisa_sem_comprar_main` (se ainda não comprou main).
-
-### TRILHA 4 — T-13-016 (UI no Control Panel pra SendFlow config)
-
-Hoje o `workspace_integrations.sendflow_sendtok` e `workspaces.config.sendflow.campaign_map` estão cadastrados via SQL direto (T-13-011). UI permite autosserviço.
-
-**Backend (Edge)**:
-- Estender schema `PatchWorkspaceConfigBodySchema` em [`apps/edge/src/routes/workspace-config.ts`](apps/edge/src/routes/workspace-config.ts:83-89):
-  - Adicionar `sendflow: SendflowConfigSchema.optional()` ao schema top-level.
-  - `SendflowConfigSchema = z.object({ campaign_map: z.record(SendflowCampaignEntrySchema).optional() })`
-  - `SendflowCampaignEntrySchema = z.object({ launch: z.string().min(1), stage: z.string().min(1), event_name: z.string().min(1) })`
-- Adicionar endpoint POST/PATCH `/v1/integrations/sendflow/sendtok` (ou estender `/v1/integrations/:provider/test`) pra cadastrar `workspace_integrations.sendflow_sendtok` (jsonb cast já tá certo via helper).
-- Tudo já funciona com helper `jsonb()` — não precisa cuidar de double-stringify.
-
-**Frontend (Control Plane)**:
-- Path provável: `apps/control-plane/src/app/(app)/settings/integrations/sendflow/page.tsx` (criar diretório).
-- 2 cards na tela:
-  1. **Sendtok**: input de senha-style + botão Salvar. PATCH `/v1/integrations/sendflow/sendtok` com `{ sendtok: '<value>' }`.
-  2. **Campaign Map**: tabela editável `campaignId` → `launch_public_id` + `stage` + `event_name`. Add/remove rows. Salvar via PATCH `/v1/workspace/config` com `{ sendflow: { campaign_map: {...} } }`.
-- Listar `launch_public_id` e `stage` disponíveis: query `/v1/launches` + `/v1/launches/:public_id` (consumir blueprint pra listar stages).
-- Validações:
-  - Sendtok: 16-200 chars (constraint DB).
-  - campaignId: string não-vazia.
-  - launch: deve existir (lookup); stage: deve existir no blueprint do launch.
-  - event_name: aceitar `Contact` (canonical) ou prefix `custom:` (custom event).
-
-**Reaproveitamento**:
-- Olhar `apps/control-plane/src/app/(app)/settings/integrations/guru/page.tsx` (se existir) ou similar pra Guru config.
-- Padrões UX em [`docs/70-ux/05-screen-integration-health.md`](docs/70-ux/05-screen-integration-health.md).
-
-**Validação**:
-- Cadastrar sendtok e campaign_map via UI → query DB confirma `workspace_integrations.sendflow_sendtok` populado e `workspaces.config.sendflow.campaign_map` é JSONB-object (NÃO string).
-- Disparar webhook SendFlow real (ou simulado via curl) → 202.
 
 ### TRILHA 1 — Trilha A original (Purchase real Guru)
 

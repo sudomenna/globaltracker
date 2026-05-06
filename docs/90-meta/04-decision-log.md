@@ -716,6 +716,60 @@ Durante validação no Control Plane do template v2 já aplicado em produção, 
 
 ---
 
+## ADR-027 — `null=tombstone` em PATCH de configs JSONB
+
+### Status
+Aceito (2026-05-06). Aplicável genericamente a qualquer `PATCH /v1/...` sobre coluna JSONB; primeira aplicação em `PATCH /v1/workspace/config` (commit `b053c27`).
+
+### Contexto
+A UI do Control Plane precisa permitir **remover** entries individuais de records aninhados (`Record<string, V>`) dentro do `workspaces.config` — caso concreto: deletar uma campanha do `sendflow.campaign_map` sem reenviar o map inteiro. Opções de semântica para PATCH:
+
+- **(A)** Sempre reenviar o map completo (replace de objeto inteiro). Quebra o princípio de PATCH parcial — clientes precisam ler antes de escrever, propenso a race entre dois operadores.
+- **(B)** Endpoint dedicado `DELETE /v1/.../campaign_map/:id`. Multiplica superfície de API por cada `Record<>` aninhado. Não escala — `workspaces.config` tem múltiplos mapas (`integrations.guru.product_launch_map`, `sendflow.campaign_map`, e crescerão).
+- **(C)** Convenção `null=tombstone`: enviar `null` no path da chave a remover, deep-merge interpreta como "delete". RFC 7396 (JSON Merge Patch) usa exatamente esta convenção como padrão.
+
+### Decisão
+**Opção C — `null=tombstone`.** Em qualquer `PATCH` sobre configs JSONB no Edge, valores `null` no body — em qualquer profundidade — fazem o `deepMerge` **deletar** a chave correspondente do objeto armazenado.
+
+Implementação canônica em `apps/edge/src/routes/workspace-config.ts`:
+
+```ts
+function deepMerge(target: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...target };
+  for (const [key, patchVal] of Object.entries(patch)) {
+    if (patchVal === null) {
+      delete result[key]; // tombstone — deleta a chave
+    } else if (isPlainObject(patchVal) && isPlainObject(result[key])) {
+      result[key] = deepMerge(result[key] as Record<string, unknown>, patchVal);
+    } else {
+      result[key] = patchVal;
+    }
+  }
+  return result;
+}
+```
+
+Schemas Zod que aceitam `null` em values devem usar `.or(z.null())` explícito (ex.: `z.record(SendflowCampaignEntrySchema.or(z.null()))`).
+
+### Alternativas consideradas
+- **(A) Replace inteiro** rejeitado por inviabilizar concorrência segura entre operadores no CP.
+- **(B) Endpoints `DELETE` dedicados** rejeitado por explosão combinatória de rotas (cada `Record<>` aninhado precisaria de uma).
+- **Sentinela string** (e.g., `"__DELETE__"`) rejeitada por confusão com valores legítimos e perda de tipagem.
+
+### Consequências
+- (+) PATCH parciais expressivos sem inflar superfície de API.
+- (+) Alinhado com RFC 7396 (JSON Merge Patch) — convenção amplamente conhecida.
+- (+) Generaliza: qualquer config JSONB futura (e.g., `audiences.config`, `pages.event_config`) pode adotar a mesma semântica sem nova decisão.
+- (−) Operadores precisam saber que `null` é destrutivo. Mitigação: documentado explicitamente em [`docs/30-contracts/05-api-server-actions.md`](../30-contracts/05-api-server-actions.md) com exemplos; UI do CP nunca envia `null` acidentalmente (sempre via ação explícita "Remover").
+- (−) Não distingue entre "remover chave" e "definir chave como `null` literal". Aceito: configs do GlobalTracker não armazenam `null` literal em nenhum schema canônico; ausência de chave já é o estado "vazio".
+
+### Impacta
+- `apps/edge/src/routes/workspace-config.ts` (deepMerge — implementação canônica).
+- `docs/30-contracts/05-api-server-actions.md` (`PATCH /v1/workspace/config`).
+- Aplicável a futuros `PATCH` sobre configs JSONB (sem nova ADR — esta cobre).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

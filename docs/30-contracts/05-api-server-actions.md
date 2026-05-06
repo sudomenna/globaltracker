@@ -287,7 +287,39 @@ Atualiza `funnel_blueprint` de um launch existente (editor manual de stages).
 | **Response 200** | `{ launch: { id, public_id } }` |
 | **Errors** | `400 validation_error`, `401 unauthorized`, `404 not_found` (launch não encontrado ou de outro workspace), `503 service_unavailable` |
 
-### `PATCH /v1/workspace/config` (Sprint 11)
+### `GET /v1/workspace/config` (Sprint 13)
+
+Lê a configuração JSONB `workspaces.config` do workspace autenticado. Read-only, sem audit. Consumida pela UI do Control Plane para hidratar telas de integrações (ex.: SendFlow `campaign_map`).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-config-get-v1` |
+| **Auth** | `Authorization: Bearer <token>`; `workspace_id` vem do contexto de auth (BR-RBAC-002) — nunca do body/query |
+| **Side effects** | Nenhum (read-only — sem audit) |
+| **Parse** | Defensivo: aceita `workspaces.config` como `string` (double-stringified legado) ou `object` JSONB cru |
+| **Response 200** | `{ config: <full_config_object>, request_id }` |
+| **Errors** | `401 unauthorized` (Bearer ausente/inválido), `503 service_unavailable` (DB não configurado) |
+
+**Exemplo de response:**
+
+```json
+{
+  "config": {
+    "integrations": {
+      "guru": { "product_launch_map": { "...": "..." } },
+      "meta": { "pixel_id": "...", "capi_token": "..." }
+    },
+    "sendflow": {
+      "campaign_map": {
+        "abc123": { "launch": "wkshop-cs-jun26", "stage": "wpp_joined", "event_name": "Contact" }
+      }
+    }
+  },
+  "request_id": "..."
+}
+```
+
+### `PATCH /v1/workspace/config` (Sprint 11; semântica `null=tombstone` adicionada Sprint 13)
 
 Atualiza subcampos da configuração de integrações do workspace (JSONB `workspace.config`). Merge seguro via SELECT→JS deep-merge→UPDATE (não usa `||` SQL — bug de encoding no CF Worker driver).
 
@@ -295,13 +327,44 @@ Atualiza subcampos da configuração de integrações do workspace (JSONB `works
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-workspace-config-patch-v1` |
 | **Auth** | `Authorization: Bearer <token>` (OPERATOR ou ADMIN); `workspace_id` vem do contexto de auth — nunca do body |
-| **Body** | Objeto parcial de `workspace.config`, validado via Zod `.strict()`. Campos aceitos: `integrations.guru.product_launch_map` (objeto `Record<string, { launch_public_id: string, funnel_role: string }>`). Campos extras (não declarados no schema) → 400 |
+| **Body** | Objeto parcial de `workspace.config`, validado via Zod `.strict()`. Campos aceitos: `integrations.guru.product_launch_map` (objeto `Record<string, { launch_public_id: string, funnel_role: string }>`); `sendflow.campaign_map` (objeto `Record<campaignId, { launch: string, stage: string, event_name: string } \| null>`). Campos extras (não declarados no schema) → 400 |
 | **Merge** | Deep-merge: campos não enviados no body não são sobrescritos. Arrays são substituídos (não mergeados). |
+| **Semântica `null=tombstone`** | `null` em qualquer chave do body — em qualquer profundidade — é interpretado como **tombstone**: a chave correspondente é **deletada** do JSONB armazenado. Aplica-se genericamente (não só a `sendflow`). Permite remover entries de `Record<>` sem precisar reenviar o map inteiro. Implementação no `deepMerge`: `else if (patchVal === null) delete result[key]`. |
 | **Side effects** | UPDATE em `workspaces.config`; `audit_log` action=`workspace_config_updated`, metadata=`{ fields_updated: string[] }` (apenas chaves do body, sem valores — BR-PRIVACY-001) |
 | **Response 200** | `{ config: <merged_config> }` — retorna o config completo pós-merge |
 | **Errors** | `400 validation_error` (Zod falhou ou campo extra enviado), `401 unauthorized` (Bearer ausente/inválido), `500 internal_error` (falha no DB), `503 service_unavailable` (DB não configurado) |
 
-**Exemplo de body:**
+**Exemplo de body — adicionar entry em `sendflow.campaign_map`:**
+
+```json
+{
+  "sendflow": {
+    "campaign_map": {
+      "abc123": {
+        "launch": "wkshop-cs-jun26",
+        "stage": "wpp_joined",
+        "event_name": "Contact"
+      }
+    }
+  }
+}
+```
+
+**Exemplo de body — remover (tombstone) uma entry específica:**
+
+```json
+{
+  "sendflow": {
+    "campaign_map": {
+      "abc123": null
+    }
+  }
+}
+```
+
+> Após este PATCH, a chave `abc123` deixa de existir em `sendflow.campaign_map`. Outras entries do map são preservadas.
+
+**Exemplo de body — adicionar Guru product map:**
 
 ```json
 {
@@ -315,6 +378,72 @@ Atualiza subcampos da configuração de integrações do workspace (JSONB `works
       }
     }
   }
+}
+```
+
+### `GET /v1/integrations/sendflow/credentials` (Sprint 13)
+
+Lê metadados não-sensíveis do `sendflow_sendtok` (token compartilhado SendFlow ↔ Edge). **Nunca** devolve o valor cru — apenas presença, prefixo e tamanho, para a UI do CP renderizar masking informativo (BR-PRIVACY-001).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-integrations-sendflow-credentials-get-v1` |
+| **Auth** | `Authorization: Bearer <token>`; `workspace_id` vem do contexto de auth |
+| **Side effects** | Nenhum (read-only — sem audit) |
+| **Response 200** | `{ has_sendtok: boolean, prefix: string \| null, length: number \| null, request_id }` — `prefix` = primeiros 4 chars do token; ambos `null` quando `has_sendtok=false` |
+| **Errors** | `401 unauthorized`, `503 service_unavailable` |
+
+**Exemplo de response (token cadastrado):**
+
+```json
+{
+  "has_sendtok": true,
+  "prefix": "shpz",
+  "length": 64,
+  "request_id": "..."
+}
+```
+
+**Exemplo de response (sem token):**
+
+```json
+{
+  "has_sendtok": false,
+  "prefix": null,
+  "length": null,
+  "request_id": "..."
+}
+```
+
+### `PATCH /v1/integrations/sendflow/credentials` (Sprint 13)
+
+Cadastra ou atualiza o `sendflow_sendtok` em `workspace_integrations` via upsert (`onConflictDoUpdate` em `workspace_id`). Audit grava apenas metadados (`length`, `prefix`) — nunca o valor cru (BR-PRIVACY-001).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-integrations-sendflow-credentials-patch-v1` |
+| **Auth** | `Authorization: Bearer <token>`; `workspace_id` vem do contexto de auth |
+| **Body** | `{ sendtok: string }` validado via Zod `.strict()`. `sendtok` ∈ `[16, 200]` chars |
+| **Side effects** | Upsert em `workspace_integrations.sendflow_sendtok`; `audit_log` action=`workspace_sendflow_sendtok_updated`, metadata=`{ length, prefix }` (sem valor cru) |
+| **Response 200** | `{ has_sendtok: true, prefix, length, request_id }` (mesmo shape do GET) |
+| **Errors** | `400 validation_error` (Zod falhou — fora do range, campo extra), `401 unauthorized`, `503 service_unavailable` |
+
+**Exemplo de body:**
+
+```json
+{
+  "sendtok": "shpz_abcdefghijklmnopqrstuvwxyz0123456789"
+}
+```
+
+**Exemplo de response:**
+
+```json
+{
+  "has_sendtok": true,
+  "prefix": "shpz",
+  "length": 40,
+  "request_id": "..."
 }
 ```
 
