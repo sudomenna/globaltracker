@@ -73,13 +73,148 @@
 | Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **in progress** — Onda 3 parcial: passos 1-4 do E2E validados (2026-05-05) | `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` |
 | Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
-| Sprint 14 | **planned** (NOVO em 2026-05-06 — fanout Google Ads/GA4/Enhanced Conversions, OAuth Google completo) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
+| Sprint 14 | **in progress** (NOVO em 2026-05-06 — Ondas 1-3 entregues; restam Ondas 4-7. Fanout Google Ads/GA4/Enhanced) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
 | Sprint 15 | **planned** (renumerado de Sprint 14 antigo em 2026-05-06 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md` |
 | Sprint 16 | **planned** (NOVO em 2026-05-06 — Custom Audiences Meta + Customer Match Google + UI DSL audience) | a criar |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
+Estado:        SPRINT 14 EM ANDAMENTO — Ondas 1-3 entregues e commitadas (2026-05-06).
+               Sprint 13 com Trilhas 3 (T-13-012 survey) e 1 (Purchase real) ainda
+               em aberto, mas Sprint 14 priorizado acima por demanda comercial
+               (alimentar Google Ads + Meta com todos os eventos canonical pra
+               viabilizar campanhas de remarketing — destrava lançamento jun).
+
+               ====================================================================
+               SPRINT 14 — Fanout Google Ads/GA4/Enhanced Conversions (2026-05-06)
+               ====================================================================
+
+               Doc canônica: docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md
+               ADRs novas: 028 (OAuth Google no Edge), 029 (Data Manager API
+               default), 030 (canonical events only — custom = FUTURE-001).
+
+               ✅ ONDA 1 — Schema + config foundation (commit 6502a4b):
+                  • T-14-001: Zod IntegrationsSchema aceita google_ads em PATCH
+                    /v1/workspace/config (customer_id, login_customer_id,
+                    oauth_token_state, conversion_actions com null=tombstone,
+                    enabled). .strict() em todos os níveis. Refresh token NÃO
+                    entra no JSONB.
+                  • T-14-002: migration 0038_google_ads_secrets.sql adiciona
+                    workspace_integrations.google_ads_refresh_token_enc (text
+                    50-2048, ciphertext AES-256-GCM workspace-scoped via
+                    PII_MASTER_KEY_V1+HKDF — padrão guruApiToken/sendflowSendtok)
+                    e workspaces.google_ads_developer_token (text 5-1024, plain).
+                    Drizzle schemas atualizados.
+                    APLICADA NO SUPABASE 2026-05-06 ✓ (verificado: 2 cols + 2
+                    constraints).
+                  • T-14-003: lib/google-ads-config.ts novo helper —
+                    getGoogleAdsConfig (single LEFT JOIN, sem decifra) +
+                    resolveGoogleAdsCredentials (decifra via decryptPii +
+                    resolve developer_token workspace>env>none). Result<T,E>
+                    com 4 erros tipados.
+
+               ✅ ONDA 2 — OAuth backend (commit b010958, 1633 linhas novas):
+                  • T-14-006: lib/google-ads-oauth.ts — Map top-level com
+                    TTL 5min (V8 isolate cache), invalid_grant detection
+                    marca oauth_token_state='expired' e invalida cache.
+                    invalidateGoogleAdsAccessTokenCache + clearForTests.
+                  • T-14-004: GET /v1/integrations/google/oauth/start —
+                    Bearer auth, state HMAC stateless (workspace_id+nonce+exp,
+                    TTL 10min, sem KV), retorna {authorize_url} com
+                    access_type=offline + prompt=consent + scope=adwords.
+                  • T-14-005: GET /v1/integrations/google/oauth/callback —
+                    SEM Bearer (browser redirect), valida state HMAC timing-safe,
+                    troca code por refresh_token, listAccessibleCustomers
+                    best-effort, encripta via encryptPii(workspaceId, MASTER_KEY,
+                    v=1), upsert workspace_integrations preservando outros
+                    tokens, deepMerge inline em workspaces.config setando
+                    oauth_token_state='connected'+enabled=true+customer_id se
+                    único, audit_log workspace_google_ads_oauth_completed,
+                    invalidateGoogleAdsAccessTokenCache. HTML inline.
+                  • T-14-007: GET /v1/integrations/google/conversion-actions —
+                    POST googleads.googleapis.com/v17/customers/{id}/googleAds:searchStream
+                    com query SELECT conversion_action.{id,name,status,category}
+                    WHERE status=ENABLED. Erros tipados: 401 → invalida cache
+                    + 409 google_ads_token_revoked; 403 → 502 forbidden; 5xx → 502.
+                  • Wired em apps/edge/src/index.ts antes do /v1/integrations
+                    catch-all.
+
+               ✅ ONDA 3 — Step 9 wiring + per-workspace consumer (commit 6ea555f):
+                  • T-14-008: Step 9 do raw-events-processor.ts cria 2 jobs
+                    (google_ads_conversion + google_enhancement) quando workspace
+                    está enabled+connected+customer_id+conversion_action[event].
+                    custom:* events bloqueados (ADR-030). destination_account_id=
+                    customer_id; destination_resource_id=destination_subresource=
+                    conversion_action_id (BR-DISPATCH-001 idempotency).
+                    Parse defensivo de config (string|object).
+                  • T-14-009: refator dos 2 builders no consumer queue do
+                    apps/edge/src/index.ts. Estratégia híbrida:
+                      - buildGoogleAdsConversionDispatchFn → resolveGoogleAdsCredentials
+                        + sendConversionUpload com tuple OAuth (refresh interno).
+                      - buildEnhancedConversionDispatchFn → getGoogleAdsAccessToken
+                        (cache + invalid_grant detection) + accessToken direto
+                        no sendEnhancedConversion.
+                    virtualLaunchConfig montado a partir de job.destinationAccountId/
+                    ResourceId (não toca mappers/eligibility puros).
+                    Erros tipados → DispatchResult skip/transient_failure mapping.
+                    Bindings novos: GOOGLE_OAUTH_CLIENT_ID/SECRET (fallback
+                    GOOGLE_ADS_CLIENT_ID/SECRET legados — cost ingestor compat).
+                  • T-14-010: blocklist INTERNAL_ONLY_EVENT_NAMES já cobria;
+                    custom:* tratado via startsWith no Step 9. Sem mudança.
+
+               ⏳ ONDA 4 — Frontend CP (pendente):
+                  • T-14-011: apps/control-plane/src/app/(app)/integrations/
+                    google-ads/page.tsx (3 cards: status OAuth/customer/mapping).
+                  • T-14-012: integration-health-badge para google_ads.
+
+               ⏳ ONDA 5 — GA4 enrichment (pendente, parallel-safe com Onda 4):
+                  • T-14-013: dispatchers/ga4-mp/mapper.ts — value/currency/
+                    transaction_id/items[] em Purchase, value em Lead.
+                  • T-14-014: auditar form GA4 em /integrations.
+
+               ⏳ ONDA 6 — Tests (pendente):
+                  • T-14-015: unit tests Step 9 google + google-ads-oauth.
+                  • T-14-016: E2E script /tmp/pgquery/test-fanout-google.mjs.
+
+               ⏳ ONDA 7 — Backfill (opcional, fora da DoD):
+                  • T-14-017: backfill últimos 90d de Purchase pra Google Ads.
+
+               PENDÊNCIAS OPERACIONAIS PARA SMOKE TEST E2E (Tiago + IA):
+                  ☐ Criar OAuth Client no Google Cloud Console
+                    (Console > APIs & Services > Credentials > "OAuth 2.0
+                    Client ID" tipo "Web application"). Authorized redirect URI:
+                    https://globaltracker-edge.globaltracker.workers.dev/v1/integrations/google/oauth/callback
+                  ☐ Solicitar developer_token Google Ads (Basic access serve
+                    pra dev, ~1-2 dias úteis): https://ads.google.com/aw/apicenter
+                  ☐ Injetar secrets via wrangler secret put:
+                      - GOOGLE_OAUTH_CLIENT_ID
+                      - GOOGLE_OAUTH_CLIENT_SECRET
+                      - GOOGLE_OAUTH_STATE_SECRET (random; pode reusar
+                        LEAD_TOKEN_HMAC_SECRET ou novo)
+                      - GOOGLE_ADS_DEVELOPER_TOKEN
+                  ☐ Adicionar var em wrangler.toml [vars]:
+                      - GOOGLE_OAUTH_REDIRECT_URI = https://globaltracker-edge.globaltracker.workers.dev/v1/integrations/google/oauth/callback
+                      - CONTROL_PLANE_BASE_URL = https://app.globaltracker.com.br (ou domínio CP)
+                  ☐ Deploy edge: npx wrangler@2.20.0 publish
+                  ☐ Conectar conta Google Ads CNE via flow OAuth
+                  ☐ Mapear conversion_actions (Lead, Purchase, etc) no JSONB
+                    via PATCH /v1/workspace/config (até UI da Onda 4 ficar pronta)
+                  ☐ Trigger Purchase teste → validar 4 dispatch_jobs no DB.
+
+               PENDÊNCIA DE CÓDIGO:
+                  ☐ T-14-009-FOLLOWUP: refatorar dispatchers/google-ads-conversion/
+                    client.ts pra aceitar accessToken direto (atalmente faz 2º
+                    refresh interno + invalid_grant não vira oauth_token_revoked).
+                    Estimativa: ~30min. Owner: dispatcher-author. Registrado
+                    em §2 [SYNC-PENDING].
+
+               BACKEND PRONTO: a essa altura, com secrets injetados e workspace
+               conectado, qualquer Purchase já dispara 4 jobs (Meta CAPI + GA4 MP +
+               Google Ads Conv + Enhanced). UI (Onda 4) é DX, não bloqueia smoke.
+
+               ====================================================================
+
 Estado:        SPRINT 13 — TRILHAS 0 + 2 + 4 ENCERRADAS. Restam Trilhas 3 e 1.
 
                ENTREGAS sessão 2026-05-06 (tarde — Onda T-13-016 SendFlow CP UI):
