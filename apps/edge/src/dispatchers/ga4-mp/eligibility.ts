@@ -97,7 +97,9 @@ export function checkEligibility(
 
   // Check 3: client_id must be derivable from event.user_data.
   // OQ-003 CLOSED: minting from fvid when _ga cookie absent.
-  // OQ-012 OPEN: checkout direct without tracker — skip with no_client_id.
+  // OQ-012 CLOSED → ADR-032: 4-level cascade ensures lead_id-bearing events
+  // always resolve a client_id (deterministic fallback). Skip no_client_id
+  // only when lead_id is absent.
   const clientId = resolveClientId(event.user_data);
   if (!clientId) {
     return { eligible: false, reason: 'no_client_id' };

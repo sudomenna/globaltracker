@@ -39,21 +39,37 @@ Reportar eventos para GA4 server-side via Measurement Protocol. Permite captura 
 
 GA4 não tem dedup nativo via API server-side; sistema confia em `unique` constraint local.
 
-## Estratégia de `client_id` (OQ-003)
+## §3 — `client_id` resolution (cascata 4 níveis — ADR-032 fecha OQ-012, OQ-003)
 
-| Cenário | `client_id` usado |
-|---|---|
-| LP tem GA4 client-side ativo | Lê cookie `_ga`, extrai `client_id` (ex.: `GA1.X.YYYY.ZZZZ`) |
-| LP sem GA4 client-side | Mintera próprio derivado de `__fvid`: `GA1.1.<8digits>.<10digits>` (formato compatível) |
+GlobalTracker resolve o GA4 `client_id` na ordem abaixo. A cascata garante que **todo evento com `lead_id` populado** sempre alcança o GA4 (não há mais skip por `no_client_id` quando o lead é conhecido):
 
-Trade-off documentado em `00-product/06-glossary.md` e em UI do Control Plane.
+1. **self** — `event.user_data.client_id_ga4` (extraído do `_ga` cookie pelo `tracker.js`) → `event.user_data._ga` (cookie cru `GA1.1.<id>.<ts>`) → `event.user_data.fvid` (mintado em `GA1.1.<8d>.<10d>`).
+2. **sibling** — se `self` vazio E `event.lead_id` presente: busca `_ga`/`fvid` no evento anterior MAIS RECENTE do mesmo lead (`received_at < event.received_at`). Cobre Purchase via webhook quando o lead já visitou a LP em sessão anterior.
+3. **cross_lead** — se `sibling` vazio E lead tem `phone_hash_external` ou `email_hash_external`: busca `_ga`/`fvid` em evento anterior de OUTRO lead no mesmo workspace com hash igual. Tenta `phone` primeiro, `email` como fallback. Recupera caso o lead-resolver não tenha mergeado múltiplos leads da mesma pessoa.
+4. **deterministic** — se `cross_lead` vazio E `lead_id` presente: minta `client_id` via `SHA-256(workspace_id:lead_id)` → 2 segmentos (`getUint32` × 2) → formato `GA1.1.<8d>.<10d>`. **Determinístico**: mesmo `(workspace, lead)` sempre gera o mesmo `client_id` → cross-event continuity preservada no GA4 (Purchase + eventos subsequentes do lead aparecem como o mesmo "user").
+
+**Skip `no_client_id_unresolvable`** só dispara quando `lead_id` ausente (caso raro de evento totalmente anônimo sem visitor identifier).
+
+| Nível | Fonte | Trigger | client_id resultante |
+|---|---|---|---|
+| 1 — self | `event.user_data` | `_ga` cookie no request, ou `__fvid` cookie no request | extraído ou mintado de `__fvid` |
+| 2 — sibling | DB lookup: evento anterior do mesmo lead | `lead_id` populado, sem self | extraído ou mintado de `__fvid` do evento histórico |
+| 3 — cross_lead | DB lookup: evento de outro lead com `phone_hash_external` ou `email_hash_external` igual | hashes externos populados, sem sibling | extraído ou mintado de `__fvid` do evento histórico |
+| 4 — deterministic | `SHA-256(workspace_id:lead_id)` | `lead_id` populado | `GA1.1.<8d>.<10d>` mintado |
+| 5 — unresolved | — | `lead_id` ausente | `null` → skip `no_client_id_unresolvable` |
+
+**Implementação:**
+- `apps/edge/src/dispatchers/ga4-mp/client-id-resolver.ts` — `resolveClientIdExtended(input)` (puro, sem I/O); `mintDeterministicClientId` (SHA-256 + 2× uint32).
+- `apps/edge/src/index.ts` — `buildGa4DispatchFn` coleta `sibling_user_data` + `cross_lead_user_data` via DB antes de chamar o resolver.
+
+Trade-off documentado em `docs/00-product/06-glossary.md` e na UI do Control Plane.
 
 ## Eligibility check
 
 1. `consent_snapshot.analytics='granted'`.
 2. `measurement_id` configurado em `launches.config.tracking.google.ga4_measurement_id`.
 3. `api_secret` configurado.
-4. `client_id` derivado (cookie ou mintado).
+4. `client_id` derivado pela cascata 4 níveis (ver §3 acima). Skip só com `lead_id` ausente (`skip_reason='no_client_id_unresolvable'` — antes, genérico `no_client_id`).
 
 ## Credenciais
 

@@ -918,6 +918,47 @@ Trocar 1 linha em `apps/edge/src/dispatchers/meta-capi/eligibility.ts` (remover 
 
 ---
 
+## ADR-032 — GA4 client_id: cascata 4 níveis (fecha OQ-012) (Sprint 16)
+
+**Data:** 2026-05-07
+**Status:** Aceito
+
+### Contexto
+Compra via webhook Guru chega sem `_ga` cookie quando o comprador caiu direto no checkout sem passar pela LP (~10% dos casos no histórico CNE: auditoria 2026-05-07 mostrou 15/15 Purchase Guru históricos skipados com `no_client_id` e 0 dos respectivos leads tinham PageView prévio com `_ga`). OQ-012 propunha 4 alternativas (A: UUID random; B: skip; C: lookup `_ga` em PageView anterior do mesmo lead; D: configurável). Atual era B implícito.
+
+### Decisão (Alternativa D combinada — cascata determinística 4 níveis)
+1. **self**           — `resolveClientId(event.user_data)`.
+2. **sibling**        — `_ga`/`fvid` de evento anterior do MESMO lead, com filtro `received_at < current.received_at` (evita inversão temporal).
+3. **cross_lead**     — `_ga`/`fvid` de evento anterior de OUTRO lead do mesmo workspace com mesmo `phone_hash_external` (1ª) ou `email_hash_external` (2ª) — recupera caso pessoa tenha múltiplos leads não-mergeados.
+4. **deterministic**  — client_id mintado de `SHA-256(workspace_id:lead_id)` → formato `GA1.1.<8d>.<10d>`. Mesmo lead sempre vira mesmo client_id no GA4, preservando continuidade cross-event.
+5. **unresolved**     — só dispara skip quando `lead_id` ausente (caso raro).
+
+Resolver permanece **puro** (sem I/O direto). DB lookups (níveis 2 e 3) acontecem em `buildGa4DispatchFn` antes da chamada.
+
+### Alternativas descartadas
+- **Alt A** (UUID random a cada evento) — distorce GA4: cada Purchase vira novo "user", quebrando continuidade de funnel.
+- **Alt B** (skip silencioso) — atual; perde 15+ Purchases históricos no GA4 e quebra ROAS reportado.
+- **Alt C isolada** (sibling-only) — não cobre o caso edge (compra direto sem LP).
+
+### Consequências
+- (+) 15 Purchases históricos podem ser reprocessados via re-enqueue dos `dispatch_jobs` `ga4_mp` (status=`skipped`/`no_client_id`) → vão `succeeded` com client_id determinístico.
+- (+) Cross-event continuity: lead que compra workshop e depois main_offer aparece como mesmo "user" no GA4, ROAS calcula correto.
+- (+) `skip_reason='no_client_id_unresolvable'` (em vez do genérico `no_client_id`) quando `lead_id` ausente — facilita debug.
+- (−) Custo: até 2 queries extras por dispatch (sibling + cross_lead). Em escala de centenas/dia (CNE) é insignificante.
+- (−) Pendente: re-enqueue dos 15 dispatch_jobs `ga4_mp` históricos pós-deploy (script ad-hoc `/tmp/pgquery/replay-ga4-purchase-skips.mjs`).
+
+### Reversão
+Trocar `resolveClientIdExtended` → `resolveClientId` (atual) em `buildGa4DispatchFn` restaura comportamento Alt B.
+
+### Impacta
+- `apps/edge/src/dispatchers/ga4-mp/client-id-resolver.ts` (`resolveClientIdExtended`, `mintDeterministicClientId`, tipos `ResolverInput`/`ResolverSource`/`ResolverResult`).
+- `apps/edge/src/index.ts` (`buildGa4DispatchFn` — coleta sibling + cross_lead via DB).
+- `apps/edge/src/dispatchers/ga4-mp/eligibility.ts` (comentário inline OQ-012 → ADR-032).
+- `docs/40-integrations/06-ga4-measurement-protocol.md` (§3 cascata).
+- `docs/90-meta/03-open-questions-log.md` (OQ-012 → FECHADA).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

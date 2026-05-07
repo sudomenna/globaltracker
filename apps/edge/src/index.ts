@@ -38,7 +38,7 @@ import {
   pageTokens,
   workspaces,
 } from '@globaltracker/db';
-import { and, desc, eq, ne } from 'drizzle-orm';
+import { and, desc, eq, lt, ne } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
@@ -47,6 +47,10 @@ import {
   mapEventToGa4Payload,
   sendToGa4,
 } from './dispatchers/ga4-mp/index.js';
+import {
+  type ClientIdUserData,
+  resolveClientIdExtended,
+} from './dispatchers/ga4-mp/client-id-resolver.js';
 import {
   checkEligibility as checkGoogleAdsEligibility,
   mapEventToConversionUpload,
@@ -793,14 +797,40 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
       lead = rows[0];
     }
 
-    // 2b. Enrich user_data with _ga / fvid from sibling events when absent.
-    // Purchase events from webhooks (Guru, Hotmart, etc.) arrive without browser
-    // context — no _ga cookie. If the same lead has earlier tracker events we
-    // pull the most-recent _ga / fvid from there so GA4 can resolve a client_id.
-    let event = rawEvent;
-    const rawUserData = (rawEvent.userData ?? {}) as Record<string, unknown>;
-    const hasGaData = rawUserData._ga || rawUserData.fvid || rawUserData.client_id_ga4;
-    if (!hasGaData && job.leadId) {
+    // 2b. OQ-012 closure (T-16-002A): 4-level cascade for GA4 client_id.
+    //   1. self           — resolveClientId on rawEvent.user_data
+    //   2. sibling        — same lead_id, received_at < current, with _ga/fvid
+    //   3. cross_lead     — same workspace, matching phone_hash_external (1st)
+    //                       or email_hash_external (2nd), received_at < current
+    //   4. deterministic  — SHA-256(workspace_id:lead_id) → GA1.1.<8d>.<10d>
+    //
+    // Skip with skip_reason='no_client_id_unresolvable' only when lead_id is
+    // absent (extremely rare). With a lead_id we always reach a stable id.
+    //
+    // Detail: docs/40-integrations/06-ga4-measurement-protocol.md §3,
+    //         docs/90-meta/03-open-questions-log.md OQ-012.
+    // BR-CONSENT-004: analytics consent gate enforced by checkGa4Eligibility below.
+
+    // Defensive parse — userData column is jsonb but legacy paths may have
+    // landed it as a JSON string; handle both gracefully.
+    const parseUd = (raw: unknown): Record<string, unknown> | null => {
+      if (raw == null) return null;
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      }
+      if (typeof raw === 'object') return raw as Record<string, unknown>;
+      return null;
+    };
+
+    const rawUserData = parseUd(rawEvent.userData) ?? {};
+
+    // Level 2: sibling lookup — same lead, strictly earlier event with _ga / fvid.
+    let siblingUserData: Record<string, unknown> | null = null;
+    if (job.leadId) {
       const [sibling] = await db
         .select({ userData: events.userData })
         .from(events)
@@ -808,24 +838,86 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
           and(
             eq(events.leadId, job.leadId),
             ne(events.id, rawEvent.id),
+            lt(events.receivedAt, rawEvent.receivedAt),
           ),
         )
-        .orderBy(desc(events.createdAt))
+        .orderBy(desc(events.receivedAt))
         .limit(1);
       if (sibling) {
-        const siblingData = (sibling.userData ?? {}) as Record<string, unknown>;
-        if (siblingData._ga || siblingData.fvid) {
-          event = {
-            ...rawEvent,
-            userData: {
-              ...rawUserData,
-              _ga: rawUserData._ga ?? siblingData._ga ?? null,
-              fvid: rawUserData.fvid ?? siblingData.fvid ?? null,
-            },
-          };
-        }
+        siblingUserData = parseUd(sibling.userData);
       }
     }
+
+    // Level 3: cross-lead lookup — phone_hash_external first, email second.
+    // BR-PRIVACY-002: hashes only; no PII in clear at any step.
+    let crossLeadUserData: Record<string, unknown> | null = null;
+    if (lead && (lead.phoneHashExternal || lead.emailHashExternal)) {
+      const tryByHash = async (
+        column: 'phoneHashExternal' | 'emailHashExternal',
+        hash: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const [row] = await db
+          .select({ userData: events.userData })
+          .from(events)
+          .innerJoin(leads, eq(leads.id, events.leadId))
+          .where(
+            and(
+              eq(leads.workspaceId, rawEvent.workspaceId),
+              ne(leads.id, lead.id),
+              eq(leads[column], hash),
+              lt(events.receivedAt, rawEvent.receivedAt),
+            ),
+          )
+          .orderBy(desc(events.receivedAt))
+          .limit(1);
+        return row ? parseUd(row.userData) : null;
+      };
+
+      if (lead.phoneHashExternal) {
+        crossLeadUserData = await tryByHash(
+          'phoneHashExternal',
+          lead.phoneHashExternal,
+        );
+      }
+      if (!crossLeadUserData && lead.emailHashExternal) {
+        crossLeadUserData = await tryByHash(
+          'emailHashExternal',
+          lead.emailHashExternal,
+        );
+      }
+    }
+
+    // Cascade resolver (pure) — produces the final client_id + source label.
+    const resolution = await resolveClientIdExtended({
+      user_data: rawUserData as ClientIdUserData,
+      sibling_user_data: siblingUserData as ClientIdUserData | null,
+      cross_lead_user_data: crossLeadUserData as ClientIdUserData | null,
+      lead_id: job.leadId ?? null,
+      workspace_id: rawEvent.workspaceId,
+    });
+
+    // Enrich user_data with the resolved client_id so downstream eligibility
+    // and mapper see a populated client_id_ga4. We intentionally overwrite
+    // any prior value because resolveClientIdExtended already preferred it
+    // when present (level 1: self).
+    let event = rawEvent;
+    if (resolution.client_id) {
+      event = {
+        ...rawEvent,
+        userData: {
+          ...rawUserData,
+          client_id_ga4: resolution.client_id,
+        },
+      };
+    }
+
+    // Observability — BR-PRIVACY-001: only the source label is logged, no PII
+    // and no client_id value (which is a stable user identifier in GA4).
+    safeLog('info', {
+      event: 'ga4_client_id_resolved',
+      dispatch_job_id: job.id,
+      source: resolution.source,
+    });
 
     // 3. Resolve GA4 credentials: prefer workspaces.config, fallback to env vars.
     // BR-CONSENT-003: analytics consent required for GA4 MP.
@@ -865,7 +957,16 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
 
     if (!eligibility.eligible) {
       // BR-DISPATCH-004: skip_reason is mandatory when skipping.
-      return { ok: false, kind: 'skip', reason: eligibility.reason };
+      // T-16-002A: when the cascade exhausted all 4 levels (lead_id absent),
+      // promote 'no_client_id' to the more informative
+      // 'no_client_id_unresolvable' so dashboards distinguish the legitimate
+      // unresolvable case (no lead) from any future regressions.
+      const reason =
+        eligibility.reason === 'no_client_id' &&
+        resolution.source === 'unresolved'
+          ? 'no_client_id_unresolvable'
+          : eligibility.reason;
+      return { ok: false, kind: 'skip', reason };
     }
 
     // 4. Map internal event → Ga4MpPayload.

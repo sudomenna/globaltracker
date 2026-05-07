@@ -143,8 +143,9 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
   - Alternativa C: tentar correlacionar por email hash com uma visita anterior na LP (lookup em `events` por `lead_id + event_name=PageView`) — usa o `client_id` da visita anterior se encontrada dentro de uma janela de tempo.
   - Alternativa D: configurável por workspace — operador decide.
 - **Impacto:** volume de compras "diretas" pode ser baixo no início, mas cresce com remarketing e indicações. Decisão errada distorce ROAS no GA4.
-- **Status:** aberta — avaliar após testes em produção (pós-Sprint 9, com dados reais de comportamento).
-- **Classificação:** não bloqueia Sprint 4 (implementação atual usa opção B como default implícito — sem `client_id`, dispatch GA4 é skipped por eligibility). Decidir antes de Sprint 6 (Control Plane) quando operador poderá ver a taxa de skip.
+- **Status:** **FECHADA → ADR-032 (2026-05-07).**
+- **Decisão:** Alternativa D — cascata 4 níveis (`self` → `sibling` → `cross_lead` phone→email → `deterministic` via `lead_id`). Implementada em `apps/edge/src/dispatchers/ga4-mp/client-id-resolver.ts` (`resolveClientIdExtended`); DB lookups de sibling/cross_lead em `buildGa4DispatchFn`. Skip `no_client_id_unresolvable` só quando `lead_id` ausente.
+- **Classificação:** resolvida em Sprint 16 Onda 2.
 
 ---
 

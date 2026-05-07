@@ -33,19 +33,14 @@
   - Validação E2E pendente (sessão atual): hard-reload `/wk-societarios-1/` → conferir `__fvid` cookie + `external_id` + IP/UA no Events Manager Meta + EMQ subindo.
   - Hotfix `1f95781`: `UserDataSchema.strict()` do processor (`apps/edge/src/lib/raw-events-processor.ts:61`) descartava IP/UA + todos os outros campos válidos quando IP/UA chegavam, porque `safeParse failed → {}` zerava o user_data inteiro. Adicionados `client_ip_address` + `client_user_agent` no schema. Deploy edge `29f63e20`. Validado via SQL: PageView 18:29 + custom:click 18:29 com IP `2804:3d90:8283:f8e0:d956:d941:a7f5:75ff` + UA Chrome/146 + `_ga` populados em `events.userData` (jsonb-string — usar parse defensivo `(user_data #>> '{}')::jsonb` na query).
 
-- **GA4-NO-CLIENT-ID-LOOKUP-OQ-012 — TODO Sprint 16**: dispatch GA4 MP skipa com `skip_reason='no_client_id'` para Purchase via webhook Guru quando comprador chega direto no checkout sem passar pela LP (tracker.js nunca rodou → sem `_ga` cookie). Detalhe canônico: [`docs/90-meta/03-open-questions-log.md` OQ-012](docs/90-meta/03-open-questions-log.md). Decisão: implementar **Alternativa C** (lookup do `_ga` em PageView anterior do mesmo lead).
-  - Arquivo: `apps/edge/src/index.ts` `buildGa4MpDispatchFn` (procurar onde monta payload do MP). ANTES de chamar `checkEligibility` ou ao construir o `client_id`, se o event atual não tem `_ga` mas tem `lead_id`, fazer:
-    ```sql
-    SELECT (user_data #>> '{}')::jsonb->>'_ga' AS ga
-      FROM events
-     WHERE workspace_id=$1 AND lead_id=$2
-       AND ((user_data #>> '{}')::jsonb->>'_ga') IS NOT NULL
-     ORDER BY received_at DESC LIMIT 1
-    ```
-    Reusar o `_ga` ou extrair client_id via `extractClientIdFromGaCookie` (já existe em `apps/edge/src/dispatchers/ga4-mp/client-id-resolver.ts`).
-  - Trade-off: 1 query extra por Purchase Guru sem `_ga` (custo ínfimo). Sem essa busca, ROAS no GA4 fica subnotificado pra essas compras.
-  - Validação: trigger Purchase via webhook Guru com `lead_id` que tem PageView anterior → dispatch GA4 succeeded em vez de skipped. Cobrir com unit test em `tests/unit/dispatchers/ga4-mp/sibling-lookup.test.ts` (item 6 do MISSING-UNIT-TESTS-SESSION-2026-05-07).
-  - Após implementar: fechar OQ-012 com novo ADR (Alternativa C confirmada via implementação).
+- **GA4-NO-CLIENT-ID-LOOKUP-OQ-012 — RESOLVIDO 2026-05-07** via ADR-032 (cascata 4 níveis Alternativa D, não C como originalmente proposto). Auditoria do dia revelou que sibling lookup já existia mas todos os 15 Purchase Guru históricos tinham 0 events prévios com `_ga` (caso edge: comprador direto no checkout sem passar pela LP) — Alt C sozinha não cobre. Solução final: cascata 4 níveis em `apps/edge/src/dispatchers/ga4-mp/client-id-resolver.ts` (`resolveClientIdExtended`):
+  1. **self** — resolveClientId(event.user_data) [já existia]
+  2. **sibling** — _ga/fvid de evento anterior do mesmo lead, com filtro temporal `received_at < current` [refinado: filtro temporal era ausente]
+  3. **cross_lead** — _ga/fvid de evento de OUTRO lead com mesmo phone_hash_external (1ª) ou email_hash_external (2ª) [novo]
+  4. **deterministic** — `mintDeterministicClientId(workspace_id, lead_id)` via SHA-256 → `GA1.1.<8d>.<10d>` [novo: garante 100% dos events com lead_id resolvem]
+  - Skip `no_client_id_unresolvable` só quando lead_id ausente (caso raro).
+  - 15 unit tests novos em `tests/unit/dispatchers/ga4-mp/client-id-resolver.test.ts` cobrindo determinismo, workspace/lead isolation, todos os 5 níveis.
+  - **Pendente backfill pós-deploy**: re-enfileirar 15 dispatch_jobs ga4_mp Purchase Guru com status=skipped/no_client_id (script ad-hoc `/tmp/pgquery/replay-ga4-purchase-skips.mjs`). Vão succeeded com client_id determinístico.
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07 — TODO Sprint 16**: as mudanças funcionais desta sessão não foram cobertas por unit tests. Adicionar:
   1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_buy_workshop`/`click_buy_main` → `InitiateCheckout`, `custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`).
