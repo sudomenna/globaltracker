@@ -25,20 +25,12 @@
 
 ---
 
-- **META-CAPI-EXTERNAL-ID-AND-IP-UA (descoberto 2026-05-07) — TODO Sprint 16**: três sinais de matching discutidos para Meta CAPI ([imagens da conversa de 2026-05-07]). Status:
-  - **(3) Meta Pixel browser** ✅ FEITO. Pixel ID `149334790553204` instalado em `contratosnovaeconomia.com.br`. Dedup com CAPI via `event_id = window.__funil_event_id` funcionando (snippets `workshop.html` e `obrigado-workshop.html` chamam `fbqIfAvailable` após `F.track()`/`F.page()`). Cookie `_fbp` é setado pelo helper `fbqAutoPageView()` no footer da workshop (Pixel só cria `_fbp` quando dispara primeiro evento, não no init).
-  - **(1) `__fvid` → `external_id`** ❌ NÃO FEITO. Bloqueado por bug:
-    - Tracker só gera `__fvid` quando `config.consent.analytics === 'granted'` (string exata, gate em `apps/tracker/src/index.ts` `init()` linha ~197). Mas `/v1/config` não retorna campo `consent` (workspaces não têm consent canônico armazenado), então `__fvid` nunca é gerado → `events.visitor_id` é null em todos os eventos.
-    - **Plano para Sprint 16**:
-      1. Mudar gate do tracker: defaultar `consentAnalytics = config?.consent?.analytics !== 'denied'` (só pausa quando explicitamente 'denied', alinhado com BR-CONSENT-004 e com o `DEFAULT_CONSENT='granted'` que já corrigimos para o tracker). Rebuild tracker.js, upload R2 (`gt-tracker-cdn` bucket).
-      2. Adicionar `external_id` ao `MetaUserData` em `apps/edge/src/dispatchers/meta-capi/mapper.ts` (linha ~55). Hash SHA-256 do `event.visitor_id` (Meta exige hash de external_id).
-      3. Atualizar `buildMetaCapiDispatchFn` em `apps/edge/src/index.ts` (linha ~622) para passar `event.visitorId` no mapper.
-      4. Atualizar `checkEligibility` em `apps/edge/src/dispatchers/meta-capi/eligibility.ts` (linha ~111) para incluir `external_id` (via visitor_id) como sinal válido — assim eventos anônimos com `__fvid` deixam de skipar com `no_user_data`.
-      5. Testes unit cobrindo: (a) hashing correto SHA-256; (b) fallback quando visitor_id ausente; (c) eligibility passa com só external_id.
-  - **(2) IP + `client_user_agent`** ❌ BLOQUEADO POR DESIGN ATUAL. Comentário em [`apps/edge/src/routes/events.ts:489`](apps/edge/src/routes/events.ts#L489): "BR-PRIVACY-001: only non-PII headers stored; no raw IP or UA". Por isso `raw_events.headers_sanitized` tem só `origin` + `cf_ray`. Para enviar IP/UA ao Meta CAPI seria necessário decisão arquitetural:
-    - **Opção A (preferida)**: capturar IP/UA na rota `/v1/events`, passar transient para o ingestion pipeline em `events.request_context`, expor para dispatchers, mas **não** persistir em raw_events. Cumpre Meta CAPI sem violar política de retenção.
-    - **Opção B**: revisitar BR-PRIVACY-001 — IP/UA são "Standard Data Parameters" no Meta CAPI e a maioria das jurisdições (LGPD, GDPR) os trata como dados de processamento normal, não PII estrita.
-    - Decisão pendente — não tocar até alinhamento com Tiago.
+- **META-CAPI-EXTERNAL-ID-AND-IP-UA — RESOLVIDO 2026-05-07** (commit `19bd917`, deploy edge `e9a0a989-a81c-4853-8b95-17a66fae0624`, tracker R2 reuploaded). Os 3 sinais de matching agora ativos:
+  - **(3) Meta Pixel browser** ✅ Pixel ID `149334790553204` em `contratosnovaeconomia.com.br`. Dedup com CAPI via `event_id = window.__funil_event_id`.
+  - **(1) `__fvid` → `external_id`** ✅ Tracker permissivo (`__fvid` criado salvo quando `consent.analytics === 'denied'`); `external_id` enviado em PLANO no MetaUserData (decisão Tiago: visitor_id é UUID v4 anônimo, Meta hashea internamente, plano permite debug direto Events Manager → DB); eligibility aceita visitor_id como 5º sinal válido (PageView anônimo com `__fvid` deixa de skipar com `no_user_data`).
+  - **(2) IP + `client_user_agent`** ✅ BR-PRIVACY-001 destravada. Captura `CF-Connecting-IP` + `User-Agent` no `/v1/events`, mescla em `payload.user_data` (server-side wins), persiste em `events.userData` JSONB. `raw_events.headers_sanitized` continua sem PII (separação intencional). Doc canônica + ADR-031.
+  - Tests: 14 unit tests novos (`tests/unit/dispatchers/meta-capi/{mapper,eligibility}.test.ts`).
+  - Validação E2E pendente (sessão atual): hard-reload `/wk-societarios-1/` → conferir `__fvid` cookie + `external_id` + IP/UA no Events Manager Meta + EMQ subindo.
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07 — TODO Sprint 16**: as mudanças funcionais desta sessão não foram cobertas por unit tests. Adicionar:
   1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_buy_workshop`/`click_buy_main` → `InitiateCheckout`, `custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`).
@@ -139,7 +131,32 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 14 EM ANDAMENTO — Ondas 1-3 entregues e commitadas (2026-05-06).
+Estado:        SPRINT 16 ABERTO — Onda 1 entregue + commitada (2026-05-07).
+               1º TODO Sprint 16 (META-CAPI-EXTERNAL-ID-AND-IP-UA) RESOLVIDO.
+
+               ====================================================================
+               SPRINT 16 — Onda 1: Meta CAPI external_id + IP/UA (2026-05-07)
+               ====================================================================
+
+               ✅ Commit 19bd917, deploy edge e9a0a989, tracker R2 reuploaded.
+
+               Mudanças coordenadas (ADR-031):
+                  • Tracker: __fvid permissivo (granted por default).
+                  • Edge /v1/events: captura CF-Connecting-IP + User-Agent.
+                  • Meta CAPI mapper: external_id PLANO (visitor_id direto).
+                  • Eligibility: visitor_id é 5º sinal válido.
+                  • BR-PRIVACY-001 atualizada (IP/UA em events.userData; raw_events
+                    fica sem PII — separação intencional).
+                  • 14 unit tests novos verde.
+
+               Aguarda validação E2E (Tiago + IA esta sessão):
+                  ☐ Hard-reload /wk-societarios-1/ → cookie __fvid setado
+                  ☐ DevTools Network → /v1/events disparado com IP/UA
+                  ☐ Events Manager Meta → external_id + IP + UA visíveis + EMQ
+
+               ====================================================================
+
+Estado anterior: SPRINT 14 EM ANDAMENTO — Ondas 1-3 entregues e commitadas (2026-05-06).
                Sprint 13 com Trilhas 3 (T-13-012 survey) e 1 (Purchase real) ainda
                em aberto, mas Sprint 14 priorizado acima por demanda comercial
                (alimentar Google Ads + Meta com todos os eventos canonical pra
