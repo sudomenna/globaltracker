@@ -77,6 +77,7 @@ import {
   processDispatchJob,
 } from './lib/dispatch.js';
 import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
+import { hashPiiExternal } from './lib/pii.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
 import {
   type LookupPageTokenFn,
@@ -845,6 +846,21 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       }
     }
 
+    // Hash geo fields for Meta CAPI (SHA-256 pure, no workspace scope).
+    // Normalization: city lowercase trim, state 2-letter lowercase,
+    // zip digits-only, country 2-letter lowercase.
+    const rawUserData = (event.userData ?? {}) as Record<string, unknown>;
+    const geoCity = typeof rawUserData.geo_city === 'string' ? rawUserData.geo_city : null;
+    const geoRegionCode = typeof rawUserData.geo_region_code === 'string' ? rawUserData.geo_region_code : null;
+    const geoPostalCode = typeof rawUserData.geo_postal_code === 'string' ? rawUserData.geo_postal_code : null;
+    const geoCountry = typeof rawUserData.geo_country === 'string' ? rawUserData.geo_country : null;
+    const [ctHash, stHash, zpHash, countryHash] = await Promise.all([
+      geoCity ? hashPiiExternal(geoCity.toLowerCase().trim()) : Promise.resolve(null),
+      geoRegionCode ? hashPiiExternal(geoRegionCode.toLowerCase()) : Promise.resolve(null),
+      geoPostalCode ? hashPiiExternal(geoPostalCode.replace(/\D/g, '')) : Promise.resolve(null),
+      geoCountry ? hashPiiExternal(geoCountry.toLowerCase()) : Promise.resolve(null),
+    ]);
+
     const payload = mapEventToMetaPayload(
       {
         event_id: event.id,
@@ -854,9 +870,13 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         workspace_id: event.workspaceId,
         // BR-CONSENT-003: visitor_id mapeia para Meta external_id (PLANO).
         visitor_id: event.visitorId,
-        user_data: event.userData as Parameters<
-          typeof mapEventToMetaPayload
-        >[0]['user_data'],
+        user_data: {
+          ...(event.userData as Parameters<typeof mapEventToMetaPayload>[0]['user_data']),
+          ...(ctHash ? { ct: ctHash } : {}),
+          ...(stHash ? { st: stHash } : {}),
+          ...(zpHash ? { zp: zpHash } : {}),
+          ...(countryHash ? { country: countryHash } : {}),
+        },
         custom_data: event.customData as Parameters<
           typeof mapEventToMetaPayload
         >[0]['custom_data'],
@@ -1480,6 +1500,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
     }
 
     // 6. Map internal event → EnhancedConversionPayload.
+    const enhancedRawUserData = (event.userData ?? {}) as Record<string, unknown>;
     const payload = mapEventToEnhancedConversion(
       {
         event_id: event.id,
@@ -1493,6 +1514,13 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
         consent_snapshot: event.consentSnapshot as Parameters<
           typeof mapEventToEnhancedConversion
         >[0]['consent_snapshot'],
+        // Raw geo — Google normalizes/hashes on their end (no pre-hash needed).
+        geo: {
+          city: typeof enhancedRawUserData.geo_city === 'string' ? enhancedRawUserData.geo_city : null,
+          region_code: typeof enhancedRawUserData.geo_region_code === 'string' ? enhancedRawUserData.geo_region_code : null,
+          postal_code: typeof enhancedRawUserData.geo_postal_code === 'string' ? enhancedRawUserData.geo_postal_code : null,
+          country: typeof enhancedRawUserData.geo_country === 'string' ? enhancedRawUserData.geo_country : null,
+        },
       },
       lead
         ? {

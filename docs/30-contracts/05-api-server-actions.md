@@ -28,6 +28,7 @@ Aceita evento do tracker. Modelo fast accept.
 | **Body** | Zod schema (`EventPayloadSchema` em `packages/shared/`) com `event_id`, `schema_version`, `launch_public_id`, `page_public_id`, `event_name`, `event_time`, `lead_token?`, `lead_id?`, `visitor_id?`, `attribution`, `custom_data`, `consent` |
 | **Lead identification** | `lead_token` e `lead_id` mutuamente exclusivos. Browser **deve** usar `lead_token`. `lead_id` em claro só em fluxos administrativos. |
 | **Validations** | (1) Zod schema; (2) page_token válido + binding; (3) origin allowed; (4) replay protection (event_id em KV); (5) rate limit; (6) lead_token HMAC quando presente; (7) clamp event_time |
+| **Server-side enrichment** | Edge lê `request.cf.{city, regionCode, postalCode, country}` (Cloudflare geo) e mescla em `payload.user_data.{geo_city, geo_region_code, geo_postal_code, geo_country}` (spread condicional — só quando presente). Cliente **não** envia esses campos. ADR-033 (Sprint 16). Também mescla `client_ip_address` / `client_user_agent` (ADR-031). |
 | **Side effects** | Insert em `raw_events`; enqueue em CF Queue para ingestion processor |
 | **Response 202** | `{ event_id, status: 'accepted' \| 'duplicate_accepted' \| 'rejected' }` |
 | **Errors** | `400 validation_error`, `401 invalid_token`, `403 origin_not_allowed`, `429 rate_limited`, `410 archived_launch` |

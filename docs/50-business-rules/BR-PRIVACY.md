@@ -9,11 +9,14 @@ Email, telefone e nome em claro **NÃO PODEM** aparecer em nenhum payload persis
 
 `client_ip_address` e `client_user_agent` **PODEM** ser persistidos em `events.user_data` (JSONB) quando capturados pelo Edge no `POST /v1/events`, com a finalidade explícita de Event Match Quality (EMQ) em dispatchers outbound (Meta CAPI, Google Enhanced Conversions). **NÃO PODEM** aparecer em `raw_events.headers_sanitized`, que retém apenas metadata operacional do request (origin, cf_ray, content-type) — a separação entre payload do evento (consumível por dispatchers) e metadata operacional do request é intencional (ADR-031).
 
+`geo_city`, `geo_region_code`, `geo_postal_code` e `geo_country` (chaves canônicas em `events.user_data`) **PODEM** ser persistidos em plain text com finalidade EMQ. Origem: `request.cf.*` (browser, via Cloudflare) ou `payload.contact.address.*` (Guru webhook). Geo via IP é dado pessoal sob LGPD (art. 5º, IV) — `eraseLead` deve zerar junto com IP/UA na SAR (ver BR-PRIVACY-005). ADR-033 (Sprint 16).
+
 `visitor_id` (UUID v4 anônimo do cookie `__fvid`) **PODE** ser enviado em plano (não hasheado) como `external_id` para Meta CAPI / Google Enhanced. UUID random não é PII e Meta hashea internamente; envio em plano permite debug direto Events Manager → DB.
 
 ### Enforcement
-- Zod schema de `user_data` em `apps/edge/src/routes/schemas/event-payload.ts` permite chaves canônicas (`em`, `ph`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `session_id_ga4`, `external_id_hash`, `client_ip_address`, `client_user_agent`); rejeita `email`, `phone`, `name`.
-- Rota `POST /v1/events` lê `CF-Connecting-IP` + `User-Agent` do request e mescla em `payload.user_data.client_ip_address` / `client_user_agent` antes de gravar `raw_events`.
+- Zod schema de `user_data` (`UserDataSchema` em `apps/edge/src/lib/raw-events-processor.ts`) permite chaves canônicas (`em`, `ph`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `session_id_ga4`, `external_id_hash`, `client_ip_address`, `client_user_agent`, `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country`); rejeita `email`, `phone`, `name` (`.strict()`).
+- Rota `POST /v1/events` lê `CF-Connecting-IP` + `User-Agent` + `request.cf.{city, regionCode, postalCode, country}` do request e mescla em `payload.user_data.{client_ip_address, client_user_agent, geo_city, geo_region_code, geo_postal_code, geo_country}` antes de gravar `raw_events` (spread condicional para campos geo).
+- `guru-raw-events-processor` extrai `payload.contact.address.{city, state, zip_code, country}` para `events.userData.geo_*` quando presente (ADR-033).
 - `raw_events.headers_sanitized` exclui `cf-connecting-ip`, `x-forwarded-for`, `user-agent`, cookies, `authorization`.
 - Helper `sanitizeDispatchPayload()` redacta `client_ip_address`/`client_user_agent` antes de gravar `dispatch_attempts` (transitam via wire mas não são persistidos no histórico).
 - Logger global tem redact list pré-configurada.
@@ -143,10 +146,12 @@ Scenario: lazy re-encryption
 
 ## BR-PRIVACY-005 — SAR/erasure anonimiza events, attribution, link_clicks; preserva agregados
 
-### Status: Stable (ADR-014, RF-029, atualizado por ADR-031)
+### Status: Stable (ADR-014, RF-029, atualizado por ADR-031, ADR-033)
 
 ### Enunciado
 `eraseLead(lead_id)` **DEVE**: zerar `leads.email_enc/phone_enc/name_enc/email_hash/phone_hash`, `leads.status='erased'`, remover `lead_aliases` correspondentes, anonimizar campos PII em `events.user_data` — incluindo `em`, `ph`, `external_id_hash`, **`client_ip_address` e `client_user_agent`** (BR-PRIVACY-001) — mas preservar event count/timing para agregados, zerar `events.request_context.ip_hash/ua_hash`, anonimizar `lead_attribution` (preserva campos não-identificadores). Job é idempotente.
+
+> **[SYNC-PENDING]** ADR-033 (Sprint 16) introduziu `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country` em `events.user_data`. Geo via IP é dado pessoal (LGPD art. 5º, IV) e **deve** ser zerado junto com `client_ip_address`/`client_user_agent` na próxima revisão de `apps/edge/src/lib/erasure.ts`. Tracking em `MEMORY.md §2`.
 
 ### Enforcement
 - Endpoint `DELETE /v1/admin/leads/:lead_id` enqueue job.
@@ -161,6 +166,7 @@ Scenario: SAR completa em < 60s para lead com 100k events
   Then job termina em < 60s
   And leads.status='erased', email_enc IS NULL
   And events.user_data não contém em/ph/external_id_hash/client_ip_address/client_user_agent
+  # SYNC-PENDING: também não deve conter geo_city/geo_region_code/geo_postal_code/geo_country (ADR-033)
   And lead_attribution.fbclid/gclid preservados; identificadores zerados
   And lead_aliases para L removidos
   And audit_log entry created

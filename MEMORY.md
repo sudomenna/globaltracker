@@ -78,6 +78,8 @@
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 
+- **ERASURE-GEO-FIELDS (Sprint 16, ADR-033)**: `apps/edge/src/lib/erasure.ts` (`eraseLead`) precisa zerar `events.user_data.{geo_city, geo_region_code, geo_postal_code, geo_country}` junto com `client_ip_address`/`client_user_agent` na próxima revisão de SAR. Geo via IP é dado pessoal sob LGPD (art. 5º, IV). BR-PRIVACY-005 atualizada com nota SYNC-PENDING. ETA: próxima sprint que toque erasure (não bloqueante para release Sprint 16). Doc afetada: `docs/50-business-rules/BR-PRIVACY.md` BR-PRIVACY-005.
+
 - **CONSTRAINT-guru-api-token-length** (RESOLVIDO via migration 0033): formalizada via `0033_relax_guru_api_token_constraint.sql` (aplicada 2026-05-05).
 
 - **DUPLICATE-EVENTS bug (RESOLVIDO 2026-05-05 — T-13-008)**: tabela `events` é `PARTITIONED BY RANGE (received_at)`, forçando UNIQUE constraint a incluir `received_at`. Pre-insert SELECT cobre retries — fix do guru replicado em `raw-events-processor.ts:557+`. Deploy `f552f472`.
@@ -143,11 +145,63 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 16 ABERTO — Ondas 1 e 2 entregues + commitadas (2026-05-07).
-               2 TODOs Sprint 16 RESOLVIDOS (META-CAPI-EXTERNAL-ID-AND-IP-UA,
-               GA4-NO-CLIENT-ID-LOOKUP-OQ-012) + 1 bug de fundo descoberto e
-               resolvido (DISPATCH-REPLAY-STANDALONE-MODE, vivia silencioso
-               desde Sprint 8).
+Estado:        SPRINT 16 ABERTO — Ondas 1, 2 e 3 entregues + commitadas (2026-05-07).
+               3 TODOs Sprint 16 RESOLVIDOS (META-CAPI-EXTERNAL-ID-AND-IP-UA,
+               GA4-NO-CLIENT-ID-LOOKUP-OQ-012, GEO-ENRICHMENT-CF-GURU) + 1 bug de
+               fundo descoberto e resolvido (DISPATCH-REPLAY-STANDALONE-MODE, vivia
+               silencioso desde Sprint 8).
+
+               ====================================================================
+               SPRINT 16 — Onda 3: Geo enrichment Cloudflare + Guru (2026-05-07)
+               ====================================================================
+
+               ✅ ADR-033 registrado (Cloudflare request.cf para browser; Guru
+                  contact.address para Purchase).
+
+               Mudanças coordenadas:
+                  • UserDataSchema (raw-events-processor.ts) ganha 4 chaves
+                    canônicas: geo_city, geo_region_code, geo_postal_code,
+                    geo_country (.strict() mantido).
+                  • routes/events.ts: extrai request.cf.{city,regionCode,
+                    postalCode,country} e injeta no mergedUserData (junto IP/UA).
+                  • guru-raw-events-processor.ts: contact.address adicionado
+                    ao schema; userData do Purchase populado com geo do
+                    comprador (endereço de cobrança real, mais preciso que IP).
+                  • Meta CAPI mapper: DispatchableEvent.user_data + MetaUserData
+                    ganham ct/st/zp/country (recebem pré-hasheado).
+                  • buildMetaCapiDispatchFn (index.ts): hashea via
+                    hashPiiExternal antes de chamar mapper. Normalização:
+                    city lowercase().trim(), state lowercase() (regionCode
+                    2-letter), zip replace(/\D/g,'') (dígitos), country
+                    lowercase() (ISO 3166-1 alpha-2).
+                  • Google Enhanced Conversions mapper: DispatchableEvent
+                    ganha campo geo?; addressInfo ganha city/state/zipCode/
+                    countryCode plain text (Google normaliza/hasheia).
+                  • buildEnhancedConversionDispatchFn (index.ts): passa geo
+                    raw do event.userData ao mapper.
+
+               Ganhos esperados (per Events Manager Meta):
+                  • +13% EMQ por sinal (city, state, zip, country).
+                  • Match rate Google Ads sobe especialmente em remarketing.
+                  • Purchase com endereço real (Guru) >> IP geo.
+
+               PENDÊNCIAS desta onda:
+                  ☐ Deploy edge: npx wrangler@2.20.0 publish
+                  ☐ Smoke test: trigger PageView no /wk-societarios-1/ →
+                    verificar events.userData tem geo_* populado via SQL.
+                  ☐ Smoke test Purchase Guru: webhook real → conferir
+                    contact.address presente no payload do Guru e geo_*
+                    populado no events.userData. Se Guru não enviar address,
+                    Purchase fica sem geo (não há fallback).
+                  ☐ Tests unit: faltam testes pra buildMetaCapiDispatchFn
+                    hashing geo + Google mapper addressInfo geo (entram no
+                    MISSING-UNIT-TESTS-SESSION-2026-05-07 §1).
+                  ☐ BR-PRIVACY-005 (eraseLead): incluir geo_* no zero-out
+                    junto com IP/UA na SAR/erasure.
+
+               ====================================================================
+
+Estado anterior: SPRINT 16 Onda 2 entregue (2026-05-07).
 
                ====================================================================
                SPRINT 16 — Onda 2: GA4 client_id cascade + dispatch-replay fix

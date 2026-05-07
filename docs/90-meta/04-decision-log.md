@@ -959,6 +959,66 @@ Trocar `resolveClientIdExtended` → `resolveClientId` (atual) em `buildGa4Dispa
 
 ---
 
+## ADR-033 — Geo enrichment: Cloudflare request.cf (browser) + Guru contact.address (Purchase) (Sprint 16)
+
+**Data:** 2026-05-07
+**Status:** Aceito
+
+### Contexto
+Events Manager Meta reporta possíveis +13% de EMQ por adicionar `ct/st/zp/country` (city, state, zip, country) em cada evento Lead/Purchase, e Google Enhanced Conversions aceita os mesmos campos via `addressInfo`. Não coletamos esses dados hoje no formulário CNE (cidade/estado/CEP/nascimento). Precisamos derivar do que já temos.
+
+### Decisão
+Geo enrichment em duas fontes complementares por tipo de evento:
+
+1. **Eventos browser** (PageView, Lead, InitiateCheckout, custom:*) → Cloudflare `request.cf`:
+   - `cf.city`, `cf.regionCode`, `cf.postalCode`, `cf.country` lidos em `routes/events.ts` junto com IP/UA.
+   - Sem custo extra: o edge já roteia o request pela Cloudflare; geo é resolvido no mesmo objeto.
+   - Acurácia: ~90% para `state`, ~70% para `city` (VPN/mobile carrier introduzem ruído).
+
+2. **Eventos Purchase via Guru webhook** → `contact.address` do payload:
+   - Schema do Guru estende `contact` com `.address.{city,state,zip_code,country}` (passthrough preserva quando ausente).
+   - Acurácia 100%: é o endereço de cobrança real do comprador (Guru coleta para NF/fiscal).
+   - Não usar `request.cf` para Purchase: o request vem do servidor do Guru, não do comprador.
+
+3. **Storage canônico** em `events.userData`: campos `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country` (raw plain text). Cada dispatcher aplica sua normalização.
+
+4. **Normalização por dispatcher**:
+   - **Meta CAPI** (`ct/st/zp/country`): `hashPiiExternal` (SHA-256 puro) com normalização: city `lowercase().trim()`, state `lowercase()` (regionCode 2-letter), zip `replace(/\D/g, '')` (dígitos only), country `lowercase()` (ISO 3166-1 alpha-2). Hash acontece em `buildMetaCapiDispatchFn` (async) antes de chamar o mapper puro.
+   - **Google Enhanced Conversions** (`addressInfo.{city,state,zipCode,countryCode}`): plain text — Google normaliza/hasheia internamente.
+
+### Alternativas descartadas
+- **API de geo externa** (MaxMind, ipapi) — custo recorrente sem ganho material vs Cloudflare. Cloudflare tem pop em SP/RJ/MIA com baixa latência e a mesma fonte (MaxMind GeoIP2) sob o capô.
+- **Geo via tracker.js client-side** (`navigator.geolocation`) — exige permissão explícita do usuário, fricção UX altíssima para 13% de ganho.
+- **Hashing geo no mapper Meta (puro)** — exigiria converter mapper para async ou inicializar crypto no construtor. Optamos por hashar no dispatch fn (já async) e passar pré-hasheado ao mapper puro (consistente com `email_hash_external` etc).
+- **Storage paralelo separado por destino** (`geo_meta_hashed_*` + `geo_google_plain_*`) — duplica storage. Decisão: armazenar plain raw 1x e cada dispatcher derivar.
+
+### Consequências
+- (+) Lead/PageView/InitiateCheckout enviam ~+13% EMQ Meta + matching melhor Google Ads sem mudar nada no formulário.
+- (+) Purchase com endereço real do comprador (`contact.address` Guru) — match rate Meta sobe especialmente em remarketing.
+- (+) Zero custo operacional adicional: Cloudflare grátis, Guru já envia (passthrough capturava em raw_events.payload mas era ignorado).
+- (−) `events.userData` cresce ~80 bytes por evento. Em 50k events/mês CNE = ~4MB/mês — desprezível.
+- (−) BR-PRIVACY: geo via IP é considerado dado pessoal (LGPD art. 5º, IV). `eraseLead` precisa zerar `geo_*` junto com IP/UA na SAR (atualizar BR-PRIVACY-005).
+- (−) Pre-existente: Guru `contact.address` aparece em alguns planos do Guru (NF habilitada). Quando ausente, geo do Purchase fica vazio. Não há fallback para `request.cf` (servidor Guru, não comprador).
+
+### Reversão
+Remover ramos `if (event.user_data?.ct)` etc nos mappers e o bloco de extração `cf` em `routes/events.ts`. Storage em events.userData fica órfão mas não quebra nada (campos são opcionais).
+
+### Impacta
+- `apps/edge/src/lib/raw-events-processor.ts` (`UserDataSchema` ganha 4 chaves canônicas).
+- `apps/edge/src/routes/events.ts` (extração de `request.cf` + merge em `mergedUserData`).
+- `apps/edge/src/lib/guru-raw-events-processor.ts` (`contact.address` no schema + `userData` populado).
+- `apps/edge/src/dispatchers/meta-capi/mapper.ts` (`MetaUserData` + `DispatchableEvent.user_data` ganham `ct/st/zp/country`).
+- `apps/edge/src/index.ts` `buildMetaCapiDispatchFn` (hash via `hashPiiExternal`).
+- `apps/edge/src/dispatchers/google-enhanced-conversions/mapper.ts` (`addressInfo` ganha plain text + `DispatchableEvent` ganha `geo`).
+- `apps/edge/src/index.ts` `buildEnhancedConversionDispatchFn` (passa `geo` raw).
+- `docs/40-integrations/01-meta-capi.md` (§4 user_data canônicos: `ct/st/zp/country` SHA-256).
+- `docs/40-integrations/04-google-ads-enhanced-conversions.md` (§4 addressInfo expandido).
+- `docs/40-integrations/13-digitalmanager-guru-webhook.md` (`contact.address`).
+- `docs/30-contracts/05-api-server-actions.md` (`/v1/events` POST: campos geo derivados server-side).
+- `docs/50-business-rules/BR-PRIVACY.md` (geo entra na trilha de IP/UA na erasure).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

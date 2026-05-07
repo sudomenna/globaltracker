@@ -59,7 +59,13 @@ if (!workspace) return c.json({ error: 'unauthorized' }, 400);
     "email": "comprador@email.com",
     "doc": "12345678900",
     "phone_number": "11999999999",
-    "phone_local_code": "55"
+    "phone_local_code": "55",
+    "address": {
+      "city": "São Paulo",
+      "state": "SP",
+      "zip_code": "01310-100",
+      "country": "BR"
+    }
   },
   "payment": {
     "method": "credit_card",
@@ -148,6 +154,23 @@ const amountBRL = payload.payment.total / 100; // 29700 → 297.00
 ```
 
 > Confirmado: `payment.total: 500` = R$ 5,00 no exemplo da documentação oficial.
+
+## Geo enrichment via `contact.address` (ADR-033, Sprint 16)
+
+Quando o payload Guru inclui `contact.address` (depende do plano Guru / habilitação de NF), o `guru-raw-events-processor` extrai os campos para `events.userData` em chaves canônicas:
+
+| Campo Guru | Campo `events.userData` |
+|---|---|
+| `contact.address.city` | `geo_city` |
+| `contact.address.state` | `geo_region_code` |
+| `contact.address.zip_code` | `geo_postal_code` |
+| `contact.address.country` | `geo_country` |
+
+Spread é condicional — quando ausente no payload, os campos `geo_*` ficam fora do JSONB (sem `null`). Não há fallback para `request.cf.*` em eventos Guru: o request vem do servidor do Guru, não do comprador (ADR-033).
+
+Os campos são consumidos por dispatchers outbound:
+- **Meta CAPI** hasheia para `user_data.{ct,st,zp,country}` em `buildMetaCapiDispatchFn`.
+- **Google Enhanced Conversions** repassa em plain text para `addressInfo.{city,state,zipCode,countryCode}`.
 
 ## Idempotência
 

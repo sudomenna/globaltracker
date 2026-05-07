@@ -22,6 +22,10 @@ Dispatch out de eventos de tracking (PageView, Lead, Purchase, custom) para Meta
 | `events.user_data.client_user_agent` | `user_data.client_user_agent` | Não hashar. Persistido idem. Required |
 | `events.user_data.fbc` | `user_data.fbc` | Não hashar |
 | `events.user_data.fbp` | `user_data.fbp` | Não hashar |
+| `events.user_data.geo_city` | `user_data.ct` | SHA-256 puro (`hashPiiExternal`) com normalização `lowercase().trim()`. Hash em `buildMetaCapiDispatchFn` antes do mapper puro (ADR-033, Sprint 16). Origem: `request.cf.city` (browser) ou `payload.contact.address.city` (Guru). |
+| `events.user_data.geo_region_code` | `user_data.st` | SHA-256 puro com `lowercase()` (regionCode 2-letter). Idem origem. |
+| `events.user_data.geo_postal_code` | `user_data.zp` | SHA-256 puro com `replace(/\D/g, '')` (dígitos only). Idem origem. |
+| `events.user_data.geo_country` | `user_data.country` | SHA-256 puro com `lowercase()` (ISO 3166-1 alpha-2). Idem origem. |
 | `events.custom_data.value/currency/order_id` | `custom_data.*` | Para Purchase e monetários |
 | `events.attribution.utm_*` | `custom_data.utm_*` | Opcional, contextual |
 

@@ -32,6 +32,13 @@ export interface DispatchableEvent {
   workspace_id: string;
   custom_data?: Record<string, unknown> | null;
   consent_snapshot?: Record<string, unknown> | null;
+  /** Raw geo fields (plain text). Google normalizes/hashes on their end. */
+  geo?: {
+    city?: string | null;
+    region_code?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+  } | null;
 }
 
 /** Minimal shape of a lead row as consumed by this dispatcher. */
@@ -74,6 +81,14 @@ export interface GoogleUserIdentifier {
   addressInfo?: {
     hashedFirstName?: string;
     hashedLastName?: string;
+    /** Plain text — Google normalizes and hashes. */
+    city?: string;
+    /** Plain text — 2-letter state/region code. */
+    state?: string;
+    /** Plain text — postal code as-is (e.g. "01310-100" for BR). */
+    zipCode?: string;
+    /** Plain text — ISO 3166-1 alpha-2 (e.g. "BR"). */
+    countryCode?: string;
   };
 }
 
@@ -170,10 +185,21 @@ export function mapEventToEnhancedConversion(
   if (lead?.phone_hash_external) {
     userIdentifiers.push({ hashedPhoneNumber: lead.phone_hash_external });
   }
-  if (lead?.fn_hash || lead?.ln_hash) {
-    const addressInfo: { hashedFirstName?: string; hashedLastName?: string } = {};
-    if (lead.fn_hash) addressInfo.hashedFirstName = lead.fn_hash;
-    if (lead.ln_hash) addressInfo.hashedLastName = lead.ln_hash;
+  if (
+    lead?.fn_hash ||
+    lead?.ln_hash ||
+    event.geo?.city ||
+    event.geo?.region_code ||
+    event.geo?.postal_code ||
+    event.geo?.country
+  ) {
+    const addressInfo: GoogleUserIdentifier['addressInfo'] = {};
+    if (lead?.fn_hash) addressInfo.hashedFirstName = lead.fn_hash;
+    if (lead?.ln_hash) addressInfo.hashedLastName = lead.ln_hash;
+    if (event.geo?.city) addressInfo.city = event.geo.city;
+    if (event.geo?.region_code) addressInfo.state = event.geo.region_code;
+    if (event.geo?.postal_code) addressInfo.zipCode = event.geo.postal_code;
+    if (event.geo?.country) addressInfo.countryCode = event.geo.country;
     userIdentifiers.push({ addressInfo });
   }
 

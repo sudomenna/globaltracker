@@ -26,6 +26,13 @@ export interface DispatchableEvent {
     fbp?: string | null;
     client_ip_address?: string | null;
     client_user_agent?: string | null;
+    // Pre-hashed geo fields (SHA-256 hex) — computed in buildMetaCapiDispatchFn
+    // before calling this mapper. Normalization: city lowercase, state 2-letter
+    // lowercase, zip digits-only, country 2-letter lowercase.
+    ct?: string | null;
+    st?: string | null;
+    zp?: string | null;
+    country?: string | null;
   } | null;
   custom_data?: Record<string, unknown> | null;
 }
@@ -73,6 +80,14 @@ export interface MetaUserData {
   client_ip_address?: string;
   /** Client user agent string (transient, not persisted). Not hashed. */
   client_user_agent?: string;
+  /** SHA-256 of normalized city (lowercase trim). Meta: ct. */
+  ct?: string;
+  /** SHA-256 of normalized state code (2-letter lowercase). Meta: st. */
+  st?: string;
+  /** SHA-256 of normalized postal code (digits only). Meta: zp. */
+  zp?: string;
+  /** SHA-256 of normalized country code (2-letter lowercase). Meta: country. */
+  country?: string;
 }
 
 /** Meta custom_data object for monetised events (Purchase, etc.) */
@@ -208,6 +223,11 @@ export function mapEventToMetaPayload(
   if (event.user_data?.client_user_agent) {
     userData.client_user_agent = event.user_data.client_user_agent;
   }
+  // Geo hashes — pre-computed by buildMetaCapiDispatchFn via hashPiiExternal.
+  if (event.user_data?.ct) userData.ct = event.user_data.ct;
+  if (event.user_data?.st) userData.st = event.user_data.st;
+  if (event.user_data?.zp) userData.zp = event.user_data.zp;
+  if (event.user_data?.country) userData.country = event.user_data.country;
 
   // Build custom_data for monetised events (Purchase, etc.)
   const customData = buildCustomData(event);

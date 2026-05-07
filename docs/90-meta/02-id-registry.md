@@ -158,6 +158,9 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-028 | Google Ads OAuth flow no Edge (não service account) — refresh_token criptografado workspace-scoped via PII_MASTER_KEY_V1 | aceito |
 | ADR-029 | Data Manager API como default para Customer Match (Sprint 16); allowlist legacy mantida; auto-demote em `CUSTOMER_NOT_ALLOWLISTED` | aceito |
 | ADR-030 | Custom events em Google Ads ficam como pendência manual (FUTURE-001); Sprint 14 cobre só canonical events na UI de mapping | aceito |
+| ADR-031 | IP/UA + `external_id` (visitor_id) persistidos em `events.user_data` para EMQ Meta CAPI; separação intencional vs `raw_events.headers_sanitized` | aceito |
+| ADR-032 | GA4 client_id cascade 4 níveis (self → sibling → cross_lead → deterministic) garante 100% Purchase com lead_id resolvem | aceito |
+| ADR-033 | Geo enrichment: Cloudflare `request.cf` (browser) + Guru `contact.address` (Purchase) → `events.userData.geo_*` → Meta CAPI hash + Google Enhanced plain text | aceito |
 
 ## OQ-*
 

@@ -58,6 +58,17 @@ const GuruRawEventPayloadSchema = z
         email: z.string().email().nullish(),
         phone_number: z.string().nullish(),
         phone_local_code: z.string().nullish(),
+        // Endereço do comprador — presente em alguns planos do Guru (fiscal/NF).
+        // Usado para enriquecer geo fields no events.userData com dados reais
+        // do comprador (mais precisos que geolocalização por IP).
+        address: z
+          .object({
+            city: z.string().nullish(),
+            state: z.string().nullish(),
+            zip_code: z.string().nullish(),
+            country: z.string().nullish(),
+          })
+          .nullish(),
       })
       .optional(),
     source: z
@@ -584,7 +595,23 @@ export async function processGuruRawEvent(
           utm_content: payload.source?.utm_content ?? null,
           utm_term: payload.source?.utm_term ?? null,
         },
-        userData: {},
+        userData: {
+          // Geo do comprador extraído de contact.address (dados de cobrança — mais
+          // precisos que geolocalização por IP). Campos raw; cada dispatcher
+          // aplica normalização/hash conforme sua spec (Meta: SHA-256; Google: plain).
+          ...(payload.contact?.address?.city
+            ? { geo_city: payload.contact.address.city }
+            : {}),
+          ...(payload.contact?.address?.state
+            ? { geo_region_code: payload.contact.address.state }
+            : {}),
+          ...(payload.contact?.address?.zip_code
+            ? { geo_postal_code: payload.contact.address.zip_code }
+            : {}),
+          ...(payload.contact?.address?.country
+            ? { geo_country: payload.contact.address.country }
+            : {}),
+        },
         customData: {
           funnel_role: payload.funnel_role ?? null,
           // BR-EVENT-002: amount em unidade de moeda (BRL), NÃO em centavos.

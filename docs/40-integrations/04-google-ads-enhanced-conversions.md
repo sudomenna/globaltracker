@@ -17,6 +17,10 @@ Adjustment de conversão original tagueada com click ID, enriquecendo com dados 
 | `events.event_time` | `adjustment_date_time` |
 | `leads.email_hash` (normalized) | `restatement_value.user_identifiers[].hashed_email` |
 | `leads.phone_hash` (E.164 normalized) | `restatement_value.user_identifiers[].hashed_phone_number` |
+| `events.user_data.geo_city` | `restatement_value.user_identifiers[].address_info.city` (plain text — Google normaliza/hasheia internamente). Origem: `request.cf.city` (browser) ou `payload.contact.address.city` (Guru). ADR-033. |
+| `events.user_data.geo_region_code` | `restatement_value.user_identifiers[].address_info.state` (plain text). |
+| `events.user_data.geo_postal_code` | `restatement_value.user_identifiers[].address_info.zipCode` (plain text). |
+| `events.user_data.geo_country` | `restatement_value.user_identifiers[].address_info.countryCode` (plain text, ISO 3166-1 alpha-2). |
 | `launches.config.tracking.google.conversion_actions[event_name]` | `conversion_action` |
 
 ## Idempotência
@@ -46,7 +50,7 @@ OAuth (mesmo que Conversion Upload).
 
 `apps/edge/src/dispatchers/google-enhanced-conversions/`:
 - `client.ts` — `sendEnhancedConversion`, `classifyGoogleEnhancedError`, `GoogleEnhancedConversionsConfig`, `GoogleAdsResult`
-- `mapper.ts` — `mapEventToEnhancedConversion` (normaliza hash: lowercase, trim, SHA-256), tipos de payload
+- `mapper.ts` — `mapEventToEnhancedConversion` (normaliza hash: lowercase, trim, SHA-256), tipos de payload. `DispatchableEvent.geo?: { city?, region_code?, postal_code?, country? }` (plain text) é repassado para `addressInfo` quando presente; `buildEnhancedConversionDispatchFn` extrai de `event.userData.geo_*` (ADR-033, Sprint 16).
 - `eligibility.ts` — `checkEligibility`, `EligibilityResult`, `SkipReason`
 - `oauth.ts` — `refreshAccessToken`, `OAuthConfig` (OAuth 2.0 compartilhado com Conversion Upload)
 - `index.ts` — re-exporta todos os símbolos públicos

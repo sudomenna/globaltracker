@@ -473,6 +473,15 @@ export function createEventsRoute(
     const clientIp = c.req.header('CF-Connecting-IP') ?? null;
     const clientUa = c.req.header('User-Agent') ?? null;
 
+    // Geo derivado de Cloudflare request.cf — disponível sem custo extra.
+    // Fonte: IP do visitante resolvido pelo edge da Cloudflare.
+    // Para Purchase via webhook Guru, o processor usa contact.address (mais preciso).
+    const cf = (c.req.raw as unknown as { cf?: Record<string, unknown> }).cf ?? {};
+    const geoCity = typeof cf.city === 'string' ? cf.city : null;
+    const geoRegionCode = typeof cf.regionCode === 'string' ? cf.regionCode : null;
+    const geoPostalCode = typeof cf.postalCode === 'string' ? cf.postalCode : null;
+    const geoCountry = typeof cf.country === 'string' ? cf.country : null;
+
     const rawBodyTyped = rawBody as Record<string, unknown>;
     const incomingUserData =
       (rawBodyTyped.user_data as Record<string, unknown> | undefined) ?? {};
@@ -480,6 +489,10 @@ export function createEventsRoute(
       ...incomingUserData,
       client_ip_address: clientIp,
       client_user_agent: clientUa,
+      ...(geoCity ? { geo_city: geoCity } : {}),
+      ...(geoRegionCode ? { geo_region_code: geoRegionCode } : {}),
+      ...(geoPostalCode ? { geo_postal_code: geoPostalCode } : {}),
+      ...(geoCountry ? { geo_country: geoCountry } : {}),
     };
 
     const rawPayload: Record<string, unknown> = {

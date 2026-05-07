@@ -73,6 +73,12 @@ const UserDataSchema = z
     // T-16-001B / BR-PRIVACY-001 (revisada): IP/UA capturados em /v1/events para EMQ Meta CAPI / Google Enhanced.
     client_ip_address: z.string().nullish(),
     client_user_agent: z.string().nullish(),
+    // Geo derivado de Cloudflare request.cf (eventos browser) ou contact.address do Guru (Purchase).
+    // Raw (plain text) — cada dispatcher aplica normalização/hash conforme sua spec.
+    geo_city: z.string().nullish(),
+    geo_region_code: z.string().nullish(),
+    geo_postal_code: z.string().nullish(),
+    geo_country: z.string().nullish(),
   })
   .strict(); // BR-EVENT-005: reject unknown keys (including email, phone, name in clear)
 
