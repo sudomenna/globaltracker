@@ -30,6 +30,8 @@ import type {
 } from '@cloudflare/workers-types';
 import type { Db } from '@globaltracker/db';
 import {
+  auditLog,
+  dispatchJobs,
   events,
   createDb,
   launches,
@@ -86,7 +88,10 @@ import { safeLog, sanitizeLogs } from './middleware/sanitize-logs.js';
 import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
 import { createConfigRoute } from './routes/config.js';
 import type { GetPageConfigFn } from './routes/config.js';
-import { dispatchReplayRoute } from './routes/dispatch-replay.js';
+import {
+  createDispatchReplayRoute,
+  type DispatchJobForReplay,
+} from './routes/dispatch-replay.js';
 import { eventsRoute } from './routes/events.js';
 import { createFunnelTemplatesRoute } from './routes/funnel-templates.js';
 import { healthCpRoute } from './routes/health-cp.js';
@@ -456,7 +461,152 @@ app.route(
   ),
 );
 app.route('/v1/onboarding', onboardingStateRoute);
-app.route('/v1/dispatch-jobs', dispatchReplayRoute);
+
+// ---------------------------------------------------------------------------
+// Dispatch-replay route — wired with real DB-backed deps.
+// T-16-003: fixes ADR-025 standalone-mode bug where the previous mount used
+//   `dispatchReplayRoute` (zero deps) and silently returned 202 without
+//   persisting the child job nor the audit entry.
+// BR-RBAC-002: getDispatchJob scoped by workspace_id (multi-tenant anchor).
+// ADR-025: createReplayJob inserts a NEW dispatch_job child linked to the
+//   original via `replayedFromDispatchJobId` — never resets the original.
+// BR-AUDIT-001: insertAuditEntry persists action='replay_dispatch'.
+// BR-PRIVACY-001: payload jsonb does not contain PII in clear (route enforces).
+// ---------------------------------------------------------------------------
+function buildDispatchReplayRoute(db: Db) {
+  const getDispatchJob = async (
+    jobId: string,
+    workspaceId: string,
+  ): Promise<DispatchJobForReplay | null> => {
+    // BR-RBAC-002: filter by workspace_id to prevent cross-workspace lookup.
+    const [row] = await db
+      .select({
+        id: dispatchJobs.id,
+        workspace_id: dispatchJobs.workspaceId,
+        lead_id: dispatchJobs.leadId,
+        event_id: dispatchJobs.eventId,
+        event_workspace_id: dispatchJobs.eventWorkspaceId,
+        destination: dispatchJobs.destination,
+        destination_account_id: dispatchJobs.destinationAccountId,
+        destination_resource_id: dispatchJobs.destinationResourceId,
+        destination_subresource: dispatchJobs.destinationSubresource,
+        max_attempts: dispatchJobs.maxAttempts,
+        payload: dispatchJobs.payload,
+        status: dispatchJobs.status,
+      })
+      .from(dispatchJobs)
+      .where(
+        and(
+          eq(dispatchJobs.id, jobId),
+          eq(dispatchJobs.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      payload: (row.payload as Record<string, unknown> | null) ?? {},
+    };
+  };
+
+  const createReplayJob = async (params: {
+    workspace_id: string;
+    lead_id: string | null;
+    event_id: string;
+    event_workspace_id: string;
+    destination: string;
+    destination_account_id: string;
+    destination_resource_id: string;
+    destination_subresource: string | null;
+    payload: Record<string, unknown>;
+    max_attempts: number;
+    idempotency_key: string;
+    replayed_from_dispatch_job_id: string;
+  }): Promise<{ id: string; destination: string }> => {
+    // ADR-025: insert NEW dispatch_job linked to the original via
+    //   replayedFromDispatchJobId. Status starts at 'pending' so the queue
+    //   consumer (gt-dispatch) can claim it via the atomic lock
+    //   (BR-DISPATCH-002 / INV-DISPATCH-008).
+    const [row] = await db
+      .insert(dispatchJobs)
+      .values({
+        workspaceId: params.workspace_id,
+        leadId: params.lead_id,
+        eventId: params.event_id,
+        eventWorkspaceId: params.event_workspace_id,
+        destination: params.destination,
+        destinationAccountId: params.destination_account_id,
+        destinationResourceId: params.destination_resource_id,
+        destinationSubresource: params.destination_subresource,
+        payload: params.payload,
+        maxAttempts: params.max_attempts,
+        idempotencyKey: params.idempotency_key,
+        replayedFromDispatchJobId: params.replayed_from_dispatch_job_id,
+        status: 'pending',
+        attemptCount: 0,
+        nextAttemptAt: new Date(),
+      })
+      .returning({
+        id: dispatchJobs.id,
+        destination: dispatchJobs.destination,
+      });
+
+    if (!row) {
+      throw new Error('createReplayJob: insert returned no row');
+    }
+
+    return row;
+  };
+
+  const insertAuditEntry = async (entry: {
+    workspace_id: string;
+    actor_id: string;
+    actor_type: string;
+    action: string;
+    entity_type: string;
+    entity_id: string;
+    metadata: Record<string, unknown>;
+    request_id: string;
+  }): Promise<void> => {
+    // BR-AUDIT-001: append-only audit entry. The route's `metadata` payload
+    //   maps onto the canonical `after` snapshot column (no PII — only opaque
+    //   IDs + justification text). request_id goes into request_context per
+    //   INV-AUDIT-003 (sanitized: request_id only, no IP/UA in this path).
+    await db.insert(auditLog).values({
+      workspaceId: entry.workspace_id,
+      actorId: entry.actor_id,
+      actorType: entry.actor_type,
+      action: entry.action,
+      entityType: entry.entity_type,
+      entityId: entry.entity_id,
+      after: entry.metadata,
+      requestContext: { request_id: entry.request_id },
+    });
+  };
+
+  return createDispatchReplayRoute({
+    getDispatchJob,
+    createReplayJob,
+    insertAuditEntry,
+  });
+}
+
+// Per-request mount: build a fresh sub-router for each request so the route's
+// dep closures own their own DB handle. Hyperdrive/postgres connection is
+// re-created per-request anyway in CF Workers; this keeps wiring simple
+// without forcing a `getDb` parameter into the route factory.
+app.all('/v1/dispatch-jobs/:id/replay', async (c) => {
+  const db = createDb(
+    c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString,
+  );
+  const innerRoute = buildDispatchReplayRoute(db);
+  const wrapper = new Hono<{ Bindings: Bindings; Variables: Variables }>();
+  wrapper.route('/v1/dispatch-jobs', innerRoute);
+  return wrapper.fetch(c.req.raw, c.env, c.executionCtx);
+});
+
 app.route('/v1/help', helpRoute);
 app.route(
   '/v1/leads',
