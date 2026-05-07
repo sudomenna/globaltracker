@@ -85,6 +85,84 @@ Há dois comportamentos distintos conforme `pixel_policy` (ver `docs/30-contract
 
 Entrada expirada ou ausente no sessionStorage é tratada silenciosamente (INV-TRACKER-007): um novo UUID é gerado e retornado mesmo se o storage não estiver disponível.
 
+## 7.5 Padrões canônicos de snippet por role da page
+
+Cada page de um funil tem um `role` definido em `pages.role` (e refletido em `funnel_template.blueprint.pages[].role`). O role determina o padrão de snippet a aplicar e o valor de `event_config.auto_page_view`.
+
+### Política `auto_page_view` por role
+
+| `role` | `auto_page_view` | Razão |
+|---|---|---|
+| `sales` (capture, oferta) | `true` | Usuário chega anônimo ou já identificado de sessão anterior — PageView imediato. |
+| `webinar` (aula gravada/ao vivo) | `true` | Usuário tipicamente já identificado via `localStorage.__gt_ftk` — snippet faz `F.identify` síncrono, depois tracker dispara PageView. |
+| `thankyou` (pós-checkout) | `false` | Snippet faz `F.identify` via URL params **antes** do PageView para que o evento já carregue `lead_token`. |
+
+Esta política é codificada no blueprint do template — ver migration `0039_funnel_template_paid_workshop_v3_auto_page_view.sql` como referência.
+
+### Padrão de snippet por role
+
+Todos os snippets seguem 4 blocos comuns:
+
+1. **`withTracker(cb)`** — polling 50ms × 40 (~2s) até `window.Funil` existir, com fallback silencioso.
+2. **`fbqIfAvailable(method, name, customData)`** — helper que dispara `fbq(method, name, customData, { eventID: window.__funil_event_id })`. Garante INV-TRACKER-006 (Pixel + CAPI mesmo `event_id`).
+3. **`fbqAutoPageView()`** (apenas em `auto_page_view: true`) — espera `window.__funil_event_id` ser setado pelo tracker e dispara `fbq('track', 'PageView', {}, { eventID })`. Sem isso, o Pixel nunca cria o cookie `_fbp` e cliques anônimos são rejeitados pelo CAPI com `no_user_data`.
+4. **`boot()`** + delegated event listeners no `document`.
+
+#### `sales` (capture page — ex: `workshop`, `oferta-principal`)
+
+Responsabilidades:
+- `wireBuyButton()` — intercepta click no CTA → `F.track('custom:click_buy_*')` + `fbqIfAvailable('track', 'InitiateCheckout')`.
+- `wireForm()` (opcional, se a page tem form de captura) — intercepta submit, POST `/v1/lead` com `consent: { analytics: 'granted', marketing: 'granted', ad_user_data: 'granted', ad_personalization: 'granted', customer_match: 'granted' }`, persiste `lead_token` em `localStorage.__gt_ftk`, chama `F.identify` + `F.track('Lead')` + `fbqIfAvailable('track', 'Lead')`, redireciona ao checkout.
+- `fbqAutoPageView()` no `boot()` (PageView fired pelo tracker via `auto_page_view: true`).
+
+Referência completa: [`apps/tracker/snippets/paid-workshop/workshop.html`](../../apps/tracker/snippets/paid-workshop/workshop.html).
+
+#### `webinar` (aula gravada — ex: `aula-workshop`)
+
+Responsabilidades:
+- Identity rebind via `localStorage.__gt_ftk` (lead já passou pela capture page).
+- `F.page()` manual após identify para garantir PageView com `lead_token` carregado (mesmo que `auto_page_view: true`, o `F.page()` é dedupado pelo `event_id` em sessionStorage).
+- `fbqIfAvailable('track', 'PageView')` após `F.page()` para dedup.
+- Listener de engagement (ex: click "Já assisti") → `F.track('custom:watched_workshop')` + `fbqIfAvailable('track', 'ViewContent')`.
+
+Referência completa: [`apps/tracker/snippets/paid-workshop/aula-workshop.html`](../../apps/tracker/snippets/paid-workshop/aula-workshop.html).
+
+#### `thankyou` (pós-checkout — ex: `obrigado-workshop`, `obrigado-principal`)
+
+Responsabilidades:
+- `readParamsAndStrip()` — lê email/phone/lead_name/utms da query string (vindos do redirect do checkout), depois `history.replaceState` para retirá-los da URL (BR-PRIVACY-001 — não persistir PII em referrers/logs).
+- `bootIdentity()` — caminho hot (`__gt_ftk` em localStorage → `F.identify` direto) ou cold (POST `/v1/lead` com email/phone para resolver token).
+- `F.page()` **após** identify, com `fbqIfAvailable('track', 'PageView')` logo em seguida.
+- Listener opcional para engagement events (ex: click "entrar no WhatsApp" → `F.track('custom:click_wpp_join')` + `fbqIfAvailable('track', 'Contact')`).
+
+Referência completa: [`apps/tracker/snippets/paid-workshop/obrigado-workshop.html`](../../apps/tracker/snippets/paid-workshop/obrigado-workshop.html).
+
+### Consent nos snippets
+
+POST `/v1/lead` deve enviar consent com **todas as 5 finalidades** (BR-CONSENT-001):
+
+```json
+"consent": {
+  "analytics": "granted",
+  "marketing": "granted",
+  "ad_user_data": "granted",
+  "ad_personalization": "granted",
+  "customer_match": "granted"
+}
+```
+
+Quando o usuário envia o form ou chega na thankyou, ele opted-in. **Nunca enviar booleans (`false`)** — o schema converte mas o backend interpreta `false` como `'denied'`, bloqueando dispatch.
+
+### Ordem de scripts no `<head>`
+
+Os 3 scripts no head devem carregar **nesta ordem**:
+
+1. **GA4 (`gtag.js`)** — para o cookie `_ga` existir antes do tracker capturar cookies.
+2. **Meta Pixel (`fbevents.js` via `fbq('init', PIXEL_ID)`)** — sem `fbq('track', 'PageView')` (o snippet de page dispara via `fbqAutoPageView` ou `fbqIfAvailable`).
+3. **`tracker.js` do GlobalTracker** — com `data-site-token`, `data-launch-public-id`, `data-page-public-id`, `data-edge-url`.
+
+Se o site usa cache plugin (WP Rocket, LiteSpeed, etc.), os 3 scripts (mais o cookie `gtag` inline) devem ser excluídos das listas de minify, defer e delay. Ver [`docs/70-ux/13-tutorial-instalacao-tracking.md`](../70-ux/13-tutorial-instalacao-tracking.md) §7.
+
 ## 8. BRs relacionadas
 
 - `BR-TRACKER-001` — Funil.identify exige lead_token, não lead_id em claro.

@@ -13,6 +13,7 @@ Comportamentos que **atravessam módulos**. Cada FLOW-NNN gera 1 spec Playwright
 | `07-returning-lead-initiate-checkout.md` | FLOW-07 — Lead retornante dispara InitiateCheckout | UC-007 |
 | `08-merge-converging-leads.md` | FLOW-08 — Merge de leads convergentes | UC-008 |
 | `09-erasure-by-sar.md` | FLOW-09 — Erasure por SAR | UC-009 |
+| `10-create-new-launch-template.md` | FLOW-10 — Criar novo template de lançamento (playbook orquestrador) | — |
 
 ## Formato obrigatório
 

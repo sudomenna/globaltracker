@@ -110,6 +110,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | [`docs/60-flows/07-returning-lead-initiate-checkout.md`](docs/60-flows/07-returning-lead-initiate-checkout.md) | Returning lead |
 | [`docs/60-flows/08-merge-converging-leads.md`](docs/60-flows/08-merge-converging-leads.md) | Merge de leads |
 | [`docs/60-flows/09-erasure-by-sar.md`](docs/60-flows/09-erasure-by-sar.md) | SAR/erasure |
+| [`docs/60-flows/10-create-new-launch-template.md`](docs/60-flows/10-create-new-launch-template.md) | **Playbook orquestrador**: criar novo template de lançamento (page roles, custom events, mappers, snippets, migration) |
 
 ### 70 — UX
 | Arquivo | Conteúdo |
@@ -126,6 +127,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | [`docs/70-ux/10-accessibility.md`](docs/70-ux/10-accessibility.md) | WCAG 2.2 AA |
 | [`docs/70-ux/11-copy-deck-skip-messages.md`](docs/70-ux/11-copy-deck-skip-messages.md) | Mensagens humanizadas |
 | [`docs/70-ux/12-screen-live-event-console.md`](docs/70-ux/12-screen-live-event-console.md) | Console ao vivo (Sprint 8) |
+| [`docs/70-ux/13-tutorial-instalacao-tracking.md`](docs/70-ux/13-tutorial-instalacao-tracking.md) | Tutorial completo de instalação (GA4 + Pixel + tracker.js + WP Rocket) |
 
 ### 80 — Roadmap
 | Arquivo | Conteúdo |

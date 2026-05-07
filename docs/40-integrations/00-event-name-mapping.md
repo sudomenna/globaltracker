@@ -36,6 +36,51 @@ não na camada de rota. Ver [BR-DISPATCH] e docs de cada dispatcher em `apps/edg
 
 ---
 
+## Custom events — convenção e mapeamentos canônicos
+
+Custom events permitem rastrear ações específicas do funil que não têm equivalente direto em
+Meta/GA4 standard events (ex.: clique em CTA, entrada em grupo de WhatsApp, conclusão de aula).
+
+### Convenção de nomenclatura
+
+| Camada | Formato | Exemplo |
+|---|---|---|
+| Tracker (interno, `events.event_name`) | `custom:` + `snake_case` | `custom:click_buy_workshop` |
+| Meta (Pixel + CAPI) | `PascalCase` (Meta standard quando possível) | `InitiateCheckout` |
+| GA4 (gtag + MP) | `snake_case` (GA4 recommended quando possível) | `begin_checkout` |
+
+**Regra crítica:** o nome enviado ao Meta pelo browser Pixel (`fbq('track', 'X')`) e o nome
+enviado ao Meta CAPI server-side **devem ser idênticos** para Meta deduplicar via `event_id`.
+Por isso o mapper `INTERNAL_TO_META_EVENT_NAME` traduz custom events para Meta standard events,
+e o snippet browser dispara `fbq` com o mesmo nome standard.
+
+### Custom events catalogados
+
+| Interno (tracker) | Meta (CAPI + Pixel) | GA4 MP | Origem | Stage típico |
+|---|---|---|---|---|
+| `custom:click_buy_workshop` | `InitiateCheckout` | `begin_checkout` | Click CTA "comprar workshop" | `clicked_buy_workshop` |
+| `custom:click_buy_main` | `InitiateCheckout` | `begin_checkout` | Click CTA "comprar oferta principal" | `clicked_buy_main` |
+| `custom:click_wpp_join` | `Contact` | `join_group` | Click no link "entrar no grupo WhatsApp" | `clicked_wpp_join` |
+| `custom:wpp_joined` | `Contact` | `join_group` | Webhook SendFlow `members.added` (compradores) | `wpp_joined` |
+| `custom:wpp_joined_vip_main` | `Contact` | `join_group` | Webhook SendFlow `members.added` (grupo VIP) | `wpp_joined_vip_main` |
+| `custom:watched_workshop` | `ViewContent` | `view_item` | Click "já assisti" na aula gravada | `watched_workshop` |
+| `custom:survey_responded` | *(sem mapeamento)* | *(sem mapeamento)* | Submit do formulário de pesquisa pós-workshop | `survey_responded` |
+
+### Como adicionar um novo custom event
+
+Para introduzir um novo custom event (ex: `custom:click_buy_upsell`), atualizar **5 lugares**:
+
+1. **Tracker (snippet de page)** — disparar `Funil.track('custom:click_buy_upsell')` no listener do botão.
+2. **Meta CAPI mapper** — `apps/edge/src/dispatchers/meta-capi/mapper.ts` constante `INTERNAL_TO_META_EVENT_NAME`: adicionar `'custom:click_buy_upsell': 'InitiateCheckout'` (ou outro standard semanticamente próximo).
+3. **GA4 mapper** — `apps/edge/src/dispatchers/ga4-mp/mapper.ts` constante `INTERNAL_TO_GA4_EVENT_NAME`: adicionar `'custom:click_buy_upsell': 'begin_checkout'`.
+4. **Snippet browser** — disparar `fbq('track', 'InitiateCheckout', {}, { eventID: window.__funil_event_id })` logo após `Funil.track()` para dedup.
+5. **Page event_config** — adicionar `'click_buy_upsell'` ao array `custom` do `event_config` da page (sem prefixo `custom:` no array — o tracker prefixa automaticamente). Editar via UI do CP ou via migration de blueprint.
+
+Se o custom event tem um stage associado, atualizar também o blueprint do `funnel_template`
+(ver `docs/60-flows/10-create-new-launch-template.md` §4).
+
+---
+
 ## Eventos GA4 sem equivalente Meta (somente funil de leads)
 
 Estes eventos existem como recommended events no GA4 para rastreamento de funil de vendas B2B.
