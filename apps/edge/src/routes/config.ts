@@ -271,9 +271,14 @@ export function createConfigRoute(
     // Cache miss — attempt DB lookup
     // -----------------------------------------------------------------------
 
-    // Fallback: DB binding absent (Hyperdrive not yet configured) — return
+    // Fallback: DB connection unavailable (no DATABASE_URL nor Hyperdrive binding) — return
     // minimal safe response so the tracker degrades gracefully instead of 500.
-    if (c.env.DB === undefined) {
+    // The actual binding is HYPERDRIVE (not DB), and getPageConfig also accepts DATABASE_URL.
+    const hasDbConn =
+      (c.env as { DATABASE_URL?: string }).DATABASE_URL !== undefined ||
+      (c.env as { HYPERDRIVE?: unknown }).HYPERDRIVE !== undefined ||
+      (c.env as { DB?: unknown }).DB !== undefined;
+    if (!hasDbConn) {
       safeLog('info', {
         event: 'config_cache_miss',
         request_id: requestId,

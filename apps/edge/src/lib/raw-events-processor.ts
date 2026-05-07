@@ -60,14 +60,16 @@ export type ProcessingError =
  */
 const UserDataSchema = z
   .object({
-    em: z.string().optional(), // email_hash (SHA-256 hex)
-    ph: z.string().optional(), // phone_hash (SHA-256 hex)
-    external_id_hash: z.string().optional(),
-    fbc: z.string().optional(),
-    fbp: z.string().optional(),
-    _gcl_au: z.string().optional(),
-    client_id_ga4: z.string().optional(),
-    session_id_ga4: z.string().optional(),
+    em: z.string().nullish(), // email_hash (SHA-256 hex)
+    ph: z.string().nullish(), // phone_hash (SHA-256 hex)
+    external_id_hash: z.string().nullish(),
+    fbc: z.string().nullish(),
+    fbp: z.string().nullish(),
+    _gcl_au: z.string().nullish(),
+    _ga: z.string().nullish(), // GA4 client cookie
+    client_id_ga4: z.string().nullish(),
+    session_id_ga4: z.string().nullish(),
+    fvid: z.string().nullish(), // GlobalTracker visitor fingerprint
   })
   .strict(); // BR-EVENT-005: reject unknown keys (including email, phone, name in clear)
 

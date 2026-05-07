@@ -457,6 +457,166 @@ describe('mapEventToGa4Payload', () => {
       },
     });
   });
+
+  // T-14-013 — Guru amount fallback + items + transaction_id event_id fallback
+  describe('T-14-013 — Guru Purchase enrichments', () => {
+    it('reads cd.amount as value when cd.value absent (Guru shape)', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          custom_data: { amount: 497.0, currency: 'BRL', product_id: 'abc123' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.value).toBe(497.0);
+    });
+
+    it('prefers cd.value over cd.amount when both present', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          custom_data: { value: 100.0, amount: 200.0, currency: 'BRL' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.value).toBe(100.0);
+    });
+
+    it('populates items array for Purchase when product_id and product_name present', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          custom_data: {
+            amount: 497.0,
+            currency: 'BRL',
+            product_id: 'abc123',
+            product_name: 'Workshop de Marketing',
+          },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      const params = payload.events[0]?.params;
+      expect(params?.items).toHaveLength(1);
+      expect(params?.items?.[0]).toEqual({
+        item_id: 'abc123',
+        item_name: 'Workshop de Marketing',
+        price: 497.0,
+        quantity: 1,
+      });
+    });
+
+    it('populates items with only item_id when product_name absent', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          custom_data: { amount: 497.0, currency: 'BRL', product_id: 'abc123' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      const item = payload.events[0]?.params?.items?.[0];
+      expect(item?.item_id).toBe('abc123');
+      expect(item?.item_name).toBeUndefined();
+      expect(item?.quantity).toBe(1);
+    });
+
+    it('omits items when neither product_id nor product_name present', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({ custom_data: { amount: 497.0, currency: 'BRL' } }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.items).toBeUndefined();
+    });
+
+    it('omits items for non-Purchase events even when product_id present', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          event_name: 'ViewContent',
+          custom_data: { product_id: 'abc123', product_name: 'Workshop' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.items).toBeUndefined();
+    });
+
+    it('uses event_id as transaction_id when order_id absent on Purchase (Guru shape)', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          event_id: 'evt_guru_fallback_id',
+          custom_data: { amount: 497.0, currency: 'BRL', product_id: 'abc123' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.transaction_id).toBe('evt_guru_fallback_id');
+    });
+
+    it('still uses order_id as transaction_id when present (takes precedence over event_id)', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          event_id: 'evt_should_not_be_used',
+          custom_data: { amount: 497.0, currency: 'BRL', order_id: 'ORD-XYZ' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.transaction_id).toBe('ORD-XYZ');
+    });
+
+    it('Lead event with cd.amount populates value', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          event_name: 'Lead',
+          custom_data: { amount: 50.0, currency: 'BRL' },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      expect(payload.events[0]?.params?.value).toBe(50.0);
+    });
+
+    it('Lead event with no custom_data produces params without value (no crash)', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({ event_name: 'Lead', custom_data: null }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      const params = payload.events[0]?.params;
+      expect(params?.value).toBeUndefined();
+      expect(params?.items).toBeUndefined();
+    });
+
+    it('full Guru Purchase scenario: amount+currency+product_id+product_name → all fields populated', () => {
+      const payload = mapEventToGa4Payload(
+        makeEvent({
+          event_id: 'evt_guru_001',
+          event_name: 'Purchase',
+          custom_data: {
+            amount: 497.0,
+            currency: 'BRL',
+            product_id: 'abc123',
+            product_name: 'Workshop de Marketing',
+            funnel_role: 'main',
+          },
+        }),
+        makeLead(),
+      );
+      expect(payload).not.toBeNull();
+      const params = payload.events[0]?.params;
+      expect(params?.value).toBe(497.0);
+      expect(params?.currency).toBe('BRL');
+      expect(params?.transaction_id).toBe('evt_guru_001');
+      expect(params?.items).toEqual([
+        {
+          item_id: 'abc123',
+          item_name: 'Workshop de Marketing',
+          price: 497.0,
+          quantity: 1,
+        },
+      ]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

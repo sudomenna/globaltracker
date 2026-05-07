@@ -88,6 +88,16 @@
     }, 50);
   }
 
+  // Helper Pixel: dispara fbq com mesmo eventID gerado pelo tracker.
+  // Tracker seta window.__funil_event_id sincronamente ao chamar F.track/F.page,
+  // então chamar fbqIfAvailable logo após dispatch garante dedup CAPI+Pixel.
+  function fbqIfAvailable(method, name, customData){
+    if (!window.fbq || !window.__funil_event_id) return;
+    try {
+      fbq(method, name, customData || {}, { eventID: window.__funil_event_id });
+    } catch (e) {}
+  }
+
   // Lê query params relevantes e remove TODA a querystring antes de qualquer
   // request sair (PII hygiene — BR-PRIVACY-001). Mantém path + hash.
   function readParamsAndStrip(){
@@ -143,7 +153,14 @@
       launch_public_id: LAUNCH_PUBLIC_ID,
       page_public_id: PAGE_PUBLIC_ID,
       attribution: attribution,
-      consent: { analytics: false, marketing: false, functional: true }
+      // Lead já comprou (chegou via redirect Guru) → todas as finalidades granted
+      consent: {
+        analytics: 'granted',
+        marketing: 'granted',
+        ad_user_data: 'granted',
+        ad_personalization: 'granted',
+        customer_match: 'granted'
+      }
     };
     if (params.email)     body.email = params.email;
     if (params.phone)     body.phone = params.phone;
@@ -176,6 +193,9 @@
       withTracker(function(F){
         if (token) F.identify({ lead_token: token });
         F.page(); // PageView APÓS identify (auto_page_view=false)
+        // Pixel dispara PageView com mesmo eventID → dedup com CAPI.
+        // Também cria o cookie _fbp (Pixel só seta no primeiro track call).
+        fbqIfAvailable('track', 'PageView');
       });
     }
 
@@ -209,6 +229,8 @@
           var t = getStoredToken();
           if (t) F.identify({ lead_token: t });
           F.track('custom:click_wpp_join'); // BR-EVENT-001: prefixo `custom:`
+          // Pixel: dispara como Contact (mapper CAPI traduz custom:click_wpp_join → Contact).
+          fbqIfAvailable('track', 'Contact');
         });
       }, { passive: true });
     }

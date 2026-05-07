@@ -54,6 +54,14 @@
     }, 50);
   }
 
+  // Helper Pixel: dispara fbq com mesmo eventID gerado pelo tracker (dedup CAPI+Pixel).
+  function fbqIfAvailable(method, name, customData){
+    if (!window.fbq || !window.__funil_event_id) return;
+    try {
+      fbq(method, name, customData || {}, { eventID: window.__funil_event_id });
+    } catch (e) {}
+  }
+
   function boot(){
     var token = null;
     try { token = localStorage.getItem('__gt_ftk'); } catch (e) {}
@@ -62,6 +70,8 @@
       // Disparamos PageView explicitamente; tracker dedupa por event_id em
       // sessionStorage se auto_page_view também estiver ligado.
       F.page();
+      // Pixel dispara PageView com mesmo eventID → dedup com CAPI + cria _fbp.
+      fbqIfAvailable('track', 'PageView');
       // Purchase NÃO é client-side — chega via webhook Guru server-side.
     });
   }

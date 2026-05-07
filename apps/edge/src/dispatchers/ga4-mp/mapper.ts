@@ -79,6 +79,8 @@ export interface Ga4EventParams {
   currency?: string;
   /** Order/transaction ID for Purchase — maps to transaction_id in GA4. */
   transaction_id?: string;
+  /** Group identifier for join_group event — comes from custom_data.group_id (e.g. SendFlow campaign_id). */
+  group_id?: string;
   /** GA4 session identifier (from gtag session). */
   session_id?: string;
   /** Engagement time in milliseconds (recommended for all events). */
@@ -150,6 +152,12 @@ const INTERNAL_TO_GA4_EVENT_NAME: Record<string, string | null> = {
   Donate: null,
   FindLocation: null,
   CustomizeProduct: null,
+  // Custom events mapped to GA4 standard recommended events.
+  // join_group: GA4 recommended event for "user joins a group" — fits WhatsApp/Telegram/etc.
+  'custom:click_wpp_join': 'join_group',
+  'custom:click_buy_workshop': 'begin_checkout',
+  'custom:click_buy_main': 'begin_checkout',
+  'custom:watched_workshop': 'view_item',
 };
 
 // ---------------------------------------------------------------------------
@@ -349,6 +357,14 @@ function buildEventParams(event: Ga4DispatchableEvent): Ga4EventParams {
   // session_id from user_data.session_id_ga4
   if (event.user_data?.session_id_ga4) {
     params.session_id = event.user_data.session_id_ga4;
+  }
+
+  // group_id: required parameter for GA4 `join_group` event.
+  // Source priority: cd.group_id > cd.campaign_id (SendFlow stores campaign_id in custom_data).
+  if (typeof cd.group_id === 'string') {
+    params.group_id = cd.group_id;
+  } else if (typeof cd.campaign_id === 'string') {
+    params.group_id = cd.campaign_id;
   }
 
   return params;

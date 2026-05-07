@@ -23,6 +23,12 @@ export interface ClientIdUserData {
   client_id_ga4?: string | null;
 
   /**
+   * Raw `_ga` cookie value, format `GA1.1.<client_id>.<timestamp>`.
+   * The resolver extracts the `<client_id>.<timestamp>` portion to form the GA4 client_id.
+   */
+  _ga?: string | null;
+
+  /**
    * GlobalTracker's own visitor fingerprint cookie value (`__fvid`).
    * Used to derive a GA4-compatible client_id when _ga cookie is unavailable.
    * Expected length: >= 18 characters (alphanumeric); padded with zeros if shorter.
@@ -70,16 +76,37 @@ export function resolveClientId(
     return userData.client_id_ga4;
   }
 
-  // Priority 2: mint a GA4-compatible client_id from __fvid.
+  // Priority 2: extract client_id from raw _ga cookie value.
+  // Cookie format: GA1.1.<client_id>.<timestamp> — GA4 expects "<client_id>.<timestamp>".
+  if (userData._ga) {
+    const extracted = extractClientIdFromGaCookie(userData._ga);
+    if (extracted) return extracted;
+  }
+
+  // Priority 3: mint a GA4-compatible client_id from __fvid.
   // Format: GA1.1.<8 digit segment>.<10 digit segment>
   // OQ-003 CLOSED: trade-off documented in docs/40-integrations/06-ga4-measurement-protocol.md
   if (userData.fvid) {
     return mintClientIdFromFvid(userData.fvid);
   }
 
-  // Priority 3: no client_id derivable.
+  // Priority 4: no client_id derivable.
   // OQ-012 OPEN: checkout direct without tracker coverage.
   return null;
+}
+
+/**
+ * Extracts the canonical GA4 client_id from a raw `_ga` cookie value.
+ * Cookie format: `GA1.1.<client_id>.<timestamp>` (4 segments).
+ * GA4 client_id is `<client_id>.<timestamp>` (last 2 segments joined).
+ */
+function extractClientIdFromGaCookie(ga: string): string | null {
+  const parts = ga.split('.');
+  if (parts.length < 4) return null;
+  const clientId = parts[parts.length - 2];
+  const timestamp = parts[parts.length - 1];
+  if (!clientId || !timestamp) return null;
+  return `${clientId}.${timestamp}`;
 }
 
 // ---------------------------------------------------------------------------

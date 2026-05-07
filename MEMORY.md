@@ -11,7 +11,66 @@
 
 ## §1 Bloqueios e pendências de stack [STACK-BLOQUEIO]
 
-(vazio)
+### Sessão 2026-05-07 — Setup tracking real CNE (workspace 74860330)
+
+**Estado deployado** (worker version `da5bb2f9` + bundles): tracker.js no R2 (`gt-tracker-cdn`) com `consent: granted` por default; Edge worker com fix do `/v1/config` (binding check `c.env.DB` → `HYPERDRIVE`/`DATABASE_URL`); GA4 + Meta CAPI mappers com mapeamento de custom events (`custom:click_buy_workshop` → `InitiateCheckout`/`begin_checkout`, `custom:click_wpp_join` → `Contact`/`join_group`); GA4 mapper lê `cd.group_id` ou `cd.campaign_id` para param `group_id`; UserDataSchema em raw-events-processor aceita `_ga`/`fvid` com `nullish()`; GA4 client-id-resolver agora extrai `client_id` do cookie `_ga` cru via `extractClientIdFromGaCookie`.
+
+**Mudanças não commitadas** (working tree dirty 2026-05-07): MEMORY.md, ga4-mp/client-id-resolver.ts, ga4-mp/mapper.ts, meta-capi/mapper.ts, index.ts (GA4 lookup sibling event para enrichment de `_ga` em Purchase via Guru), raw-events-processor.ts, routes/config.ts, routes/integrations-google.ts, snippets paid-workshop (consent granted + fbq integration), tests/unit/dispatchers/ga4-mp.test.ts. Untracked: `docs/70-ux/13-tutorial-instalacao-tracking.md` (tutorial completo de instalação), `packages/db/migrations/0039_funnel_template_paid_workshop_v3_auto_page_view.sql` (já aplicada no DB).
+
+**Migration aplicada não commitada**: `0039_funnel_template_paid_workshop_v3_auto_page_view.sql` — adiciona `auto_page_view` ao blueprint v3.2 e propaga para 5 pages (`workshop`/`oferta-principal`/`aula-workshop` = true; `obrigado-workshop`/`obrigado-principal` = false).
+
+**Configurações externas** (CNE, manuais): Meta Pixel `149334790553204` instalado no `<head>` via WPCode antes do tracker.js; GA4 stream `G-J8QFFWLRDQ` (CNE Funil Geral) com API Secret `Ua8Mwgr1Tt6WAXzfwviJBw`; WP Rocket exclusões aplicadas em 3 áreas (minify/defer/delay) cobrindo `tracker.js`, `gtag`, `connect.facebook.net/en_US/fbevents.js`.
+
+**Validado funcionando E2E** em `/wk-societarios-1/` (workshop): PageView auto, GA4 dispatch succeeded, `_ga` capturado, Pixel + CAPI deduplicando via `eventID = window.__funil_event_id`. Lead via form submit funciona. Click `custom:click_buy_workshop` mapeia para `InitiateCheckout` no Meta + `begin_checkout` no GA4.
+
+---
+
+- **META-CAPI-EXTERNAL-ID-AND-IP-UA (descoberto 2026-05-07) — TODO Sprint 16**: três sinais de matching discutidos para Meta CAPI ([imagens da conversa de 2026-05-07]). Status:
+  - **(3) Meta Pixel browser** ✅ FEITO. Pixel ID `149334790553204` instalado em `contratosnovaeconomia.com.br`. Dedup com CAPI via `event_id = window.__funil_event_id` funcionando (snippets `workshop.html` e `obrigado-workshop.html` chamam `fbqIfAvailable` após `F.track()`/`F.page()`). Cookie `_fbp` é setado pelo helper `fbqAutoPageView()` no footer da workshop (Pixel só cria `_fbp` quando dispara primeiro evento, não no init).
+  - **(1) `__fvid` → `external_id`** ❌ NÃO FEITO. Bloqueado por bug:
+    - Tracker só gera `__fvid` quando `config.consent.analytics === 'granted'` (string exata, gate em `apps/tracker/src/index.ts` `init()` linha ~197). Mas `/v1/config` não retorna campo `consent` (workspaces não têm consent canônico armazenado), então `__fvid` nunca é gerado → `events.visitor_id` é null em todos os eventos.
+    - **Plano para Sprint 16**:
+      1. Mudar gate do tracker: defaultar `consentAnalytics = config?.consent?.analytics !== 'denied'` (só pausa quando explicitamente 'denied', alinhado com BR-CONSENT-004 e com o `DEFAULT_CONSENT='granted'` que já corrigimos para o tracker). Rebuild tracker.js, upload R2 (`gt-tracker-cdn` bucket).
+      2. Adicionar `external_id` ao `MetaUserData` em `apps/edge/src/dispatchers/meta-capi/mapper.ts` (linha ~55). Hash SHA-256 do `event.visitor_id` (Meta exige hash de external_id).
+      3. Atualizar `buildMetaCapiDispatchFn` em `apps/edge/src/index.ts` (linha ~622) para passar `event.visitorId` no mapper.
+      4. Atualizar `checkEligibility` em `apps/edge/src/dispatchers/meta-capi/eligibility.ts` (linha ~111) para incluir `external_id` (via visitor_id) como sinal válido — assim eventos anônimos com `__fvid` deixam de skipar com `no_user_data`.
+      5. Testes unit cobrindo: (a) hashing correto SHA-256; (b) fallback quando visitor_id ausente; (c) eligibility passa com só external_id.
+  - **(2) IP + `client_user_agent`** ❌ BLOQUEADO POR DESIGN ATUAL. Comentário em [`apps/edge/src/routes/events.ts:489`](apps/edge/src/routes/events.ts#L489): "BR-PRIVACY-001: only non-PII headers stored; no raw IP or UA". Por isso `raw_events.headers_sanitized` tem só `origin` + `cf_ray`. Para enviar IP/UA ao Meta CAPI seria necessário decisão arquitetural:
+    - **Opção A (preferida)**: capturar IP/UA na rota `/v1/events`, passar transient para o ingestion pipeline em `events.request_context`, expor para dispatchers, mas **não** persistir em raw_events. Cumpre Meta CAPI sem violar política de retenção.
+    - **Opção B**: revisitar BR-PRIVACY-001 — IP/UA são "Standard Data Parameters" no Meta CAPI e a maioria das jurisdições (LGPD, GDPR) os trata como dados de processamento normal, não PII estrita.
+    - Decisão pendente — não tocar até alinhamento com Tiago.
+
+- **MISSING-UNIT-TESTS-SESSION-2026-05-07 — TODO Sprint 16**: as mudanças funcionais desta sessão não foram cobertas por unit tests. Adicionar:
+  1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_buy_workshop`/`click_buy_main` → `InitiateCheckout`, `custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`).
+  2. `tests/unit/dispatchers/ga4-mp/mapper.test.ts` — mapeamentos paralelos (`begin_checkout`, `join_group`, `view_item`) + `params.group_id` extraído de `cd.group_id` ou `cd.campaign_id`.
+  3. `tests/unit/dispatchers/ga4-mp/client-id-resolver.test.ts` — `extractClientIdFromGaCookie` extrai parts 3+4 de cookie format `GA1.1.<n>.<n>`; rejeita formatos inválidos.
+  4. `tests/unit/lib/raw-events-processor.test.ts` — `UserDataSchema` aceita `_ga`/`fvid` com valores null e string (nullish), e ainda rejeita keys desconhecidas (.strict).
+  5. `tests/integration/edge/config-route.test.ts` — `/v1/config` retorna config real do DB (não fallback) quando HYPERDRIVE ou DATABASE_URL bindings presentes.
+  6. `tests/unit/edge/ga4-sibling-lookup.test.ts` — quando event `Purchase` chega sem `_ga`, dispatcher GA4 busca em events anteriores do mesmo lead e enriquece.
+
+- **CP-SNIPPET-GENERATOR-INCOMPLETE (descoberto 2026-05-07) — TODO Sprint 16**: o gerador de snippets em [`apps/control-plane/src/app/(app)/launches/[launch_public_id]/pages/[page_public_id]/page-detail-client.tsx`](apps/control-plane/src/app/(app)/launches/[launch_public_id]/pages/[page_public_id]/page-detail-client.tsx) está incompleto e desalinhado com os snippets canônicos em `apps/tracker/snippets/paid-workshop/*.html`:
+  - `buildHeadSnippet` (linha 81) só gera o `<script>` do tracker.js. **Não inclui GA4 (`gtag.js`) nem Meta Pixel**, nem instruções de ordem ou exclusões WP Rocket.
+  - `buildBodySnippet` (linha 97) usa `Funil.identify({email, phone, name})` — **viola INV-TRACKER-008/BR-TRACKER-001** (API só aceita `lead_token`). Quebrado, deve ser removido ou refatorado.
+  - `buildDetectionScript` (linha 131) tem `consent: { analytics: false, marketing: false, functional: true }` — mesmo bug que corrigimos nos templates estáticos (deveria ser todas as 5 finalidades `'granted'`). Também não dispara `fbq` para dedup Pixel+CAPI.
+  - **Plano para Sprint 16**:
+    1. `buildHeadSnippet` v2 — gerar 3 blocos em ordem (GA4 → Meta Pixel → tracker.js), lendo `workspaces.config.integrations.{ga4.measurement_id, meta.pixel_id}`. Skipar bloco quando não configurado. Adicionar comentário com instruções WP Rocket (exclusões: `tracker.js`, `gtag`, `connect.facebook.net/en_US/fbevents.js` nas 3 listas: minificação, defer, delay).
+    2. Substituir `buildBodySnippet` por `buildFooterSnippet(role)` — gerar snippet específico por `pages.role`:
+       - `sales` (workshop, oferta-principal): CTA wire + form submit POST /v1/lead com consent granted + `F.identify` + `F.track('Lead')` + `fbqIfAvailable('track','Lead')` + helper `fbqAutoPageView` quando `auto_page_view=true`.
+       - `thankyou` (obrigado-workshop, obrigado-principal): identity rebind via URL params (lead_name/email/phone), strip da URL via history.replaceState, `F.page()` manual após identify + `fbqIfAvailable('track','PageView')`.
+       - `webinar` (aula-workshop): engagement events (`custom:watched_workshop`) + fbq custom mappings.
+    3. Corrigir `buildDetectionScript`: consent `'granted'` em todas finalidades, adicionar fbq calls com `eventID`, remover identify com email/phone em claro.
+    4. Adicionar testes unit cobrindo: (a) head sem GA4 configurado não inclui bloco; (b) head com Meta sem GA4 inclui só Pixel + tracker; (c) snippet por role gera consent correto.
+  - Snippets canônicos correntes (manualmente colados pelo usuário no WPCode) ficam em `apps/tracker/snippets/paid-workshop/*.html` — usar como referência ao implementar.
+
+- **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE (descoberto 2026-05-07)**: tela de "Configuração de eventos" da page no Control Plane (`apps/control-plane/src/app/(app)/launches/[launch_public_id]/pages/[page_public_id]/page.tsx` + componente client) só tem checkboxes de eventos canônicos + custom events, **não expõe o toggle `auto_page_view`** que vive em `pages.event_config.auto_page_view`. Lacuna: para ligar/desligar `auto_page_view` é necessário SQL direto. Sprint futura deve adicionar o toggle no formulário. Status: blueprint do template `lancamento_pago_workshop_com_main_offer` agora carrega `auto_page_view` por page (migration `0039_funnel_template_paid_workshop_v3_auto_page_view.sql`, aplicada 2026-05-07) — pages criadas via template já vêm com a flag populada. Pendente apenas: UI do CP para edição manual.
+
+- **SENDFLOW-EVENTS-NEVER-PROCESSED (descoberto 2026-05-07)**: handler em [`apps/edge/src/routes/webhooks/sendflow.ts:483`](apps/edge/src/routes/webhooks/sendflow.ts#L483) enfileira mensagem com shape `{ platform: 'sendflow', event_id, sendflow_event, campaign_id, resolved_event_name }` — **sem `raw_event_id`**. O consumer em [`apps/edge/src/index.ts:491`](apps/edge/src/index.ts#L491) só processa mensagens com `raw_event_id`, então cai no branch `dispatch_job_id` e falha. Resultado: 5+ raw_events com `processing_status='pending'` desde 2026-05-06 e nenhum `custom:wpp_joined` jamais emitido para Meta CAPI / GA4 / Google Ads.
+  - **Fix necessário** (não feito agora — usuário priorizou continuar testando o que funciona):
+    1. Criar `apps/edge/src/lib/sendflow-raw-events-processor.ts` (espelho do `guru-raw-events-processor.ts`): lê raw_event, transforma payload SendFlow → schema events table, **inclui `campaign_id` em `events.custom_data.group_id`** (ou keep como `campaign_id` — GA4 mapper já lê os dois), resolve lead, cria dispatch_jobs.
+    2. Atualizar handler do webhook ([`sendflow.ts:483`](apps/edge/src/routes/webhooks/sendflow.ts#L483)) para incluir `raw_event_id` na mensagem da queue.
+    3. Adicionar branch `platform === 'sendflow'` no consumer em [`index.ts:497`](apps/edge/src/index.ts#L497) chamando o novo processor.
+    4. Reprocessar manualmente os 5+ events em `pending` (script direto via DB ou re-enqueue).
+  - **GA4 mapper já preparado** (2026-05-07): lê `cd.group_id` ou `cd.campaign_id` e popula `params.group_id` para o evento `join_group`. Funcionará automaticamente assim que o processor for criado.
 
 ## §2 Divergências doc ↔ código [SYNC-PENDING]
 

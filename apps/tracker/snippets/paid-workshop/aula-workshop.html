@@ -87,6 +87,14 @@
     }, 50);
   }
 
+  // Helper Pixel: dispara fbq com mesmo eventID gerado pelo tracker (dedup CAPI+Pixel).
+  function fbqIfAvailable(method, name, customData) {
+    if (!window.fbq || !window.__funil_event_id) return;
+    try {
+      fbq(method, name, customData || {}, { eventID: window.__funil_event_id });
+    } catch (e) {}
+  }
+
   // ---------------------------------------------------------------
   // Identify + PageView. Tem que rodar antes do click do botão para
   // que `custom:watched_workshop` saia já com `lead_token` no payload.
@@ -117,6 +125,8 @@
     // /v1/config, mas chamamos manualmente para garantir que ocorra
     // DEPOIS do identify acima — assim o evento já carrega lead_token).
     Funil.page();
+    // Pixel dispara PageView com mesmo eventID → dedup com CAPI + cria _fbp.
+    fbqIfAvailable('track', 'PageView');
   });
 
   // ---------------------------------------------------------------
@@ -174,6 +184,10 @@
     watched = true;
     withTracker(function (Funil) {
       Funil.track('custom:watched_workshop');
+      // custom:watched_workshop não tem mapeamento Meta padrão.
+      // Disparamos como ViewContent (assistir = consumir conteúdo) para que
+      // o Pixel browser registre a engajamento + dedupe com CAPI via eventID.
+      fbqIfAvailable('track', 'ViewContent');
     });
   }
 

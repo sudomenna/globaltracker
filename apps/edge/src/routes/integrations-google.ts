@@ -588,7 +588,7 @@ export function createIntegrationsGoogleRoute(deps?: {
   route.get('/oauth/callback', async (c) => {
     const requestId: string =
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
-    const cpBackUrl = controlPlaneUrl(c, '/integrations/google-ads');
+    const cpBackUrl = controlPlaneUrl(c, '/integrations/google_ads');
 
     // 1. Detect user-cancelled flow (?error=access_denied).
     const errorParam = c.req.query('error');

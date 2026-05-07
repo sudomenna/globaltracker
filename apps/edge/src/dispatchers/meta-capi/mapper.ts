@@ -124,6 +124,13 @@ const INTERNAL_TO_META_EVENT_NAME: Record<string, string> = {
   FindLocation: 'FindLocation',
   SubmitApplication: 'SubmitApplication',
   CustomizeProduct: 'CustomizeProduct',
+  // Custom events mapped to Meta standard events for cross-channel dedup.
+  // Both Pixel (browser) and CAPI (server) must send the same Meta event_name
+  // for Meta's deduplication algorithm to recognize them as the same event.
+  'custom:click_wpp_join': 'Contact',
+  'custom:click_buy_workshop': 'InitiateCheckout',
+  'custom:click_buy_main': 'InitiateCheckout',
+  'custom:watched_workshop': 'ViewContent',
 };
 
 // ---------------------------------------------------------------------------

@@ -38,7 +38,7 @@ import {
   pageTokens,
   workspaces,
 } from '@globaltracker/db';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
@@ -769,12 +769,12 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
 function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
   return async (job): Promise<DispatchResult> => {
     // 1. Load the source event.
-    const [event] = await db
+    const [rawEvent] = await db
       .select()
       .from(events)
       .where(eq(events.id, job.eventId));
 
-    if (!event) {
+    if (!rawEvent) {
       return { ok: false, kind: 'permanent_failure', code: 'event_not_found' };
     }
 
@@ -786,6 +786,40 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
         .from(leads)
         .where(eq(leads.id, job.leadId));
       lead = rows[0];
+    }
+
+    // 2b. Enrich user_data with _ga / fvid from sibling events when absent.
+    // Purchase events from webhooks (Guru, Hotmart, etc.) arrive without browser
+    // context — no _ga cookie. If the same lead has earlier tracker events we
+    // pull the most-recent _ga / fvid from there so GA4 can resolve a client_id.
+    let event = rawEvent;
+    const rawUserData = (rawEvent.userData ?? {}) as Record<string, unknown>;
+    const hasGaData = rawUserData._ga || rawUserData.fvid || rawUserData.client_id_ga4;
+    if (!hasGaData && job.leadId) {
+      const [sibling] = await db
+        .select({ userData: events.userData })
+        .from(events)
+        .where(
+          and(
+            eq(events.leadId, job.leadId),
+            ne(events.id, rawEvent.id),
+          ),
+        )
+        .orderBy(desc(events.createdAt))
+        .limit(1);
+      if (sibling) {
+        const siblingData = (sibling.userData ?? {}) as Record<string, unknown>;
+        if (siblingData._ga || siblingData.fvid) {
+          event = {
+            ...rawEvent,
+            userData: {
+              ...rawUserData,
+              _ga: rawUserData._ga ?? siblingData._ga ?? null,
+              fvid: rawUserData.fvid ?? siblingData.fvid ?? null,
+            },
+          };
+        }
+      }
     }
 
     // 3. Resolve GA4 credentials: prefer workspaces.config, fallback to env vars.

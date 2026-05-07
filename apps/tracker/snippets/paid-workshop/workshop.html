@@ -73,6 +73,36 @@
     }, 50);
   }
 
+  // Helper Pixel: dispara fbq com mesmo eventID gerado pelo tracker.
+  // Tracker seta window.__funil_event_id sincronamente ao chamar F.track/F.page,
+  // então chamar fbqIfAvailable logo após dispatch garante dedup CAPI+Pixel.
+  function fbqIfAvailable(method, name, customData){
+    if (!window.fbq || !window.__funil_event_id) return;
+    try {
+      fbq(method, name, customData || {}, { eventID: window.__funil_event_id });
+    } catch (e) {}
+  }
+
+  // Tracker dispara PageView automático no init (auto_page_view=true), não via snippet.
+  // Esperamos window.__funil_event_id ser setado e disparamos fbq com mesmo id —
+  // isso (a) cria o cookie _fbp (Pixel só seta no primeiro track) e
+  // (b) dedupe o PageView Pixel com o CAPI.
+  function fbqAutoPageView(){
+    if (!window.fbq) return;
+    var attempts = 0;
+    var t = setInterval(function(){
+      attempts++;
+      if (window.__funil_event_id) {
+        clearInterval(t);
+        try {
+          fbq('track', 'PageView', {}, { eventID: window.__funil_event_id });
+        } catch (e) {}
+      } else if (attempts >= 60) {
+        clearInterval(t);
+      }
+    }, 100);
+  }
+
   function openPopup(){
     if (window.elementorProFrontend && window.elementorProFrontend.modules &&
         window.elementorProFrontend.modules.popup) {
@@ -96,6 +126,8 @@
         ev.stopPropagation();
         withTracker(function(F){
           F.track('custom:click_buy_workshop');
+          // Pixel: dispara como InitiateCheckout (mapper CAPI traduz custom:click_buy_workshop → InitiateCheckout).
+          fbqIfAvailable('track', 'InitiateCheckout');
         });
         openPopup();
       });
@@ -162,7 +194,14 @@
         email: email,
         phone: phone,
         attribution: {},
-        consent: { analytics: false, marketing: false, functional: true }
+        // Lead opt-in via form submit → todas as finalidades granted
+        consent: {
+          analytics: 'granted',
+          marketing: 'granted',
+          ad_user_data: 'granted',
+          ad_personalization: 'granted',
+          customer_match: 'granted'
+        }
       };
 
       var siteTokenTag = document.querySelector('script[data-site-token]');
@@ -189,6 +228,8 @@
           withTracker(function(F){
             F.identify({ lead_token: resp.lead_token });
             F.track('Lead');
+            // Pixel browser dispara Lead com mesmo eventID → Meta deduplica com CAPI.
+            fbqIfAvailable('track', 'Lead');
           });
         }
       })
@@ -203,6 +244,7 @@
   function boot(){
     wireBuyButton();
     wireForm();
+    fbqAutoPageView();
   }
 
   if (document.readyState === 'loading') {

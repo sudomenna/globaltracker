@@ -69,6 +69,14 @@
     }, 50);
   }
 
+  // Helper Pixel: dispara fbq com mesmo eventID gerado pelo tracker (dedup CAPI+Pixel).
+  function fbqIfAvailable(method, name, customData){
+    if (!window.fbq || !window.__funil_event_id) return;
+    try {
+      fbq(method, name, customData || {}, { eventID: window.__funil_event_id });
+    } catch (e) {}
+  }
+
   function findBuyButton(){
     for (var i = 0; i < BUY_BUTTON_FALLBACK_SELECTORS.length; i++){
       var el = document.querySelector(BUY_BUTTON_FALLBACK_SELECTORS[i]);
@@ -94,9 +102,12 @@
       // event_id via sessionStorage (TTL 5min) — re-fire é absorvido como
       // `event_duplicate_accepted` (esperado, MEMORY).
       F.page();
+      // Pixel dispara PageView com mesmo eventID → dedup com CAPI + cria _fbp.
+      fbqIfAvailable('track', 'PageView');
       // ViewContent NÃO é auto-fire pelo bundle — disparamos explicitamente
       // (event_config canonical desta page inclui ViewContent).
       F.track('ViewContent');
+      fbqIfAvailable('track', 'ViewContent');
     });
   }
 
@@ -109,6 +120,8 @@
       withTracker(function(F){
         // BR-EVENT-001: prefixo `custom:` é match exato no processor.
         F.track('custom:click_buy_main');
+        // Pixel: dispara como InitiateCheckout (mapper CAPI traduz custom:click_buy_main → InitiateCheckout).
+        fbqIfAvailable('track', 'InitiateCheckout');
       });
     }, { passive: true });
   }
