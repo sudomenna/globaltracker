@@ -19,6 +19,8 @@ export interface DispatchableEvent {
   event_time: Date | string;
   lead_id?: string | null;
   workspace_id: string;
+  /** Anonymous visitor ID (cookie __fvid, UUID v4). Maps to Meta external_id. */
+  visitor_id?: string | null;
   user_data?: {
     fbc?: string | null;
     fbp?: string | null;
@@ -60,6 +62,9 @@ export interface MetaUserData {
   fn?: string;
   /** SHA-256 hex de last name lowercase. Meta: ln. */
   ln?: string;
+  /** Visitor ID anônimo (cookie __fvid, UUID v4). Meta: external_id.
+   *  PLANO — Meta hashea internamente. */
+  external_id?: string;
   /** Facebook click ID cookie value. Not hashed. */
   fbc?: string;
   /** Facebook browser ID cookie value. Not hashed. */
@@ -183,6 +188,12 @@ export function mapEventToMetaPayload(
   }
   if (lead?.ln_hash) {
     userData.ln = lead.ln_hash;
+  }
+  // Visitor ID — external_id em PLANO (Meta hashea internamente).
+  // BR-CONSENT-003: external_id é anônimo (UUID v4 random), não-PII;
+  // passa sem consent específico junto com fbc/fbp.
+  if (event.visitor_id) {
+    userData.external_id = event.visitor_id;
   }
   if (event.user_data?.fbc) {
     userData.fbc = event.user_data.fbc;

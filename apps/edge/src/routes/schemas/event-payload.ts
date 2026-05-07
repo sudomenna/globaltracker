@@ -46,7 +46,14 @@ const ConsentSchema = z.object({
 
 /**
  * Platform cookies forwarded from the tracker to the Edge for Meta CAPI / GA4 / Google Ads.
- * BR-PRIVACY-001: contains only opaque platform identifiers (fbp, fbc, _ga, _gcl_au) — no PII.
+ *
+ * BR-PRIVACY-001 (revisada): além de identificadores opacos (fbp, fbc, _ga, _gcl_au),
+ * agora aceita também `client_ip_address` e `client_user_agent`. Esses campos serão
+ * sobrescritos pelo handler com os headers reais do request (CF-Connecting-IP /
+ * User-Agent) antes do insert em raw_events — Meta CAPI / Google Enhanced Conversions
+ * exigem esses valores não-hasheados para EMQ (Event Match Quality). O tracker
+ * normalmente não tem acesso ao IP real, mas mantemos o schema permissivo para
+ * idempotência e debug.
  */
 const UserDataSchema = z
   .object({
@@ -54,6 +61,8 @@ const UserDataSchema = z
     _ga: z.string().nullable().optional(),
     fbc: z.string().nullable().optional(),
     fbp: z.string().nullable().optional(),
+    client_ip_address: z.string().nullish(),
+    client_user_agent: z.string().nullish(),
   })
   .default({});
 

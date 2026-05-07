@@ -1,20 +1,25 @@
 # BR-PRIVACY — Regras de privacidade e PII
 
-## BR-PRIVACY-001 — PII em claro nunca é persistida em logs ou jsonb não-criptografado
+## BR-PRIVACY-001 — Storage of request metadata: separação intencional entre raw_events e events.userData
 
-### Status: Stable
+### Status: Stable (atualizada em ADR-031, Sprint 16)
 
 ### Enunciado
-Email, telefone, nome e IP em claro **NÃO PODEM** aparecer em: `events.user_data`, `events.request_context`, `dispatch_attempts.request_payload_sanitized`, `dispatch_attempts.response_payload_sanitized`, logs estruturados, ou qualquer payload retornado a caller externo.
+Email, telefone e nome em claro **NÃO PODEM** aparecer em nenhum payload persistido (`events.user_data`, `events.request_context`, `dispatch_attempts.request_payload_sanitized`, `dispatch_attempts.response_payload_sanitized`, logs estruturados ou qualquer resposta retornada a caller externo) — só `*_hash` ou `*_enc` são aceitos.
+
+`client_ip_address` e `client_user_agent` **PODEM** ser persistidos em `events.user_data` (JSONB) quando capturados pelo Edge no `POST /v1/events`, com a finalidade explícita de Event Match Quality (EMQ) em dispatchers outbound (Meta CAPI, Google Enhanced Conversions). **NÃO PODEM** aparecer em `raw_events.headers_sanitized`, que retém apenas metadata operacional do request (origin, cf_ray, content-type) — a separação entre payload do evento (consumível por dispatchers) e metadata operacional do request é intencional (ADR-031).
+
+`visitor_id` (UUID v4 anônimo do cookie `__fvid`) **PODE** ser enviado em plano (não hasheado) como `external_id` para Meta CAPI / Google Enhanced. UUID random não é PII e Meta hashea internamente; envio em plano permite debug direto Events Manager → DB.
 
 ### Enforcement
-- Zod schema de `user_data` permite apenas chaves canônicas (`em`, `ph`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `external_id_hash`); rejeita `email`, `phone`, `name`.
-- Helper `sanitizeRequestContext()` redacta automaticamente.
-- Helper `sanitizeDispatchPayload()` redacta antes de gravar `dispatch_attempts`.
+- Zod schema de `user_data` em `apps/edge/src/routes/schemas/event-payload.ts` permite chaves canônicas (`em`, `ph`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `session_id_ga4`, `external_id_hash`, `client_ip_address`, `client_user_agent`); rejeita `email`, `phone`, `name`.
+- Rota `POST /v1/events` lê `CF-Connecting-IP` + `User-Agent` do request e mescla em `payload.user_data.client_ip_address` / `client_user_agent` antes de gravar `raw_events`.
+- `raw_events.headers_sanitized` exclui `cf-connecting-ip`, `x-forwarded-for`, `user-agent`, cookies, `authorization`.
+- Helper `sanitizeDispatchPayload()` redacta `client_ip_address`/`client_user_agent` antes de gravar `dispatch_attempts` (transitam via wire mas não são persistidos no histórico).
 - Logger global tem redact list pré-configurada.
 
 ### Aplica-se a
-MOD-EVENT, MOD-DISPATCH, MOD-AUDIT, todas as integrações.
+MOD-EVENT, MOD-DISPATCH, MOD-AUDIT, todas as integrações outbound.
 
 ### Critério de aceite (Gherkin)
 ```gherkin
@@ -22,11 +27,24 @@ Scenario: payload de tracker com email em user_data é rejeitado
   Given POST /v1/events com user_data: { email: "foo@bar.com" }
   When Edge valida com Zod
   Then retorna 400 com error_code='validation_error_user_data_pii'
+
+Scenario: IP/UA são persistidos em events.userData (não em raw_events)
+  Given POST /v1/events com header CF-Connecting-IP=1.2.3.4, User-Agent="Mozilla/..."
+  When Edge processa o request
+  Then events.user_data.client_ip_address = "1.2.3.4"
+  And events.user_data.client_user_agent = "Mozilla/..."
+  And raw_events.headers_sanitized não contém esses valores
+
+Scenario: erasure SAR remove client_ip_address e client_user_agent
+  Given lead L com events contendo user_data.client_ip_address e .client_user_agent
+  When eraseLead(L) executa (ver BR-PRIVACY-005)
+  Then events.user_data dos eventos de L tem client_ip_address e client_user_agent removidos
+  Junto com email_enc/phone_enc/name_enc do lead
 ```
 
 ### Citação em código
 ```ts
-// BR-PRIVACY-001: PII em claro proibida em user_data
+// BR-PRIVACY-001: PII em claro proibida em user_data; IP/UA permitidos em events.userData (EMQ)
 const userData = userDataSchema.parse(input.user_data); // rejeita 'email', 'phone'
 ```
 
@@ -125,10 +143,10 @@ Scenario: lazy re-encryption
 
 ## BR-PRIVACY-005 — SAR/erasure anonimiza events, attribution, link_clicks; preserva agregados
 
-### Status: Stable (ADR-014, RF-029)
+### Status: Stable (ADR-014, RF-029, atualizado por ADR-031)
 
 ### Enunciado
-`eraseLead(lead_id)` **DEVE**: zerar `leads.email_enc/phone_enc/name_enc/email_hash/phone_hash`, `leads.status='erased'`, remover `lead_aliases` correspondentes, anonimizar campos PII em `events.user_data` (mas preservar event count/timing para agregados), zerar `events.request_context.ip_hash/ua_hash`, anonimizar `lead_attribution` (preserva campos não-identificadores). Job é idempotente.
+`eraseLead(lead_id)` **DEVE**: zerar `leads.email_enc/phone_enc/name_enc/email_hash/phone_hash`, `leads.status='erased'`, remover `lead_aliases` correspondentes, anonimizar campos PII em `events.user_data` — incluindo `em`, `ph`, `external_id_hash`, **`client_ip_address` e `client_user_agent`** (BR-PRIVACY-001) — mas preservar event count/timing para agregados, zerar `events.request_context.ip_hash/ua_hash`, anonimizar `lead_attribution` (preserva campos não-identificadores). Job é idempotente.
 
 ### Enforcement
 - Endpoint `DELETE /v1/admin/leads/:lead_id` enqueue job.
@@ -142,7 +160,7 @@ Scenario: SAR completa em < 60s para lead com 100k events
   When DELETE /v1/admin/leads/:L como privacy
   Then job termina em < 60s
   And leads.status='erased', email_enc IS NULL
-  And events.user_data não contém em/ph/external_id_hash
+  And events.user_data não contém em/ph/external_id_hash/client_ip_address/client_user_agent
   And lead_attribution.fbclid/gclid preservados; identificadores zerados
   And lead_aliases para L removidos
   And audit_log entry created

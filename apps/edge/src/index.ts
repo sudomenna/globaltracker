@@ -665,6 +665,9 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         user_data: event.userData as Parameters<
           typeof checkEligibility
         >[0]['user_data'],
+        // BR-CONSENT-003: visitor_id (cookie __fvid) conta como sinal
+        // válido via Meta external_id; anônimo, não-PII.
+        visitor_id: event.visitorId,
       },
       lead ? { email_hash: lead.emailHash, phone_hash: lead.phoneHash } : null,
       launchConfig,
@@ -695,6 +698,8 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         event_time: event.eventTime,
         lead_id: event.leadId,
         workspace_id: event.workspaceId,
+        // BR-CONSENT-003: visitor_id mapeia para Meta external_id (PLANO).
+        visitor_id: event.visitorId,
         user_data: event.userData as Parameters<
           typeof mapEventToMetaPayload
         >[0]['user_data'],

@@ -17,8 +17,9 @@ Dispatch out de eventos de tracking (PageView, Lead, Purchase, custom) para Meta
 | `events.event_id` | `event_id` | Mesmo valor do `eventID` browser quando aplicável |
 | `leads.email_hash` | `user_data.em` | Lookup via `event.lead_id` |
 | `leads.phone_hash` | `user_data.ph` | Lookup |
-| (transient) | `user_data.client_ip_address` | Não hashar; required para website events |
-| (transient) | `user_data.client_user_agent` | Não hashar; required |
+| `events.visitor_id` | `user_data.external_id` | Cookie `__fvid` (UUID v4 anônimo). Enviado em **plano** — não SHA-256. Meta hashea internamente. Mapeia direto de `events.visitor_id`. Permite Custom Audience de visitantes anônimos e cross-reference IP+UA → login Facebook do mesmo device (ADR-031, Sprint 16). |
+| `events.user_data.client_ip_address` | `user_data.client_ip_address` | Não hashar. Persistido em `events.userData` JSONB pela rota `/v1/events` (ADR-031). Required para website events |
+| `events.user_data.client_user_agent` | `user_data.client_user_agent` | Não hashar. Persistido idem. Required |
 | `events.user_data.fbc` | `user_data.fbc` | Não hashar |
 | `events.user_data.fbp` | `user_data.fbp` | Não hashar |
 | `events.custom_data.value/currency/order_id` | `custom_data.*` | Para Purchase e monetários |
@@ -47,7 +48,7 @@ Header `Authorization: Bearer <META_CAPI_TOKEN>`. Token vinculado a app + pixel.
 
 Antes de dispatchar:
 1. `consent_snapshot.ad_user_data` precisa estar `granted` (exceto PageView sem PII).
-2. Pelo menos um de `em`, `ph`, `fbc`, `fbp`, `external_id_hash` precisa estar populado (BR-CONSENT-003).
+2. Pelo menos um de `em`, `ph`, `fbc`, `fbp`, `external_id` (visitor_id) precisa estar populado — `visitor_id` é o 5º sinal válido desde Sprint 16 (ADR-031): PageView anônimo com cookie `__fvid` passa eligibility e é dispatched (antes era skipado com `no_user_data`). Skip continua quando nenhum dos 5 sinais existe (BR-CONSENT-003).
 3. `pixel_id` configurado em `launches.config.tracking.meta`.
 4. Test mode opcional via env (`META_CAPI_TEST_EVENT_CODE`).
 

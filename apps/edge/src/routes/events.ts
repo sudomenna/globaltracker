@@ -463,8 +463,28 @@ export function createEventsRoute(
     // -----------------------------------------------------------------------
     // T-8-004: detect test mode from header/cookie and embed in payload
     const isTest = isTestModeRequest(c.req.raw.headers);
+
+    // T-16-001B: extract IP/UA from request headers and merge into user_data.
+    // BR-PRIVACY-001 (revisada): IP/UA fluem para events.userData JSONB para subir
+    // EMQ (Event Match Quality) em Meta CAPI / Google Enhanced Conversions. Server-side
+    // values win — tracker normalmente não tem acesso ao IP real, então o request
+    // header CF-Connecting-IP é a fonte mais confiável. Se header ausente, mandamos
+    // null (Meta CAPI prefere ausência a valor falso tipo "0.0.0.0").
+    const clientIp = c.req.header('CF-Connecting-IP') ?? null;
+    const clientUa = c.req.header('User-Agent') ?? null;
+
+    const rawBodyTyped = rawBody as Record<string, unknown>;
+    const incomingUserData =
+      (rawBodyTyped.user_data as Record<string, unknown> | undefined) ?? {};
+    const mergedUserData: Record<string, unknown> = {
+      ...incomingUserData,
+      client_ip_address: clientIp,
+      client_user_agent: clientUa,
+    };
+
     const rawPayload: Record<string, unknown> = {
-      ...(rawBody as Record<string, unknown>),
+      ...rawBodyTyped,
+      user_data: mergedUserData,
       // Store clamped event_time so processor sees the corrected value
       event_time: effectiveEventTime,
       // BR-TEST-MODE: propagate test flag to processor for events.is_test
@@ -486,7 +506,11 @@ export function createEventsRoute(
           pageId,
           payload: rawPayload,
           headersSanitized: {
-            // BR-PRIVACY-001: only non-PII headers stored; no raw IP or UA
+            // BR-PRIVACY-001 (revisada): IP/UA agora fluem para events.userData
+            // JSONB (consumido por Meta CAPI / Google Enhanced Conversions para
+            // subir EMQ). raw_events.headers_sanitized continua sem PII — only
+            // request metadata (origin, cf_ray) — separação intencional entre
+            // payload do evento e metadata operacional do request.
             origin: c.req.header('origin') ?? null,
             cf_ray: c.req.header('cf-ray') ?? null,
           },

@@ -42,7 +42,13 @@
 - `event_time` (timestamptz — pode ter sido clampado)
 - `received_at`
 - `attribution` (jsonb)
-- `user_data` (jsonb — somente hash/IDs permitidos)
+- `user_data` (jsonb — somente hash/IDs permitidos + IP/UA para EMQ; ver BR-PRIVACY-001, ADR-031)
+  - `em`, `ph`, `external_id_hash` — hashes SHA-256 de PII normalizada
+  - `fbc`, `fbp` — cookies Meta Pixel (não hashar)
+  - `_gcl_au`, `client_id_ga4`, `session_id_ga4` — cookies/IDs Google
+  - `external_id` — visitor_id (UUID v4 do cookie `__fvid`) em **plano**, não hasheado; Meta hashea internamente (ADR-031)
+  - `client_ip_address: string | null` — IP do request (capturado do header `CF-Connecting-IP` na rota `/v1/events`); persistido em `events.userData` para EMQ em Meta CAPI / Google Enhanced Conversions (ADR-031). **NÃO** persistido em `raw_events.headers_sanitized`.
+  - `client_user_agent: string | null` — User-Agent do request (capturado do header `User-Agent`); idem.
 - `custom_data` (jsonb)
 - `consent_snapshot` (jsonb com 5 finalidades)
 - `request_context` (jsonb sanitizado)
@@ -81,7 +87,7 @@
 - **INV-EVENT-001 — `(workspace_id, event_id)` é único em `events`.** `unique` constraint. Testável.
 - **INV-EVENT-002 — Edge clampa `event_time` quando `abs(event_time - received_at) > EVENT_TIME_CLAMP_WINDOW_SEC`.** Testável: payload com `event_time = "2020-01-01"` e `received_at = "2026-05-01"` resulta em `event_time = received_at`.
 - **INV-EVENT-003 — Replay com mesmo `event_id` em janela de 7 dias retorna idempotente sem novo insert.** Testável: KV cache verifica `event_id`; se existe, retorna `{status: "duplicate_accepted"}`.
-- **INV-EVENT-004 — `events.user_data` rejeita campos PII em claro.** Zod schema permite só `{em, ph, fbc, fbp, _gcl_au, client_id_ga4, session_id_ga4, external_id_hash, ...}` — não `email`, `phone`, `name`. Testável.
+- **INV-EVENT-004 — `events.user_data` rejeita campos PII em claro.** Zod schema permite só `{em, ph, fbc, fbp, _gcl_au, client_id_ga4, session_id_ga4, external_id_hash, client_ip_address, client_user_agent, ...}` — não `email`, `phone`, `name`. `client_ip_address` e `client_user_agent` são permitidos para EMQ outbound (BR-PRIVACY-001, ADR-031). Testável.
 - **INV-EVENT-005 — Edge persiste em `raw_events` antes de retornar 202.** Testável: kill -9 do worker durante request não gera `raw_events` aceito do lado do cliente (cliente recebe erro de network, não 202).
 - **INV-EVENT-006 — `consent_snapshot` é populado em todo evento.** Mesmo que `unknown` para todos. Testável.
 - **INV-EVENT-007 — Eventos com `lead_token` válido têm `lead_id` resolvido pelo processor.** Testável: integration test FLOW-07.

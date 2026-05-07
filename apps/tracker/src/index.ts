@@ -191,10 +191,13 @@ async function init(): Promise<void> {
       return;
     }
 
-    // INV-TRACKER-003: generate/read __fvid only when consent_analytics='granted'
-    // BR-CONSENT-004: own analytics cookies require consent
-    // Funil.identify() must NOT alter __fvid — it belongs to the anonymous visitor, not the lead
-    const consentAnalytics = config?.consent?.analytics === 'granted';
+    // INV-TRACKER-003: generate/read __fvid only when consent_analytics is not denied.
+    // BR-CONSENT-004: defaultar a granted — só pausa __fvid quando explicitamente 'denied'.
+    // Como L189 já fez early-return para 'denied', alcançar este ponto significa que
+    // analytics é 'granted' | 'unknown' | undefined — todos liberam __fvid (alinhado com
+    // DEFAULT_CONSENT, linhas 57-63). Mantemos a flag explícita para legibilidade.
+    // Funil.identify() must NOT alter __fvid — it belongs to the anonymous visitor, not the lead.
+    const consentAnalytics = true;
     const visitorId = ensureVisitorId(consentAnalytics);
     setVisitorId(visitorId);
 

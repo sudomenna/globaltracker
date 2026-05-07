@@ -861,6 +861,63 @@ Schema permanece extensível: `workspaces.config.integrations.google_ads.convers
 
 ---
 
+## ADR-031 — Meta CAPI: external_id em plano, IP/UA persistidos em events.userData, eligibility relax (Sprint 16)
+
+**Data:** 2026-05-07
+**Status:** Aceito (atualiza BR-PRIVACY-001)
+
+### Contexto
+EMQ (Event Match Quality) baixo de eventos anônimos no Meta Events Manager. Cenário operacional do GlobalTracker tem ad-blocker rate ~30% no Brasil, o que significa que PageView/ViewContent dispatched só por CAPI (sem Pixel browser pareando) ficam com `match_quality_score` baixo — Meta classifica como "good" só quando tem múltiplos sinais. Audiences de retargeting baseadas em PageView anônimo ficam incompletas porque `checkEligibility` skippava o evento com `skip_reason='no_user_data'` quando lead não tinha `em`/`ph`/`fbc`/`fbp` populados — mesmo que o cookie `__fvid` (visitor_id UUID v4) existisse desde a primeira visita.
+
+Investigação técnica revelou três alavancas para destravar:
+
+1. **`external_id` em plano**: `visitor_id` (UUID v4 random gerado pelo tracker, salvo no cookie `__fvid`) já existe em `events.visitor_id` desde Sprint 1 (ADR-007 — coluna reservada). Meta CAPI aceita `user_data.external_id` que ela hashea internamente; mandar plano permite debug direto no Events Manager (filtra por external_id) e cross-reference IP+UA → login Facebook do mesmo device (mecanismo de match interno do Meta).
+
+2. **IP/UA persistidos em `events.userData` JSONB**: BR-PRIVACY-001 original era restritiva — proibia IP/UA em qualquer payload persistido. Meta CAPI / Google Enhanced Conversions exigem `client_ip_address` + `client_user_agent` não-hasheados como sinais de match. Manter IP/UA só transient (in-memory durante request) impedia replay/dispatch tardio de eventos antigos.
+
+3. **`visitor_id` como 5º sinal de eligibility**: combinada com (1) e (2), `checkEligibility` pode passar PageView anônimo com `__fvid` populado — o evento ainda agrega valor para retargeting porque Meta consegue match via external_id+IP+UA.
+
+### Decisão
+**Três mudanças coordenadas** (Sprint 16 Onda 1):
+
+1. **Tracker permissivo com `__fvid`**: cookie `__fvid` é criado/lido salvo quando `consent.analytics='denied'` explicitamente. Default = `granted` (alinhado com `DEFAULT_CONSENT`). UUID v4 random não é PII e não exige consent estrito.
+
+2. **`external_id` em plano**: `events.visitor_id` (UUID v4) é enviado direto em `user_data.external_id` no payload Meta CAPI — não hasheado. Justificativa: UUID random é não-determinístico e não-reversível; mandar plano simplifica debug e permite Meta hashear com salt próprio.
+
+3. **IP/UA persistidos em `events.userData` JSONB** (não em `raw_events.headers_sanitized`): captura no `POST /v1/events` via `CF-Connecting-IP` + `User-Agent` headers, mescla em `payload.user_data.client_ip_address` / `.client_user_agent` antes do insert em `raw_events`. Atualiza BR-PRIVACY-001 — separação intencional: `events.userData` é payload consumível por dispatchers (incluindo IP/UA para EMQ); `raw_events.headers_sanitized` retém só metadata operacional do request (origin, cf_ray, content-type).
+
+4. **Eligibility relax**: `checkEligibility` em `apps/edge/src/dispatchers/meta-capi/eligibility.ts` aceita `visitor_id` como 5º sinal válido (junto com `em`, `ph`, `fbc`, `fbp`). PageView anônimo com `__fvid` agora é dispatched (antes skipado com `no_user_data`).
+
+### Alternativas consideradas
+- **Hashear `visitor_id` antes de enviar como `external_id`**: rejeitado — duplica trabalho (Meta hashea de novo), perde debugability, e UUID random não é PII (não há ganho de privacidade).
+- **Persistir IP/UA só em coluna dedicada `events.client_ip_enc` / `events.client_ua_enc` criptografada**: rejeitado — adiciona complexidade de schema, exige decrypt no dispatcher (overhead em path quente), e IP/UA são metadata de evento curto-vida que é descartada na erasure SAR junto com o resto.
+- **Manter IP/UA transient (in-memory)**: rejeitado — impede replay de eventos antigos via `dispatch_jobs`, e re-dispatch após erro Meta CAPI (5xx, timeout) precisa de IP/UA originais para idempotência de match.
+- **Não relaxar eligibility (manter exigência de em/ph/fbc/fbp)**: rejeitado — destrói valor de tracking de visitantes anônimos com ad-blocker, principal motivador da mudança.
+
+### Consequências
+- (+) Audiences de retargeting cobrem ~30% do tráfego ad-blocker que antes não chegava ao Meta via CAPI.
+- (+) EMQ médio sobe — Meta passa a ter IP+UA+external_id mesmo em PageView anônimo (3 sinais).
+- (+) Debug direto no Events Manager: filtra por `external_id` e correlaciona com `events.visitor_id` no DB.
+- (+) BR-PRIVACY-001 fica explícita sobre separação `raw_events × events` — antes era restritiva genérica.
+- (−) Volume de `dispatch_jobs` Meta CAPI aumenta (PageView anônimo agora dispatched). Em escala CNE/lançamentos pequenos é insignificante. Em workspace de alto volume (>1M PageView/dia) precisa monitorar EMQ médio + custo Workers + cota da Conversions API.
+- (−) IP/UA persistidos em `events.userData` aumentam volume de retenção de PII pessoal (LGPD considera IP como dado pessoal). Mitigação: BR-PRIVACY-005 atualizada — `eraseLead` zera `client_ip_address`/`client_user_agent` junto com email/phone na SAR. Retenção de `events` continua 13 meses (ADR-014).
+- (−) Operadores que tinham expectativa de "IP nunca é persistido" precisam ser comunicados via release note. Mitigação: documentado em BR-PRIVACY-001.
+
+### Reversão
+Trocar 1 linha em `apps/edge/src/dispatchers/meta-capi/eligibility.ts` (remover `visitor_id` do `hasIdentitySignal`) volta ao comportamento anterior de eligibility. Tracker e mapper permanecem (não causam dispatch isolado, só preparam dado). Para reverter persistência de IP/UA: remover merge em `apps/edge/src/routes/events.ts` e atualizar Zod `UserDataSchema` para rejeitar os campos.
+
+### Impacta
+- `apps/edge/src/dispatchers/meta-capi/mapper.ts` (`MetaUserData` + `DispatchableEvent` — popula `external_id` literal de `event.visitor_id`).
+- `apps/edge/src/dispatchers/meta-capi/eligibility.ts` (5º sinal: `visitor_id`).
+- `apps/edge/src/routes/events.ts` (captura `CF-Connecting-IP` + `User-Agent` e mescla em `payload.user_data`).
+- `apps/edge/src/routes/schemas/event-payload.ts` (`UserDataSchema` aceita `client_ip_address` + `client_user_agent`).
+- `apps/tracker/` (cookie `__fvid` permissivo).
+- `docs/50-business-rules/BR-PRIVACY.md` (BR-PRIVACY-001 reescrita; BR-PRIVACY-005 atualizada).
+- `docs/20-domain/05-mod-event.md` (§3 — campos permitidos em `events.userData`; INV-EVENT-004).
+- `docs/40-integrations/01-meta-capi.md` (tabela user_data + eligibility).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

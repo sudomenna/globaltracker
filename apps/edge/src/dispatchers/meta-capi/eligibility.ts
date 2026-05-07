@@ -28,6 +28,9 @@ export interface ConsentSnapshot {
 /** Minimal event shape required for eligibility checks. */
 export interface EligibilityEvent {
   consent_snapshot?: ConsentSnapshot | null;
+  /** Anonymous visitor ID (cookie __fvid, UUID v4). Counts as identity signal
+   *  via Meta external_id. */
+  visitor_id?: string | null;
   user_data?: {
     fbc?: string | null;
     fbp?: string | null;
@@ -107,12 +110,17 @@ export function checkEligibility(
 
   // Check 3: at least one identity signal is present.
   // BR-CONSENT-003: Meta requires em, ph, fbc, fbp, or external_id.
-  // BR-DISPATCH-004: skip_reason='no_user_data' when no signal available.
+  // external_id (visitor_id, cookie __fvid UUID v4) é anônimo e conta como
+  // sinal válido junto com em/ph/fbc/fbp — habilita PageView anônimo a
+  // ser dispatchado quando só há __fvid.
+  // BR-DISPATCH-004: skip_reason='no_user_data' só dispara quando NENHUM
+  // dos 5 sinais existe.
   const hasIdentitySignal =
     !!lead?.email_hash ||
     !!lead?.phone_hash ||
     !!event.user_data?.fbc ||
-    !!event.user_data?.fbp;
+    !!event.user_data?.fbp ||
+    !!event.visitor_id;
 
   if (!hasIdentitySignal) {
     return { eligible: false, reason: 'no_user_data' };
