@@ -172,16 +172,17 @@ Timeline visual end-to-end. Implementa C.1 ([70-ux/06-screen-lead-timeline.md](.
 
 ### `POST /v1/dispatch-jobs/:id/replay`
 
-Re-dispatch de job em `failed`/`dead_letter` ou replay em test mode. Implementa C.3 + E.3.
+Re-dispatch de job em `failed`/`dead_letter`/`succeeded`/`skipped` ou replay em test mode. Implementa C.3 + E.3.
 
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-dispatch-replay-v1` |
-| **Auth** | session OPERATOR/ADMIN |
+| **Auth (alvo Sprint 6)** | session OPERATOR/ADMIN via JWT decodificado por middleware → `c.set('workspace_id', ...)` |
+| **Auth (placeholder atual)** | `Authorization: Bearer <token>` não-vazio + header `X-Workspace-Id: <uuid>` (até Sprint 6 substituir por JWT decode real) |
 | **Body** | `{ test_mode?: boolean, justification: string }` |
-| **Side effects** | Cria novo `dispatch_jobs` com `replayed_from_dispatch_job_id`; emite `audit_log` action='replay_dispatch' com justification |
+| **Side effects** | Cria novo `dispatch_jobs` com `replayed_from_dispatch_job_id`; emite `audit_log` action='replay_dispatch' com justification em `requestContext` |
 | **Response 202** | `{ new_job_id, status: 'queued' }` |
-| **Errors** | `404 job_not_found`, `409 not_replayable` (job em pending/processing) |
+| **Errors** | `401 unauthorized` (Bearer ausente/inválido), `404 job_not_found`, `409 not_replayable` (job em `pending`/`processing`/`retrying`) |
 
 ### `POST /v1/leads/:public_id/decrypt-pii`
 

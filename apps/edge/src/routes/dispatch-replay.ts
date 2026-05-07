@@ -485,17 +485,3 @@ export function createDispatchReplayRoute(deps?: {
   return route;
 }
 
-// ---------------------------------------------------------------------------
-// Default export — convenience instance with no-op stubs.
-// Callers should prefer createDispatchReplayRoute(deps) to wire real DB.
-// ---------------------------------------------------------------------------
-
-/**
- * Default dispatchReplayRoute instance — DB calls use stub (no-op) behaviour.
- *
- * Wire real dependencies in index.ts via:
- * ```ts
- * app.route('/v1/dispatch-jobs', createDispatchReplayRoute({ getDispatchJob, createReplayJob, insertAuditEntry }));
- * ```
- */
-export const dispatchReplayRoute = createDispatchReplayRoute();
