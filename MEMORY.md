@@ -40,15 +40,9 @@
   4. **deterministic** — `mintDeterministicClientId(workspace_id, lead_id)` via SHA-256 → `GA1.1.<8d>.<10d>` [novo: garante 100% dos events com lead_id resolvem]
   - Skip `no_client_id_unresolvable` só quando lead_id ausente (caso raro).
   - 15 unit tests novos em `tests/unit/dispatchers/ga4-mp/client-id-resolver.test.ts` cobrindo determinismo, workspace/lead isolation, todos os 5 níveis.
-  - **Pendente backfill pós-deploy**: re-enfileirar 15 dispatch_jobs ga4_mp Purchase Guru com status=skipped/no_client_id. Vão succeeded com client_id determinístico **DEPOIS** que `DISPATCH-REPLAY-ENDPOINT-STANDALONE-MODE` for resolvido.
+  - **Backfill EXECUTADO 2026-05-07**: 15 dispatch_jobs ga4_mp filhos criados via `/tmp/pgquery/replay-ga4-purchase-skips-v2.mjs` (15/15 succeeded — cascata determinística resolveu client_id pra todos). 15 Purchase Guru históricos recuperam atribuição GA4. Aguarda agregação GA4 (~24h delay) pra aparecer nos reports.
 
-- **DISPATCH-REPLAY-ENDPOINT-STANDALONE-MODE — TODO Sprint 16 (descoberto 2026-05-07)**: endpoint `POST /v1/dispatch-jobs/:id/replay` retorna 202 com `new_job_id` mas **NÃO PERSISTE** no DB nem cria job filho. Causa: [`apps/edge/src/routes/dispatch-replay.ts:497`](apps/edge/src/routes/dispatch-replay.ts#L497) instancia `dispatchReplayRoute = createDispatchReplayRoute()` SEM as deps `createReplayJob` + `insertAuditEntry`. No código L387-L391 do mesmo arquivo, quando deps ausentes, cai em "standalone test mode" — gera UUID random e retorna sem INSERT. Bug existe desde Sprint 8 (ADR-025 / T-8-009), provavelmente nunca foi exercido em produção. Implicação: **dispatch-replay nunca funcionou em prod**.
-  - **Fix necessário**:
-    1. Em `apps/edge/src/index.ts` antes do mount em L459, criar funções `createReplayJob` (INSERT em dispatch_jobs com replayed_from_dispatch_job_id, status='pending') e `insertAuditEntry` (INSERT em audit_log com action='replay_dispatch') usando `db` Drizzle.
-    2. Trocar mount: `app.route('/v1/dispatch-jobs', createDispatchReplayRoute({ getDispatchJob, createReplayJob, insertAuditEntry }))`.
-    3. Confirmar shape esperado em [`dispatch-replay.ts:149`](apps/edge/src/routes/dispatch-replay.ts#L149).
-  - **Após fix**: rodar `/tmp/pgquery/replay-ga4-purchase-skips.mjs` (já criado, alvo 15 jobs identificados) → ADR-032 cascata determinística resolve `client_id` → 15 Purchases recuperam atribuição GA4.
-  - Estimativa: ~30min implementação + deploy.
+- **DISPATCH-REPLAY-ENDPOINT-STANDALONE-MODE — RESOLVIDO 2026-05-07** (commits `4dd703d` + `4eff5f9`). Endpoint `POST /v1/dispatch-jobs/:id/replay` rodava em standalone mode desde Sprint 8 — ninguém nunca exercitou o replay em prod. Fix: `buildDispatchReplayRoute(db)` factory em [`apps/edge/src/index.ts:476`](apps/edge/src/index.ts#L476) com 3 closures (getDispatchJob, createReplayJob, insertAuditEntry). Pegadinha encontrada: schema `audit_log` usa `before/after/requestContext` (não `metadata/requestId`) — mapeamento consistente com integrations-sendflow. Bug adicional `c.get('workspace_id')` vazio causando erro Postgres 22P02 (UUID cast) — fix L4eff5f9 aceita header `X-Workspace-Id` como fallback (placeholder até auth Sprint 6).
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07 — TODO Sprint 16**: as mudanças funcionais desta sessão não foram cobertas por unit tests. Adicionar:
   1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_buy_workshop`/`click_buy_main` → `InitiateCheckout`, `custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`).
@@ -149,8 +143,31 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 16 ABERTO — Onda 1 entregue + commitada (2026-05-07).
-               1º TODO Sprint 16 (META-CAPI-EXTERNAL-ID-AND-IP-UA) RESOLVIDO.
+Estado:        SPRINT 16 ABERTO — Ondas 1 e 2 entregues + commitadas (2026-05-07).
+               2 TODOs Sprint 16 RESOLVIDOS (META-CAPI-EXTERNAL-ID-AND-IP-UA,
+               GA4-NO-CLIENT-ID-LOOKUP-OQ-012) + 1 bug de fundo descoberto e
+               resolvido (DISPATCH-REPLAY-STANDALONE-MODE, vivia silencioso
+               desde Sprint 8).
+
+               ====================================================================
+               SPRINT 16 — Onda 2: GA4 client_id cascade + dispatch-replay fix
+               ====================================================================
+
+               ✅ Commits 4bde77f + 4dd703d + 4eff5f9, deploys edge sucessivos.
+               ✅ ADR-032 registrado, OQ-012 FECHADA.
+               ✅ Cascata 4 níveis em apps/edge/src/dispatchers/ga4-mp/
+                  client-id-resolver.ts (resolveClientIdExtended):
+                  self → sibling (filtro temporal) → cross_lead (phone→email)
+                  → deterministic (uuidv5(workspace_id, lead_id))
+               ✅ Endpoint /v1/dispatch-jobs/:id/replay agora persiste de verdade
+                  (8 sprints rodando em standalone test mode).
+               ✅ Backfill 15/15 Purchase Guru históricos succeeded — recuperam
+                  atribuição GA4 (delay agregação ~24h).
+               ✅ 263/263 dispatcher tests verde + 15 unit tests novos do resolver.
+
+               ====================================================================
+
+Estado anterior: SPRINT 16 Onda 1 entregue (2026-05-07).
 
                ====================================================================
                SPRINT 16 — Onda 1: Meta CAPI external_id + IP/UA (2026-05-07)
