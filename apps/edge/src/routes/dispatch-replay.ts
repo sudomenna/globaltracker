@@ -165,9 +165,13 @@ export function createDispatchReplayRoute(deps?: {
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
 
     // workspace_id injected by auth middleware (real JWT in Sprint 6).
-    // Fall back to a safe placeholder so the route is testable standalone.
+    // Until middleware exists, accept X-Workspace-Id header as fallback —
+    // alinhado com auth Bearer placeholder do mesmo handler. Vazio causaria
+    // erro de cast UUID em getDispatchJob (PostgreSQL 22P02).
     const workspaceId: string =
-      (c.get('workspace_id') as string | undefined) ?? '';
+      (c.get('workspace_id') as string | undefined) ??
+      c.req.header('X-Workspace-Id') ??
+      '';
 
     // -----------------------------------------------------------------------
     // 1. Validate request body (Zod .strict()) — done first per ADR-004
