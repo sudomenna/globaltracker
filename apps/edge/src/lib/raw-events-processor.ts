@@ -70,6 +70,9 @@ const UserDataSchema = z
     client_id_ga4: z.string().nullish(),
     session_id_ga4: z.string().nullish(),
     fvid: z.string().nullish(), // GlobalTracker visitor fingerprint
+    // T-16-001B / BR-PRIVACY-001 (revisada): IP/UA capturados em /v1/events para EMQ Meta CAPI / Google Enhanced.
+    client_ip_address: z.string().nullish(),
+    client_user_agent: z.string().nullish(),
   })
   .strict(); // BR-EVENT-005: reject unknown keys (including email, phone, name in clear)
 
