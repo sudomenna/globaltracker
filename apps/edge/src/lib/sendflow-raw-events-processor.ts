@@ -357,9 +357,20 @@ export async function processSendflowRawEvent(
 
   // -------------------------------------------------------------------------
   // Step 6: Create dispatch_jobs for enabled integrations
+  // Events that are internal analytics only — no value for ad platforms.
   // -------------------------------------------------------------------------
+  const SENDFLOW_INTERNAL_ONLY = new Set(['custom:wpp_left']);
+
   let dispatchJobsCreated = 0;
   const dispatchJobIds: Array<{ id: string; destination: string }> = [];
+
+  if (SENDFLOW_INTERNAL_ONLY.has(eventName)) {
+    await markRawEventProcessed(raw_event_id, db);
+    return {
+      ok: true,
+      value: { event_id: eventId, dispatch_jobs_created: 0, dispatch_job_ids: [] },
+    };
+  }
 
   try {
     const ws = await db.query.workspaces.findFirst({
