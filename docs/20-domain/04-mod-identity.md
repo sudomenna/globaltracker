@@ -115,6 +115,22 @@
 - **INV-IDENTITY-007 — Hash de email/phone usa normalização canônica antes do SHA-256.** Email: lowercase + trim. Phone: E.164. Testável: `hash('  Foo@Bar.COM ') === hash('foo@bar.com')`.
 - **INV-IDENTITY-008 — `leads.email_hash` e `leads.phone_hash` são populados (denormalizados) no momento da criação/atualização do lead por `resolveLeadByAliases()`.** Ao criar um novo lead (`createNewLead`), `emailHash` e `phoneHash` recebem os hashes dos aliases correspondentes. Ao atualizar um lead existente (`updateExistingLead`), as colunas são atualizadas quando novos aliases de email/phone são fornecidos. Essa denormalização permite que o dispatcher verifique elegibilidade (presença de `user_data`) sem join em `lead_aliases` a cada despacho.
 
+### Storage de `visitor_id`
+
+`visitor_id` é o UUID v4 anônimo do cookie `__fvid` (gerado pelo tracker). Storage segue padrão **coluna dedicada** — não JSONB.
+
+| Origem | Campo no payload | Destino no DB | Observação |
+|---|---|---|---|
+| `POST /v1/events` (tracker.js) | `visitor_id` (top-level — `EventPayloadSchema.visitor_id`) | `events.visitor_id` (coluna) | Caminho canônico. Extraído antes do insert por `raw-events-processor` (Step 6). |
+| `POST /v1/lead` (form submit) | — não enviado (`LeadPayloadSchema` não tem o campo) — | `events.visitor_id = NULL` | `lead_identify` é evento interno; nunca dispatcha pra plataformas externas. |
+| `POST /v1/webhooks/*` (Guru, SendFlow, Hotmart…) | — não enviado — | `events.visitor_id = NULL` | Webhooks são server-side; nunca tiveram cookie no request. |
+
+**Backfill retroativo `visitor_id → lead_id`** (INV-EVENT-007 — `raw-events-processor` Step 8): quando um lead é resolvido e o evento corrente tem `visitor_id`, eventos anteriores com mesmo `visitor_id` mas `lead_id IS NULL` recebem o `lead_id` retroativamente. Permite atribuir `PageView` anônimo ao lead que se identificou depois (mesma INV-TRACKER-003: `visitor_id` só aparece com `consent_analytics='granted'`).
+
+**Inspeção / debug — o que NÃO fazer:** olhar `events.user_data->>'external_id'` ou `events.user_data->>'fvid'`. Esses caminhos JSONB **não** carregam o visitor_id — o caminho canônico é a coluna `events.visitor_id`. Use `SELECT visitor_id FROM events WHERE …`. O `UserDataSchema` (`apps/edge/src/routes/schemas/event-payload.ts`) só aceita `_ga`, `_gcl_au`, `fbc`, `fbp`, `client_ip_address`, `client_user_agent` (mais geo computed pelo edge); qualquer outro campo é stripado por `INV-EVENT-004`.
+
+**Uso pelo Meta CAPI:** `apps/edge/src/dispatchers/meta-capi/mapper.ts` lê `event.visitor_id` (coluna) e atribui a `userData.external_id` no payload Meta — em **plano**, sem hash (ADR-031, Sprint 16). UUID v4 random não é PII reversível; Meta hashea internamente.
+
 ## 8. BRs relacionadas
 
 - `BR-IDENTITY-*` — todas em `50-business-rules/BR-IDENTITY.md`.

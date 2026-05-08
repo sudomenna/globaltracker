@@ -54,6 +54,15 @@ const ConsentSchema = z.object({
  * exigem esses valores não-hasheados para EMQ (Event Match Quality). O tracker
  * normalmente não tem acesso ao IP real, mas mantemos o schema permissivo para
  * idempotência e debug.
+ *
+ * IMPORTANTE — `visitor_id` NÃO entra aqui. O tracker envia `visitor_id` no
+ * TOP-LEVEL do payload (`EventPayloadSchema.visitor_id` abaixo) e o
+ * raw-events-processor extrai pra coluna dedicada `events.visitor_id`. Meta CAPI
+ * mapper (`apps/edge/src/dispatchers/meta-capi/mapper.ts`) lê `event.visitor_id`
+ * (coluna) e mapeia para `userData.external_id` em plano (ADR-031). Não procure
+ * por `external_id` ou `fvid` dentro de `user_data` — esses campos não existem
+ * aqui e seriam stripados por INV-EVENT-004 ("only canonical keys").
+ * Ver docs/20-domain/04-mod-identity.md §7 "Storage de visitor_id".
  */
 const UserDataSchema = z
   .object({

@@ -29,6 +29,18 @@ Dispatch out de eventos de tracking (PageView, Lead, Purchase, custom) para Meta
 | `events.custom_data.value/currency/order_id` | `custom_data.*` | Para Purchase e monetários |
 | `events.attribution.utm_*` | `custom_data.utm_*` | Opcional, contextual |
 
+### Origem do `external_id` (ponto de confusão recorrente)
+
+O valor de `user_data.external_id` enviado ao Meta vem da **coluna dedicada** `events.visitor_id` — **não** de `events.user_data->>'external_id'` nem de `events.user_data->>'fvid'`.
+
+Fluxo end-to-end:
+
+1. `tracker.js` envia `visitor_id` no **top-level** do payload `POST /v1/events` (campo `EventPayloadSchema.visitor_id`), nunca dentro de `user_data`.
+2. `raw-events-processor` (Step 6) extrai e persiste em `events.visitor_id` (jsonb-to-column).
+3. `apps/edge/src/dispatchers/meta-capi/mapper.ts` lê `event.visitor_id` e atribui a `userData.external_id` em plano (ADR-031). Meta hashea internamente.
+
+Quem inspecionar `events.user_data` no DB **não vai encontrar** o visitor_id ali — `UserDataSchema` só aceita `_ga`, `_gcl_au`, `fbc`, `fbp`, `client_ip_address`, `client_user_agent` (mais geo computed pelo edge); qualquer outro campo é stripado por INV-EVENT-004. Para auditar `external_id` use `SELECT visitor_id FROM events`. Detalhes de storage em [`docs/20-domain/04-mod-identity.md`](../20-domain/04-mod-identity.md) §7 ("Storage de `visitor_id`").
+
 ## Idempotência
 
 ```
