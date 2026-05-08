@@ -141,15 +141,49 @@
 | Sprint 11 | **completed** (2026-05-04, commit 165855c) | `docs/80-roadmap/11-sprint-11-funil-webhook-guru.md` |
 | Sprint 12 | **in progress** — Onda 3 parcial: passos 1-4 do E2E validados (2026-05-05) | `docs/80-roadmap/12-sprint-12-funil-paid-workshop-realinhamento.md` |
 | Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
-| Sprint 14 | **in progress** (NOVO em 2026-05-06 — Ondas 1-3 entregues; restam Ondas 4-7. Fanout Google Ads/GA4/Enhanced) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
+| Sprint 14 | **completed** (2026-05-08, commit f19b488 — Ondas 1-6 entregues; T-14-017 backfill adiado — ver §6 Tarefas futuras) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
 | Sprint 15 | **planned** (renumerado de Sprint 14 antigo em 2026-05-06 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md` |
 | Sprint 16 | **planned** (NOVO em 2026-05-06 — Custom Audiences Meta + Customer Match Google + UI DSL audience) | a criar |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 16 ABERTO — Ondas 1-6 entregues + commitadas (até 2026-05-08).
-               Sessão 2026-05-08:
+Estado:        SPRINT 14 ENCERRADO (2026-05-08, commit f19b488).
+               SPRINT 16 ABERTO — Ondas 1-6 entregues + commitadas (até 2026-05-08).
+
+               ====================================================================
+               SPRINT 14 — ENCERRAMENTO (2026-05-08)
+               ====================================================================
+
+               ✅ Ondas 1-6 completas. Backend fanout Google Ads/GA4/Enhanced
+                  100% implementado e testado.
+
+               Entregues:
+                 - T-14-001..003: Schema + config google_ads + helper credentials
+                 - T-14-004..007: OAuth backend (start/callback/token cache/conversion-actions)
+                 - T-14-008..010: Step 9 wiring google_ads_conversion + google_enhancement
+                 - T-14-011: /integrations/google-ads CP page (já estava implementado)
+                 - T-14-012: Health badge google_ads via oauth_token_state (commit f19b488)
+                 - T-14-013: GA4 mapper Purchase ecommerce fields (já estava implementado)
+                 - T-14-014: GA4 form no CP (já estava correto)
+                 - T-14-015: Unit tests Step 9 Google + google-ads-oauth (17/17 passando)
+                 - T-14-016: E2E script /tmp/pgquery/test-fanout-google.mjs
+
+               Pendência operacional (setup externo — não bloqueia código):
+                 ☐ Criar OAuth Client no Google Cloud Console
+                 ☐ Solicitar developer_token Google Ads (Basic access)
+                 ☐ wrangler secret put: GOOGLE_OAUTH_CLIENT_ID,
+                   GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_OAUTH_STATE_SECRET,
+                   GOOGLE_ADS_DEVELOPER_TOKEN
+                 ☐ Adicionar GOOGLE_OAUTH_REDIRECT_URI em wrangler.toml
+                 ☐ Deploy edge + conectar conta via OAuth + mapear conversion_actions
+
+               T-14-017 (backfill 90d Purchase → Google Ads): ADIADO.
+               Ver §6 para detalhes. Executar após OAuth conectado.
+
+               ====================================================================
+
+               Sessão 2026-05-08 (Sprint 16):
                  ✅ Onda 4: SendFlow pipeline fix (queue ingestion ponta a ponta)
                  ✅ Onda 5: Leads UX Fase 1 (3 colunas + multi-search + GMT-3)
                  ✅ Onda 6: Leads RBAC Fase 2 (JWT verify + masking + reveal)
@@ -652,7 +686,7 @@ DB Supabase:   migrations 0000–0037 aplicadas ✓
 DEV_WORKSPACE: 74860330-a528-4951-bf49-90f0b5c72521 (Outsiders Digital)
 Edge prod:     https://globaltracker-edge.globaltracker.workers.dev
                (deploy atual a9823565 — wrangler@2.20.0 + DATABASE_URL secret
-               como fallback do HYPERDRIVE; ver §6 nota crítica sobre wrangler)
+               como fallback do HYPERDRIVE; ver §6b nota crítica sobre wrangler)
 Meta CAPI:     67/68 dispatch_jobs históricos succeeded com em+ph+fn+ln verdes.
                Test code TEST22888 secret ainda no worker (pode remover).
                Pixel de CNE: 149334790553204 / capi_token em workspaces.config.
@@ -1077,7 +1111,29 @@ Detalhe completo em [`12-sprint-12-funil-paid-workshop-realinhamento.md`](docs/8
 - Webhook Guru já injeta `funnel_role` no payload (Sprint 11). Mapping product_id→launch+funnel_role já cadastrado pelo Tiago.
 - Custom events (`custom:foo`) existem desde Sprint 10 (template original tem `watched_class_1` etc).
 
-## §6 Ambiente operacional
+## §6 Tarefas futuras registradas
+
+### T-14-017 — Backfill Google Ads (90 dias de Purchase)
+
+**O que é**: script que cria retroativamente `dispatch_jobs` para `google_ads_conversion` +
+`google_enhancement` para Purchase events que ocorreram antes de o Google Ads ser conectado.
+
+**Pré-requisitos**:
+- OAuth Google Ads conectado no workspace (setup externo — ver §5 pendência operacional)
+- Conversion actions mapeados em `workspaces.config.integrations.google_ads.conversion_actions`
+
+**Como executar**: após os pré-requisitos, rodar `/tmp/pgquery/test-fanout-google.mjs` para
+validar que o pipeline está funcional, depois criar script de backfill análogo ao
+`replay-ga4-purchase-skips-v2.mjs` — buscar Purchase events dos últimos 90 dias sem
+`dispatch_jobs` para `google_ads_conversion` e inserir os jobs via DB.
+
+**Limite da API Google Ads**: conversions com mais de 90 dias são rejeitadas.
+
+**Estimativa**: ~30min quando pré-requisitos estiverem prontos.
+
+---
+
+## §6b Ambiente operacional
 
 | Item | Valor |
 |---|---|
@@ -1200,7 +1256,7 @@ Tiago decidiu **pausar Sprint 12** e validar o sistema como usuário real antes 
 > **Como retomar (cold start)**:
 > 1. `git log --oneline -10` — últimos commits desta sessão (Onda T-13-016): `b60cdd7` (UI CP) e `b053c27` (edge endpoints). Commits anteriores T-OPB: `a929197` `148eb53` `012d663` `9cec0b3`.
 > 2. `git status` — working tree limpo. `facebook_docs.md` é untracked (referência local, não commitar).
-> 3. **Deploy**: usar `cd apps/edge && CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN npx wrangler@2.20.0 publish` (NÃO `deploy`, NÃO wrangler 3.x/4.x — ver §6 nota crítica). Token deve estar em `~/.zshrc`.
+> 3. **Deploy**: usar `cd apps/edge && CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN npx wrangler@2.20.0 publish` (NÃO `deploy`, NÃO wrangler 3.x/4.x — ver §6b nota crítica). Token deve estar em `~/.zshrc`.
 > 4. Edge prod atual: `a3193c0e` (T-13-016 backend). URL: `https://globaltracker-edge.globaltracker.workers.dev`.
 > 5. `curl https://globaltracker-edge.globaltracker.workers.dev/health` — sanidade.
 > 6. DB connect: `cd /tmp/pgquery && node -e "...pg.Client..."` com `host:'db.kaxcmhfaqrxwnpftkslj.supabase.co', port:5432, user:'postgres', password:'whMCaulcmo0YsxO0Tqimdz//9SQ9Q438', database:'postgres', ssl:{rejectUnauthorized:false}`. Workspace `74860330-a528-4951-bf49-90f0b5c72521`.
