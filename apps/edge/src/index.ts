@@ -387,6 +387,7 @@ app.use('/v1/launches/*', cpCors);
 app.use('/v1/funnel-templates/*', cpCors);
 app.use('/v1/pages/*', cpCors);
 app.use('/v1/leads/*', cpCors);
+app.use('/v1/products/*', cpCors);
 app.use('/v1/integrations/*', cpCors);
 app.use('/v1/dispatch-jobs/*', cpCors);
 app.use('/v1/help/*', cpCors);
