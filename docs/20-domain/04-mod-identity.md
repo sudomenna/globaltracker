@@ -26,8 +26,11 @@
 
 ### Lead
 - `id`, `workspace_id`
-- `external_id_hash`, `email_hash`, `phone_hash`, `name_hash`
-- `email_enc`, `phone_enc`, `name_enc`
+- `external_id_hash`, `email_hash`, `phone_hash`, `name_hash` (workspace-scoped SHA-256)
+- `email_hash_external`, `phone_hash_external`, `fn_hash`, `ln_hash` (T-OPB: SHA-256 puro para Meta/Google)
+- `email_enc`, `phone_enc` (AES-256-GCM workspace-scoped)
+- `name` (text plaintext, ADR-034 — indexado em `idx_leads_name_lower (lower(name) text_pattern_ops)` para search ILIKE)
+- `name_enc` (DEPRECATED por ADR-034 — writers param de gravar; reads mantêm fallback por compat retroativa)
 - `pii_key_version` (smallint, default 1)
 - `status` (`active` / `merged` / `erased`)
 - `merged_into_lead_id` (FK, opcional — para registros pós-merge)

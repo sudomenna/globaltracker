@@ -159,6 +159,43 @@ Lista paginada de `dispatch_attempts` para drill-down. Implementa B.2 ([70-ux/05
 | **Query** | `cursor`, `limit` (max 100), `filter[status]`, `filter[event_name]`, `filter[lead_id]` |
 | **Response 200** | `{ attempts: [...], next_cursor }` — payload sanitizado conforme role |
 
+### `GET /v1/leads`
+
+Lista paginada de leads do workspace com search multi-campo. Implementa CONTRACT-api-leads-list-v1 (ADR-034).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-list-v1` |
+| **Auth** | JWT Supabase ES256 verificado via JWKS; role resolvido em `workspace_members` (autoritativo) ou fallback `app_metadata.role` |
+| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100) |
+| **Search detection** | `q` é UUID → match exato em `leads.id`; email → `hashPii(workspace, normalizedEmail)` match em `email_hash`; phone → `normalizePhone` + `hashPii` match em `phone_hash`; resto → `ILIKE %q%` em `lower(leads.name)` |
+| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, first_seen_at, last_seen_at }], next_cursor, role, pii_masked }` |
+| **Masking (ADR-034)** | `display_email` e `display_phone` mascarados quando `role` ∈ {`operator`, `viewer`}; em claro para `owner`/`admin`/`marketer`/`privacy`. `display_name` sempre em claro (deixou de ser PII protegido). |
+
+### `GET /v1/leads/:public_id`
+
+Sumário do lead (display_name + display_email + display_phone + status + datas).
+
+| Item | Especificação |
+|---|---|
+| **Auth** | mesmo pattern de `GET /v1/leads` |
+| **Response 200** | `{ lead_public_id, display_name, display_email, display_phone, status, first_seen_at, last_seen_at, role, pii_masked }` |
+| **Masking** | mesma matriz de `GET /v1/leads` |
+| **Errors** | `401 unauthorized`, `404 lead_not_found` |
+
+### `POST /v1/leads/:public_id/reveal-pii`
+
+Reveal-on-demand de email/phone para `operator` (ADR-034). Owner/admin/marketer/privacy podem chamar mas é redundante (já veem em claro). Viewer → 403.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-reveal-pii-v1` |
+| **Auth** | JWT verificado; role ≠ `viewer` |
+| **Body** | `{ reason: string }` (3-500 chars) |
+| **Side effects** | `audit_log` row com `action='read_pii_decrypted'`, `actor_id`, `entity_type='lead'`, `entity_id=public_id`, `after={ role, fields_accessed:['email','phone'], reason, request_id }` |
+| **Response 200** | `{ lead_public_id, display_email, display_phone }` (sempre em claro) |
+| **Errors** | `400 invalid_body` (reason curto demais), `403 forbidden_role` (viewer; também grava `audit_log action='read_pii_decrypted_denied'`), `404 not_found`, `503 unavailable` |
+
 ### `GET /v1/leads/:public_id/timeline`
 
 Timeline visual end-to-end. Implementa C.1 ([70-ux/06-screen-lead-timeline.md](../70-ux/06-screen-lead-timeline.md)).
@@ -187,7 +224,9 @@ Re-dispatch de job em `failed`/`dead_letter`/`succeeded`/`skipped` ou replay em 
 
 ### `POST /v1/leads/:public_id/decrypt-pii`
 
-PRIVACY-only. Decrypt PII com audit. Implementa requisito de [70-ux/06-screen-lead-timeline.md §3](../70-ux/06-screen-lead-timeline.md).
+> **Status (ADR-034):** parcialmente substituído por `POST /v1/leads/:public_id/reveal-pii` (reveal-on-demand para operator/admin/marketer com audit). O endpoint `decrypt-pii` original (PRIVACY-only com seleção granular de fields) permanece como spec futura — o uso prático hoje é coberto pelo `reveal-pii`. Implementação ainda pendente.
+
+PRIVACY-only com seleção fina de fields. Implementa requisito de [70-ux/06-screen-lead-timeline.md §3](../70-ux/06-screen-lead-timeline.md).
 
 | Item | Especificação |
 |---|---|

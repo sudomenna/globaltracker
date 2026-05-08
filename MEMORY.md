@@ -68,7 +68,10 @@
 
 - **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE (descoberto 2026-05-07)**: tela de "Configuração de eventos" da page no Control Plane (`apps/control-plane/src/app/(app)/launches/[launch_public_id]/pages/[page_public_id]/page.tsx` + componente client) só tem checkboxes de eventos canônicos + custom events, **não expõe o toggle `auto_page_view`** que vive em `pages.event_config.auto_page_view`. Lacuna: para ligar/desligar `auto_page_view` é necessário SQL direto. Sprint futura deve adicionar o toggle no formulário. Status: blueprint do template `lancamento_pago_workshop_com_main_offer` agora carrega `auto_page_view` por page (migration `0039_funnel_template_paid_workshop_v3_auto_page_view.sql`, aplicada 2026-05-07) — pages criadas via template já vêm com a flag populada. Pendente apenas: UI do CP para edição manual.
 
-- **SENDFLOW-EVENTS-NEVER-PROCESSED (descoberto 2026-05-07)**: handler em [`apps/edge/src/routes/webhooks/sendflow.ts:483`](apps/edge/src/routes/webhooks/sendflow.ts#L483) enfileira mensagem com shape `{ platform: 'sendflow', event_id, sendflow_event, campaign_id, resolved_event_name }` — **sem `raw_event_id`**. O consumer em [`apps/edge/src/index.ts:491`](apps/edge/src/index.ts#L491) só processa mensagens com `raw_event_id`, então cai no branch `dispatch_job_id` e falha. Resultado: 5+ raw_events com `processing_status='pending'` desde 2026-05-06 e nenhum `custom:wpp_joined` jamais emitido para Meta CAPI / GA4 / Google Ads.
+- **SENDFLOW-EVENTS-NEVER-PROCESSED — RESOLVIDO 2026-05-08** (commits 052d3b3 + 33549b9 + f0d86dc, deploy edge a64d6825). Ver §5 Sprint 16 Onda 4 acima. Pipeline E2E funcional: handler grava raw_event_id na queue → consumer roteia platform==='sendflow' → processor cria event + lead_stages + dispatch_jobs (Meta CAPI + GA4 MP). 28 events históricos backfillados; 26 dispatch_jobs GA4 replayed com event_name correto (join_group). Mappers Meta/GA4 ganharam custom:wpp_joined + custom:wpp_joined_vip_main → Contact/join_group. custom:wpp_left fica em SENDFLOW_INTERNAL_ONLY blocklist (analítico interno apenas). Migration 0040 adicionou 'webhook:sendflow' ao chk_events_event_source.
+
+  ESTADO ANTIGO (descrição original do bug, preservada para histórico):
+  ~~handler em apps/edge/src/routes/webhooks/sendflow.ts:483 enfileira mensagem com shape `{ platform: 'sendflow', event_id, sendflow_event, campaign_id, resolved_event_name }` — **sem `raw_event_id`**.~~ O consumer em [`apps/edge/src/index.ts:491`](apps/edge/src/index.ts#L491) só processa mensagens com `raw_event_id`, então cai no branch `dispatch_job_id` e falha. Resultado: 5+ raw_events com `processing_status='pending'` desde 2026-05-06 e nenhum `custom:wpp_joined` jamais emitido para Meta CAPI / GA4 / Google Ads.
   - **Fix necessário** (não feito agora — usuário priorizou continuar testando o que funciona):
     1. Criar `apps/edge/src/lib/sendflow-raw-events-processor.ts` (espelho do `guru-raw-events-processor.ts`): lê raw_event, transforma payload SendFlow → schema events table, **inclui `campaign_id` em `events.custom_data.group_id`** (ou keep como `campaign_id` — GA4 mapper já lê os dois), resolve lead, cria dispatch_jobs.
     2. Atualizar handler do webhook ([`sendflow.ts:483`](apps/edge/src/routes/webhooks/sendflow.ts#L483)) para incluir `raw_event_id` na mensagem da queue.
@@ -145,11 +148,186 @@
 ## §5 Ponto atual de desenvolvimento
 
 ```
-Estado:        SPRINT 16 ABERTO — Ondas 1, 2 e 3 entregues + commitadas (2026-05-07).
-               3 TODOs Sprint 16 RESOLVIDOS (META-CAPI-EXTERNAL-ID-AND-IP-UA,
-               GA4-NO-CLIENT-ID-LOOKUP-OQ-012, GEO-ENRICHMENT-CF-GURU) + 1 bug de
-               fundo descoberto e resolvido (DISPATCH-REPLAY-STANDALONE-MODE, vivia
-               silencioso desde Sprint 8).
+Estado:        SPRINT 16 ABERTO — Ondas 1-6 entregues + commitadas (até 2026-05-08).
+               Sessão 2026-05-08:
+                 ✅ Onda 4: SendFlow pipeline fix (queue ingestion ponta a ponta)
+                 ✅ Onda 5: Leads UX Fase 1 (3 colunas + multi-search + GMT-3)
+                 ✅ Onda 6: Leads RBAC Fase 2 (JWT verify + masking + reveal)
+
+               TODOs Sprint 16 acumulados resolvidos:
+                 - META-CAPI-EXTERNAL-ID-AND-IP-UA (Onda 1)
+                 - GA4-NO-CLIENT-ID-LOOKUP-OQ-012 (Onda 2)
+                 - GEO-ENRICHMENT-CF-GURU (Onda 3)
+                 - DISPATCH-REPLAY-STANDALONE-MODE (Onda 2)
+                 - SENDFLOW-EVENTS-NEVER-PROCESSED (Onda 4)
+                 - LEADS-UX-COLUMNS-AND-SEARCH (Onda 5)
+                 - RBAC-LEADS-PII-MASKING (Onda 6)
+
+               ====================================================================
+               SPRINT 16 — Onda 6: Leads RBAC Fase 2 (2026-05-08, commit c183411)
+               ====================================================================
+
+               ✅ ADR-034 Fase 2 implementada. JWT verify real + masking por role.
+                  Deploy edge 9224056b.
+
+               Implementação:
+                  • jose lib instalada em apps/edge.
+                  • middleware/auth-supabase-jwt.ts: createRemoteJWKSet com
+                    cache por isolate (Supabase ES256 via JWKS público em
+                    /auth/v1/.well-known/jwks.json — sem secret a gerenciar).
+                    Lookup workspace_members é autoritativo (mudanças de role
+                    refletem imediato sem refresh de JWT). app_metadata.role
+                    é fallback. Dev fallback: sem Bearer + DEV_WORKSPACE_ID
+                    → owner (mantém scripts).
+                  • lib/rbac.ts: WorkspaceRole + canSeePiiPlainByDefault +
+                    canRevealPii.
+                  • lib/pii-mask.ts: maskEmail (a***@dom) + maskPhone
+                    (+55 DD 9****-XXXX).
+                  • routes/leads-timeline.ts: middleware aplicado em todas
+                    rotas. GET / e GET /:id mascaram conforme role e
+                    retornam role + pii_masked no payload. POST
+                    /:public_id/reveal-pii (operator+) valida reason ≥3
+                    chars, grava audit_log read_pii_decrypted, retorna
+                    PII em claro. Viewer → 403 + audit denied.
+                  • wrangler.toml: SUPABASE_URL var =
+                    https://kaxcmhfaqrxwnpftkslj.supabase.co.
+                  • CP /leads/[id]/page.tsx: header mostra email + WhatsApp
+                    (mascarados ou plain conforme response).
+                    Quando pii_masked=true e role!==viewer renderiza
+                    <RevealPiiButton/>.
+                  • CP reveal-pii-button.tsx: client component com modal
+                    pede reason, POST /v1/leads/:id/reveal-pii, exibe
+                    valores revelados inline com banner amber.
+
+               Smoke E2E (Playwright):
+                  • role=owner → lista em claro ✓
+                  • role=operator → lista mascarada
+                    (g***@gmail.com, +55 55 9****-2234) ✓
+                  • Revelar PII → modal → reason → confirm → reveal inline
+                    + audit_log row criada (verificada via SQL: action=
+                    read_pii_decrypted, fields=[email,phone],
+                    reason="Suporte ao cliente — ticket #98765 (smoke
+                    test ADR-034)", role=operator, request_id) ✓
+
+               Limitações conhecidas:
+                  • Outras rotas /v1/* (config, integrations, launches,
+                    pages, audiences, workspace) ainda usam o padrão
+                    antigo de "Bearer não-vazio + DEV_WORKSPACE_ID
+                    fallback". Migração para o middleware novo é
+                    incremental (T-RBAC-FOLLOWUP).
+                  • maskDisplayName em leads/[id]/page.tsx ainda mascara
+                    name para 'marketer' — stale per ADR-034 (name
+                    deixou de ser PII protegido). Limpar em sprint
+                    próxima.
+                  • Mudança de role no DB requer reload do CP para nova
+                    sessão (JWT verifier no Edge usa workspace_members
+                    como fonte canônica, mas o CP renderiza inicialmente
+                    via app_metadata do JWT cacheado).
+
+               ====================================================================
+               SPRINT 16 — Onda 5: Leads UX Fase 1 (2026-05-08, commit b143a0c)
+               ====================================================================
+
+               ✅ ADR-034 Fase 1: BR-IDENTITY-006 ampliada (admin/marketer
+                  agora veem PII em claro; name deixa de ser cifrado e vira
+                  plaintext indexado em leads.name).
+
+               Backend:
+                  • Migration 0041 aplicada: ALTER TABLE leads ADD COLUMN
+                    name text + idx_leads_name_lower (lower(name)
+                    text_pattern_ops, partial WHERE NOT NULL).
+                  • Backfill: 63 leads CNE com leads.name populado via
+                    GET /v1/leads/:id (decrypt no edge deployado, UPDATE
+                    direto no DB — chave PII em produção difere da
+                    .env.local local).
+                  • lib/leads-queries.ts listLeads: detecta tipo de q
+                    (UUID/email-regex/phone-regex/name) e roteia para
+                    match exato em leads.id, hashPii match em
+                    email_hash/phone_hash, ou ILIKE em leads.name.
+                    Retorna display_name + display_email + display_phone
+                    (decrypts dos _enc para email/phone).
+                  • getLeadSummary idem.
+                  • lib/pii-enrich.ts: writers agora gravam leads.name
+                    plaintext (incondicional — sempre reflete último
+                    nome conhecido). nameEnc continua escrito (deprecated)
+                    para compat retroativa.
+                  • Drizzle schema lead.ts: coluna `name` adicionada;
+                    nameEnc marcado deprecated.
+
+               Frontend:
+                  • /leads: 3 colunas (Nome + Mail icon + email + Phone
+                    icon + telefone formatado +55 DD 9XXXX-YYYY) + data
+                    em America/Sao_Paulo (GMT-3) com hora.
+                  • Placeholder do search: "Buscar por nome, email,
+                    telefone ou ID…".
+                  • LeadItem ganha display_email + display_phone.
+
+               Smoke E2E (Playwright):
+                  • Lista renderiza 3 colunas com PII formatado ✓
+                  • Search por nome (graziele) → ILIKE filtra ✓
+                  • Search por email (vicpaixao@yahoo.com.br) → hash match ✓
+                  • Search por telefone (+5519996225210) → hash match ✓
+
+               ====================================================================
+               SPRINT 16 — Onda 4: SendFlow pipeline fix (2026-05-08,
+                                  commits 052d3b3 + 33549b9 + f0d86dc)
+               ====================================================================
+
+               ✅ Fechado bug SENDFLOW-EVENTS-NEVER-PROCESSED (vivia desde T-13-011).
+
+               Causa raiz: handler em routes/webhooks/sendflow.ts inseria
+               raw_event sem .returning({id}) e enfileirava mensagem sem
+               raw_event_id. Consumer caía no branch dispatch_job e
+               explodia com 22P02 UUID cast. 28+ events stuck em pending
+               desde Sprint 13.
+
+               Implementação:
+                  • sendflow.ts: insert ganha .returning({id}) e captura
+                    rawEventId; queue message inclui raw_event_id (mesmo
+                    padrão do guru.ts).
+                  • lib/sendflow-raw-events-processor.ts (novo): espelho
+                    do guru-raw-events-processor adaptado para shape
+                    SendFlow. Usa lead_id/launch_id já resolvidos pelo
+                    handler (evita re-resolução). custom_data.group_id =
+                    campaignId (GA4 mapper lê pra params.group_id em
+                    join_group). Dispatch fanout: meta_capi + ga4_mp +
+                    google_ads (custom:* skipam Google Ads per ADR-030).
+                    SENDFLOW_INTERNAL_ONLY blocklist (custom:wpp_left)
+                    bloqueia dispatch — evento persiste em events para
+                    análise interna mas não vai pra plataforma.
+                  • index.ts: import + branch platform==='sendflow' no
+                    consumer queue.
+                  • Migration 0040: chk_events_event_source aceita
+                    'webhook:sendflow'.
+
+               Bug correlacionado: campaign_map em workspaces.config tinha
+               event_name="Contact" (Meta name) em vez de
+               "custom:wpp_joined" (interno) para a campanha de
+               compradores. Mappers Meta CAPI e GA4 também faltavam
+               custom:wpp_joined / custom:wpp_joined_vip_main.
+
+                  • mappers atualizados (Meta CAPI: → Contact;
+                    GA4: → join_group).
+                  • PATCH no campaign_map via SQL (event_name de Contact
+                    → custom:wpp_joined).
+                  • Backfill 26 events events.event_name=Contact de
+                    webhook:sendflow → custom:wpp_joined.
+                  • 26 dispatch_jobs ga4_mp existentes (já enviaram
+                    generate_lead errado) replayed via
+                    /v1/dispatch-jobs/:id/replay — agora chegam como
+                    join_group correto no GA4 (delay agregação ~24h).
+
+               Backfill manual: 56 raw_events SendFlow históricos
+               (28 originais + 28 re-deliveries) re-enfileirados via
+               /tmp/pgquery/reprocess-sendflow-pending.mjs. 28 events
+               únicos criados (26 Contact→custom:wpp_joined + 1
+               wpp_joined_vip_main + 1 wpp_left). Duplicatas restantes
+               foram dedupadas pelo processor.
+
+               Deploy edge final: a64d6825.
+
+               ====================================================================
+
 
                ====================================================================
                SPRINT 16 — Onda 3: Geo enrichment Cloudflare + Guru (2026-05-07)

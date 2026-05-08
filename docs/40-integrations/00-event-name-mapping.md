@@ -63,6 +63,7 @@ e o snippet browser dispara `fbq` com o mesmo nome standard.
 | `custom:click_wpp_join` | `Contact` | `join_group` | Click no link "entrar no grupo WhatsApp" | `clicked_wpp_join` |
 | `custom:wpp_joined` | `Contact` | `join_group` | Webhook SendFlow `members.added` (compradores) | `wpp_joined` |
 | `custom:wpp_joined_vip_main` | `Contact` | `join_group` | Webhook SendFlow `members.added` (grupo VIP) | `wpp_joined_vip_main` |
+| `custom:wpp_left` | *(blocklist — analítico interno)* | *(blocklist)* | Webhook SendFlow `members.removed` | *(sem stage)* |
 | `custom:watched_workshop` | `ViewContent` | `view_item` | Click "já assisti" na aula gravada | `watched_workshop` |
 | `custom:survey_responded` | *(sem mapeamento)* | *(sem mapeamento)* | Submit do formulário de pesquisa pós-workshop | `survey_responded` |
 
@@ -121,6 +122,23 @@ do workspace exige esse nível de granularidade.
 | Aspecto | Meta `CompleteRegistration` | GA4 `sign_up` |
 |---|---|---|
 | Parâmetro-chave | `status` (bool), `currency`, `value` | `method` (string: 'email', 'google', etc.) |
+
+---
+
+## Eventos internos blocklist (não fanout)
+
+Alguns eventos têm valor analítico interno mas não devem fanoutar para
+plataformas de mídia (sem valor de otimização de campanha):
+
+| Evento | Onde está blocklisted | Origem |
+|---|---|---|
+| `lead_identify` | `INTERNAL_ONLY_EVENT_NAMES` em `raw-events-processor.ts` | Tracker (rebind de identidade) |
+| `event_duplicate_accepted` | `INTERNAL_ONLY_EVENT_NAMES` em `raw-events-processor.ts` | Tracker (dedup signal) |
+| `custom:wpp_left` | `SENDFLOW_INTERNAL_ONLY` em `sendflow-raw-events-processor.ts` | Webhook SendFlow `members.removed` |
+
+Eventos blocklisted **são persistidos em `events`** (para análise interna
+e timeline do lead) mas **não geram dispatch_jobs** para Meta CAPI / GA4 /
+Google Ads.
 
 ---
 
