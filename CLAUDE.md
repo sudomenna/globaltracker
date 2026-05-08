@@ -53,6 +53,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | Engagement | [`docs/20-domain/11-mod-engagement.md`](docs/20-domain/11-mod-engagement.md) |
 | Audit | [`docs/20-domain/12-mod-audit.md`](docs/20-domain/12-mod-audit.md) |
 | Tracker | [`docs/20-domain/13-mod-tracker.md`](docs/20-domain/13-mod-tracker.md) |
+| Product | [`docs/20-domain/14-mod-product.md`](docs/20-domain/14-mod-product.md) |
 
 ### 30 — Contracts (mudança serial)
 | Arquivo | Conteúdo |
@@ -97,6 +98,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | Privacy | [`docs/50-business-rules/BR-PRIVACY.md`](docs/50-business-rules/BR-PRIVACY.md) |
 | RBAC | [`docs/50-business-rules/BR-RBAC.md`](docs/50-business-rules/BR-RBAC.md) |
 | Webhook | [`docs/50-business-rules/BR-WEBHOOK.md`](docs/50-business-rules/BR-WEBHOOK.md) |
+| Product | [`docs/50-business-rules/BR-PRODUCT.md`](docs/50-business-rules/BR-PRODUCT.md) |
 
 ### 60 — Flows (E2E)
 | Arquivo | Conteúdo |

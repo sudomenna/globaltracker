@@ -167,9 +167,9 @@ Lista paginada de leads do workspace com search multi-campo. Implementa CONTRACT
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-list-v1` |
 | **Auth** | JWT Supabase ES256 verificado via JWKS; role resolvido em `workspace_members` (autoritativo) ou fallback `app_metadata.role` |
-| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100) |
+| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `lifecycle?` (`contato`\|`lead`\|`cliente`\|`aluno`\|`mentorado` — Sprint 16), `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100) |
 | **Search detection** | `q` é UUID → match exato em `leads.id`; email → `hashPii(workspace, normalizedEmail)` match em `email_hash`; phone → `normalizePhone` + `hashPii` match em `phone_hash`; resto → `ILIKE %q%` em `lower(leads.name)` |
-| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, first_seen_at, last_seen_at }], next_cursor, role, pii_masked }` |
+| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, lifecycle_status, first_seen_at, last_seen_at }], next_cursor, role, pii_masked }` — `lifecycle_status` ∈ `LifecycleStatus` (Sprint 16) |
 | **Masking (ADR-034)** | `display_email` e `display_phone` mascarados quando `role` ∈ {`operator`, `viewer`}; em claro para `owner`/`admin`/`marketer`/`privacy`. `display_name` sempre em claro (deixou de ser PII protegido). |
 
 ### `GET /v1/leads/:public_id`
@@ -487,6 +487,84 @@ Cadastra ou atualiza o `sendflow_sendtok` em `workspace_integrations` via upsert
   "request_id": "..."
 }
 ```
+
+### `GET /v1/products` (Sprint 16)
+
+Lista paginada do catálogo de produtos do workspace. Implementa MOD-PRODUCT.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-products-list-v1` |
+| **Auth** | `Authorization: Bearer <JWT Supabase>`; role ≥ `viewer` para listar |
+| **Query** | `status?` (`active`\|`archived`; default `active`), `q?` (busca em `name` ILIKE), `category?` (valor canônico de `ProductCategory` ou `uncategorized` para filtrar `category IS NULL`), `cursor?` (ISO `created_at`), `limit?` (default 50, max 200) |
+| **Response 200** | `{ items: [{ id, name, category, external_provider, external_product_id, status, created_at, purchase_count, affected_leads }], next_cursor }` — `purchase_count` e `affected_leads` calculados via correlated subquery em `events.custom_data->>'product_db_id'` |
+| **CORS** | `cpCors` aplicado em `/v1/products/*` (Sprint 16) |
+| **Errors** | `400 invalid_query`, `401 unauthorized`, `503 service_unavailable` |
+
+### `POST /v1/products` (Sprint 16)
+
+Cria produto manualmente (operador cadastra antes do primeiro Purchase webhook chegar).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-products-create-v1` |
+| **Auth** | role `owner` ou `admin` (BR-RBAC-001) |
+| **Body** | `{ name: string (1–200), external_provider: ProductExternalProvider, external_product_id: string (1–200), category?: ProductCategory \| null, status?: 'active' \| 'archived' }` (Zod `.strict`) |
+| **Side effects** | INSERT em `products`; `audit_log` action=`product_created` |
+| **Response 201** | `{ product: { id, name, category, external_provider, external_product_id, status, created_at } }` |
+| **Errors** | `400 validation_error`, `401`, `403 forbidden_role`, `409 conflict` (UNIQUE `(workspace_id, external_provider, external_product_id)` violado), `503` |
+
+### `PATCH /v1/products/:id` (Sprint 16)
+
+Atualiza atributos editáveis de um produto. Quando `category` muda, dispara backfill de `lifecycle_status` para todos os leads com Purchase event vinculado (BR-PRODUCT-003).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-products-patch-v1` |
+| **Auth** | role `owner` ou `admin` |
+| **Body** | `{ name?, category? (incluindo `null` para descategorizar), external_provider?, external_product_id?, status? }` (Zod `.strict` + refine at-least-one) |
+| **Side effects** | UPDATE em `products`. Se `category` mudou: `promoteLeadLifecycle` re-executado para cada lead afetado. `audit_log` action=`product_updated` (e `product_category_updated` quando `category` mudou). |
+| **Response 200** | `{ product: {...}, leads_recalculated?: number }` — `leads_recalculated` presente apenas quando `category` mudou |
+| **Errors** | `400 validation_error`, `401`, `403`, `404 not_found`, `409 conflict` (UNIQUE viola), `503` |
+
+### `GET /v1/launches/:launch_public_id/products` (Sprint 16)
+
+Lista produtos associados a um launch com seus respectivos `launch_role`. Implementa relação `launch_products` (ADR-037).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launch-products-list-v1` |
+| **Auth** | role ≥ `viewer` |
+| **Workspace isolation** | Resolve `launch_id` via `(workspace_id, public_id)` antes de qualquer JOIN |
+| **Response 200** | `{ items: [{ product_id, launch_role, name, category, external_provider, external_product_id }] }` (JOIN com `products`) |
+| **CORS** | `cpCors` aplicado em `/v1/launches/*` (Sprint 16) |
+| **Errors** | `401`, `404 launch_not_found`, `503` |
+
+### `PUT /v1/launches/:launch_public_id/products/:product_id` (Sprint 16)
+
+Upsert da associação `launch_products` com `launch_role` tipado (substitui o legacy `funnel_role` free-string em `workspaces.config.integrations.guru.product_launch_map`).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launch-products-upsert-v1` |
+| **Auth** | role `owner` ou `admin` |
+| **Body** | `{ launch_role: LaunchProductRole }` (`main_offer` \| `main_order_bump` \| `bait_offer` \| `bait_order_bump`) |
+| **Side effects** | INSERT … ON CONFLICT (`launch_id`, `product_id`) DO UPDATE SET `launch_role`. UNIQUE garante 1 produto por launch. `audit_log` action=`launch_product_set`. |
+| **Response 200** | `{ launch_product: { launch_id, product_id, launch_role } }` |
+| **Errors** | `400 validation_error`, `401`, `403`, `404 launch_not_found` ou `404 product_not_found`, `503` |
+
+### `DELETE /v1/launches/:launch_public_id/products/:product_id` (Sprint 16)
+
+Remove associação `launch_products` (não apaga `products`).
+
+| Item | Especificação |
+|---|---|
+| **Auth** | role `owner` ou `admin` |
+| **Side effects** | DELETE em `launch_products`; `audit_log` action=`launch_product_unset` |
+| **Response 204** | (vazio) |
+| **Errors** | `401`, `403`, `404`, `503` |
+
+> **Nota Hono — ordem de mount (Sprint 16):** `/v1/launches/:launch_public_id/products/*` é montado em `apps/edge/src/index.ts` **antes** de `launchesRoute`. Caso contrário o middleware do `launchesRoute` (auth Bearer-only) intercepta e quebra o JWT pattern. Ver commit `0fb5ca6`.
 
 ### `DELETE /v1/admin/leads/:lead_id`
 

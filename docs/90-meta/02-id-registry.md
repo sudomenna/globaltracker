@@ -54,6 +54,7 @@ Definidos em `20-domain/` (Fase 3 da geração de docs).
 | MOD-ENGAGEMENT | Survey, ICP, webinar | Supporting | planned |
 | MOD-AUDIT | audit_log (cross-cutting) | Supporting | planned |
 | MOD-TRACKER | tracker.js (front-end) | Core | planned |
+| MOD-PRODUCT | Catálogo de produtos + lifecycle promote + launch_products | Supporting | active (Sprint 16) |
 
 ## BR-* (Business Rules)
 
@@ -72,6 +73,7 @@ Definidas em `50-business-rules/` (Fase 5).
 | BR-WEBHOOK | ~4 | planned |
 | BR-RBAC | ~5 | planned |
 | BR-AUDIT | ~3 | planned |
+| BR-PRODUCT | 3 | active (Sprint 16) |
 
 ## CONTRACT-*
 
@@ -89,6 +91,11 @@ Definidos em `30-contracts/` (Fase 4).
 | CONTRACT-event-lead-v1 | Tracker event schema | planned |
 | CONTRACT-event-purchase-v1 | Tracker event schema | planned |
 | CONTRACT-lead-token-v1 | HMAC token format | planned |
+| CONTRACT-api-products-list-v1 | API endpoint (Sprint 16) | active |
+| CONTRACT-api-products-create-v1 | API endpoint (Sprint 16) | active |
+| CONTRACT-api-products-patch-v1 | API endpoint (Sprint 16) | active |
+| CONTRACT-api-launch-products-list-v1 | API endpoint (Sprint 16) | active |
+| CONTRACT-api-launch-products-upsert-v1 | API endpoint (Sprint 16) | active |
 
 ## TE-* (Timeline events / domain events)
 
@@ -161,6 +168,10 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-031 | IP/UA + `external_id` (visitor_id) persistidos em `events.user_data` para EMQ Meta CAPI; separação intencional vs `raw_events.headers_sanitized` | aceito |
 | ADR-032 | GA4 client_id cascade 4 níveis (self → sibling → cross_lead → deterministic) garante 100% Purchase com lead_id resolvem | aceito |
 | ADR-033 | Geo enrichment: Cloudflare `request.cf` (browser) + Guru `contact.address` (Purchase) → `events.userData.geo_*` → Meta CAPI hash + Google Enhanced plain text | aceito |
+| ADR-034 | Roles privilegiadas para PII em claro: ampliação para admin/marketer + reveal-on-demand para operator (Sprint 16) | aceito |
+| ADR-035 | `lifecycle_status` armazenado em `leads` (vs derivado em query) — Sprint 16 | aceito |
+| ADR-036 | Categorias de produto hardcoded no MVP, com `lifecycleForCategory(workspaceId, category)` pronto para futura tabela `lifecycle_rules` (FUTURE-001) — Sprint 16 | aceito |
+| ADR-037 | `launch_products` (relação tipada) substitui `workspaces.config.integrations.guru.product_launch_map`; `guru-launch-resolver` Strategy 0 + Strategy 1 fallback durante migração — Sprint 16 | aceito |
 
 ## OQ-*
 

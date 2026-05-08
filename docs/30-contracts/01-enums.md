@@ -40,6 +40,11 @@
 | `WatchMarker` | mesmo | `webinar_attendance.max_watch_marker` | MOD-ENGAGEMENT |
 | `AuditAction` | mesmo | `audit_log.action` (não enum estrito — lista canônica) | MOD-AUDIT |
 | `AuditActorType` | mesmo | `audit_log.actor_type` | MOD-AUDIT |
+| `LifecycleStatus` | mesmo | `leads.lifecycle_status` (CHECK) | MOD-IDENTITY |
+| `ProductCategory` | mesmo | `products.category` (CHECK; NULL permitido) | MOD-PRODUCT |
+| `ProductExternalProvider` | mesmo | `products.external_provider` | MOD-PRODUCT |
+| `ProductStatus` | mesmo | `products.status` | MOD-PRODUCT |
+| `LaunchProductRole` | mesmo | `launch_products.launch_role` | MOD-PRODUCT |
 
 ---
 
@@ -283,6 +288,68 @@ export const AuditAction = [
 ```ts
 export const AuditActorType = ['user', 'system', 'api_key'] as const;
 ```
+
+### `LifecycleStatus` (Sprint 16, MOD-IDENTITY)
+```ts
+export const LifecycleStatus = ['contato', 'lead', 'cliente', 'aluno', 'mentorado'] as const;
+```
+Hierarquia **monotônica não-regressiva** (rank crescente):
+
+| Rank | Valor | Significado |
+|---:|---|---|
+| 0 | `contato` | conhecido (pageview anônimo, scrape, lista importada) |
+| 1 | `lead` | preencheu form, virou cookie/lead_token |
+| 2 | `cliente` | comprou produto não-formativo (ebook, workshop, webinar) |
+| 3 | `aluno` | comprou produto formativo (curso, treinamento, pós) |
+| 4 | `mentorado` | comprou mentoria/acompanhamento individual ou grupo |
+
+`promoteLeadLifecycle` só executa UPDATE quando `rank(candidate) > rank(current)`. Promoção é idempotente e race-tolerant em pequena enum total order. Coluna em DB: `leads.lifecycle_status NOT NULL DEFAULT 'contato'` com CHECK constraint para os 5 valores.
+
+Ver BR-PRODUCT-001 e MOD-PRODUCT.
+
+### `ProductCategory` (Sprint 16, MOD-PRODUCT)
+```ts
+export const ProductCategory = [
+  'ebook',
+  'workshop_online',
+  'webinar',
+  'curso_online',
+  'curso_presencial',
+  'pos_graduacao',
+  'treinamento_online',
+  'evento_fisico',
+  'mentoria_individual',
+  'mentoria_grupo',
+  'acompanhamento_individual',
+] as const;
+```
+**Coluna `products.category` aceita NULL** — produto auto-criado por webhook entra com `category=NULL` ("não categorizado") até operador classificar via UI (BR-PRODUCT-002). CHECK constraint admite os 11 valores acima ou NULL.
+
+Mapeamento canônico **categoria → lifecycle target** (hardcoded no MVP em `apps/edge/src/lib/lifecycle-rules.ts`; ver ADR-036 para migração futura para tabela editável `lifecycle_rules`):
+
+| Categoria(s) | Lifecycle target |
+|---|---|
+| `ebook`, `workshop_online`, `webinar` | `cliente` |
+| `curso_online`, `curso_presencial`, `pos_graduacao`, `treinamento_online`, `evento_fisico` | `aluno` |
+| `mentoria_individual`, `mentoria_grupo`, `acompanhamento_individual` | `mentorado` |
+| `NULL` (não categorizado) | `cliente` (default conservador) |
+
+### `ProductExternalProvider` (Sprint 16, MOD-PRODUCT)
+```ts
+export const ProductExternalProvider = ['guru', 'hotmart', 'kiwify', 'stripe', 'manual'] as const;
+```
+`manual` cobre produtos cadastrados via UI sem origem em webhook externo.
+
+### `ProductStatus` (Sprint 16, MOD-PRODUCT)
+```ts
+export const ProductStatus = ['active', 'archived'] as const;
+```
+
+### `LaunchProductRole` (Sprint 16, MOD-PRODUCT)
+```ts
+export const LaunchProductRole = ['main_offer', 'main_order_bump', 'bait_offer', 'bait_order_bump'] as const;
+```
+Tipa o papel de cada produto dentro de um lançamento na tabela `launch_products` (substitui o legacy `funnel_role` free-string em `workspaces.config.integrations.guru.product_launch_map` — ADR-037). Restrição de cardinalidade: UNIQUE (launch_id, product_id) — um produto ocorre uma única vez por launch, com exatamente um role.
 
 ---
 

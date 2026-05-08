@@ -33,6 +33,7 @@
 - `name_enc` (DEPRECATED por ADR-034 — writers param de gravar; reads mantêm fallback por compat retroativa)
 - `pii_key_version` (smallint, default 1)
 - `status` (`active` / `merged` / `erased`)
+- `lifecycle_status` (`LifecycleStatus` — `contato`/`lead`/`cliente`/`aluno`/`mentorado`; NOT NULL DEFAULT `contato`; CHECK constraint, migration `0042`, Sprint 16). Hierarquia monotônica não-regressiva — escrito por `promoteLeadLifecycle` sempre que um Purchase é processado ou um Lead/form é capturado. Derivado de `products.category` via `lifecycleForCategory`. Ver MOD-PRODUCT e BR-PRODUCT-001.
 - `merged_into_lead_id` (FK, opcional — para registros pós-merge)
 - `first_seen_at`, `last_seen_at`
 - `created_at`, `updated_at`
@@ -119,6 +120,7 @@
 - `BR-IDENTITY-*` — todas em `50-business-rules/BR-IDENTITY.md`.
 - `BR-PRIVACY-*` — em `BR-PRIVACY.md`.
 - `BR-CONSENT-*` — em `BR-CONSENT.md`.
+- `BR-PRODUCT-001` — `lifecycle_status` é monotônico (write-side delegado a `MOD-PRODUCT.promoteLeadLifecycle`). Ver `BR-PRODUCT.md`.
 
 ## 9. Contratos consumidos
 

@@ -143,14 +143,117 @@
 | Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
 | Sprint 14 | **completed** (2026-05-08, commit f19b488 — Ondas 1-6 entregues; T-14-017 backfill adiado — ver §6 Tarefas futuras) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
 | Sprint 15 | **planned** (renumerado de Sprint 14 antigo em 2026-05-06 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md` |
-| Sprint 16 | **planned** (NOVO em 2026-05-06 — Custom Audiences Meta + Customer Match Google + UI DSL audience) | a criar |
+| Sprint 16 | **in progress** (Ondas 1-8 entregues + commitadas + doc-sync ok 2026-05-08) | a criar |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
 Estado:        SPRINT 14 ENCERRADO (2026-05-08, commit f19b488).
-               SPRINT 16 ABERTO — Ondas 1-7 entregues (até 2026-05-08).
+               SPRINT 16 ABERTO — Ondas 1-8 entregues e doc-sync feito (2026-05-08).
                Onda 7 = Lead Lifecycle + Products Catalog (commit cf66e83).
+               Onda 8 = Launch Products + UI revamp + cadastro manual de produtos
+                        (commits 0fb5ca6, 2c04c97, 542c5e0, 0d6a0ed).
+               Doc-sync Ondas 7+8 entregue (commit a fazer).
+
+               ====================================================================
+               SPRINT 16 — Onda 8: Launch Products + UI revamp (2026-05-08)
+               ====================================================================
+
+               ✅ Substitui legacy product_launch_map por relação tipada
+                  launch_products(launch_id, product_id, launch_role).
+
+               Schema (migration 0043 aplicada):
+                  • Tabela launch_products (workspace, launch_id, product_id,
+                    launch_role) + UNIQUE(launch_id, product_id) + RLS.
+                  • launch_role enum estrito: main_offer | main_order_bump |
+                    bait_offer | bait_order_bump.
+
+               Backfill (script ad-hoc):
+                  • 5 entries do product_launch_map do CNE migrados.
+                  • Heurística: main_offer mantido; "Pack ..." inferido como
+                    bait_order_bump; resto bait_offer.
+
+               API nova /v1/launches/:public_id/products:
+                  • GET — JOIN products (nome, categoria) + launch_role
+                  • PUT /:product_id — upsert role (admin/owner only)
+                  • DELETE /:product_id — remove assoc
+                  • Auth supabase JWT igual products.
+                  • IMPORTANTE: mounted ANTES de launchesRoute em index.ts —
+                    caso contrário launchesRoute (auth Bearer-only legacy)
+                    intercepta o path primeiro.
+
+               guru-launch-resolver.ts:
+                  • Strategy 0 NEW: launch_products primary (JOIN products
+                    via external_provider+external_id).
+                  • Strategy 1 (legacy product_launch_map) mantido como
+                    fallback durante migração.
+
+               Control Plane revamp:
+                  • Tela /products: edit inline do nome (já existia, Onda 7) +
+                    edit inline do external_product_id + botão "Adicionar
+                    produto" + modal (nome/provider/external_id/categoria).
+                    POST /v1/products novo endpoint. PATCH estendido para
+                    aceitar external_provider e external_product_id.
+                    Conflict 409 quando UNIQUE viola.
+                  • Tela /launches/[id]: substituído GuruMappingPanel por
+                    LaunchProductsPanel — mostra nome amigável (do products
+                    table) + dropdown inline de papel + modal de associação
+                    com picker de produtos do catálogo.
+                  • Botão "Adicionar produto" no launch sempre habilitado
+                    (não mais disabled silenciosamente quando catálogo
+                    esgotado); modal mostra link para /products quando vazio.
+
+               Bugs corrigidos durante a onda:
+                  • CORS faltando em /v1/products/* — fix commit 5eb5c69
+                    (browser bloqueava chamadas do CP silenciosamente).
+                  • Correlated subquery do GET /v1/products usando ${products.id}
+                    Drizzle template não preservava ref ao outer products row;
+                    fix usando literal products.id no SQL template.
+                  • EditableName/EditableExternalId renderizam <button> que
+                    é inline-block default; adicionado classe 'block' para
+                    quebra de linha entre nome e ID externo.
+
+               Doc-sync (Ondas 7+8):
+                  ✅ docs/30-contracts/01-enums.md — LifecycleStatus,
+                    ProductCategory (+sentinel uncategorized), ProductExternalProvider,
+                    ProductStatus, LaunchProductRole.
+                  ✅ docs/30-contracts/05-api-server-actions.md — GET/POST/PATCH
+                    /v1/products + GET/PUT/DELETE /v1/launches/:id/products
+                    + filtro lifecycle em /v1/leads.
+                  ✅ docs/20-domain/14-mod-product.md — criado.
+                  ✅ docs/50-business-rules/BR-PRODUCT.md — criado.
+                  ✅ docs/20-domain/04-mod-identity.md — lifecycle_status
+                    documentado como atributo monotônico.
+                  ✅ docs/90-meta/04-decision-log.md — ADR-035 (stored),
+                    ADR-036 (hardcoded + migration path), ADR-037
+                    (launch_products substitui product_launch_map).
+                  ✅ docs/90-meta/02-id-registry.md — MOD-PRODUCT, BR-PRODUCT-001..003.
+                  ✅ docs/80-roadmap/97-ownership-matrix.md — paths novos mapeados.
+                  ✅ CLAUDE.md — MOD-PRODUCT e BR-PRODUCT adicionados ao mapa.
+
+               Deploys edge desta onda:
+                  ed818549 (subquery fix) → 68a7fcff (CORS) → 8c3b69be
+                  (launch-products mounted) → 5e5e9742 (route order fix) →
+                  242869d2 (POST + PATCH external_id).
+
+               PENDÊNCIAS RESIDUAIS (sprint futura):
+                  ☐ T-PRODUCTS-009: integration tests E2E
+                    (guru-purchase-promotes-lifecycle,
+                    lead-lifecycle-progression).
+                  ☐ T-PRODUCTS-010: tela /leads/[id] seção "Compras"
+                    listando produtos comprados (deferred Onda 7).
+                  ☐ T-PRODUCTS-011: depreciar product_launch_map
+                    legacy — após confirmar resolver Strategy 0 estável
+                    em prod, remover Strategy 1 fallback + UI legacy
+                    de workspace.config.guru.product_launch_map.
+                  ☐ T-PRODUCTS-012 (FUTURE-002): tornar mapping
+                    categoria→lifecycle editável via tabela
+                    lifecycle_rules(workspace_id, category, lifecycle_status).
+                    Função lifecycleForCategory(workspaceId, cat) já recebe
+                    workspaceId pra facilitar migração sem rewrite.
+
+               ====================================================================
+
 
                ====================================================================
                SPRINT 16 — Onda 7: Lead Lifecycle + Products Catalog (2026-05-08)
@@ -226,26 +329,11 @@ Estado:        SPRINT 14 ENCERRADO (2026-05-08, commit f19b488).
                Tests: 50/50 verde (lifecycle-rules 30, lifecycle-promoter 12,
                products-resolver 8). Deploy edge final: ed818549.
 
-               PENDENCIAS [SYNC-PENDING]:
-                  ☐ docs/30-contracts/01-enums.md: adicionar LifecycleStatus
-                    (5 vals) + ProductCategory (11 vals) +
-                    ProductExternalProvider + ProductStatus.
-                  ☐ docs/30-contracts/05-api-server-actions.md: documentar
-                    GET/PATCH /v1/products + filtro lifecycle. Sentinel
-                    category=uncategorized.
-                  ☐ docs/20-domain/14-mod-product.md: criar (NOVO).
-                  ☐ docs/50-business-rules/BR-PRODUCT.md: criar BR-PRODUCT-001
-                    monotonia, 002 auto-criacao NULL, 003 backfill on category
-                    change.
-                  ☐ docs/20-domain/04-mod-identity.md: descrever
-                    lifecycle_status como atributo monotonico do lead.
-                  ☐ ADR-035: lifecycle stored vs derived.
-                  ☐ ADR-036: hardcoded categorias com migration path.
-                  ☐ T-PRODUCTS-008 (sprint futura): tela /leads/[id] secao
-                    "Compras" listando produtos comprados (deferred desta onda).
+               PENDENCIAS RESOLVIDAS NESTA SESSÃO (doc-sync da Onda 8):
+                  ✅ Todas as docs canônicas listadas abaixo.
                   ☐ T-PRODUCTS-009: integration tests E2E
                     (guru-purchase-promotes-lifecycle,
-                    lead-lifecycle-progression).
+                    lead-lifecycle-progression). Pendente.
 
                ====================================================================
 

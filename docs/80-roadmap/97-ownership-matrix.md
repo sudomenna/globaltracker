@@ -37,6 +37,12 @@ Cada arquivo do repositório pertence a exatamente um módulo. Detalhe por módu
 | `apps/edge/src/lib/{lead-resolver,lead-token,pii,consent,cookies,erasure}.ts` | MOD-IDENTITY | qualquer |
 | `apps/edge/src/lib/{raw-events-processor,event-time-clamp,replay-protection}.ts` | MOD-EVENT | qualquer |
 | `apps/edge/src/lib/funnel.ts` | MOD-FUNNEL | qualquer |
+| `packages/db/src/schema/product.ts` | MOD-PRODUCT | qualquer |
+| `packages/db/src/schema/launch_product.ts` | MOD-PRODUCT | qualquer |
+| `apps/edge/src/lib/{lifecycle-rules,lifecycle-promoter,products-resolver}.ts` | MOD-PRODUCT | qualquer |
+| `apps/edge/src/routes/products.ts` | MOD-PRODUCT | qualquer |
+| `apps/edge/src/routes/launch-products.ts` | MOD-PRODUCT | qualquer |
+| `apps/control-plane/src/app/(app)/products/**` | MOD-PRODUCT (CP frontend) | qualquer |
 | `apps/edge/src/lib/funnel-scaffolder.ts` | MOD-FUNNEL | qualquer |
 | `apps/edge/src/lib/guru-launch-resolver.ts` | MOD-FUNNEL | qualquer |
 | `apps/edge/src/routes/funnel-templates.ts` | MOD-FUNNEL | qualquer |

@@ -1086,6 +1086,93 @@ Matriz de acesso a PII em claro (`email`, `phone`, `name` permanece sempre visí
 
 ---
 
+## ADR-035 — `lifecycle_status` armazenado em `leads` (vs derivado em query) (Sprint 16)
+
+### Status
+aceito.
+
+### Contexto
+Sprint 16 introduz o conceito de Lifecycle do Lead com 5 estados monotônicos (`contato → lead → cliente → aluno → mentorado`). Decisão de modelagem: persistir o estado em coluna direta de `leads`, ou derivá-lo em runtime (via JOIN com `events`/`products` em cada listagem)?
+
+### Decisão
+Persistir como coluna `leads.lifecycle_status NOT NULL DEFAULT 'contato'` (CHECK constraint para os 5 valores). `promoteLeadLifecycle` em pipeline mantém a coluna atualizada sempre que um Purchase é processado ou um Lead form é submetido.
+
+### Alternativas consideradas
+- **Derivar em query** via JOIN/MAX em `events`+`products` — evita coluna redundante mas exige JOIN multi-tabela em toda listagem (`/v1/leads`) e dashboard. Custo de leitura cresce com volume; cache invalidation complexo.
+- **Materialized view** — atualização defasada, complica retenção e DLQ.
+
+### Consequências
+- (+) `GET /v1/leads` filtra/ordena por `lifecycle_status` sem JOIN — listagem rápida.
+- (+) Filtro `?lifecycle=` no endpoint é trivial.
+- (–) 1 UPDATE extra por Purchase (idempotente, no-op em downgrade — barato).
+- (–) Backfill obrigatório quando categoria de produto muda (BR-PRODUCT-003).
+
+### Impacta
+MOD-IDENTITY (`leads.lifecycle_status`), MOD-PRODUCT (write-side), CONTRACT-api-leads-list-v1 (filter + response field).
+
+---
+
+## ADR-036 — Categorias de produto hardcoded no MVP, com migration path para tabela editável (Sprint 16)
+
+### Status
+aceito.
+
+### Contexto
+Mapeamento `ProductCategory → LifecycleStatus` é regra de negócio. No MVP precisa estar pronto rápido sem UI de configuração. Eventualmente operadores vão querer customizar (ex.: "minha mentoria de grupo de 12 meses promove para `mentorado`, não `aluno`").
+
+### Decisão
+Hardcoded no MVP em `apps/edge/src/lib/lifecycle-rules.ts` com 11 categorias canônicas + NULL fallback. **Mas** a função pública `lifecycleForCategory(workspaceId, category)` recebe `workspaceId` desde o início — preparada para migração futura para tabela `lifecycle_rules` por workspace **sem rewriting dos callers** (FUTURE-001).
+
+### Alternativas consideradas
+- **Tabela editável já no MVP** — cria UI extra, validação de consistency (ex.: workspace cadastra categoria que não existe), risk de inconsistency entre workspaces, slip de sprint.
+- **Hardcoded sem `workspaceId` na assinatura** — força refactor de callers quando vier a tabela editável.
+
+### Consequências
+- (+) MVP entrega rápido com regra única e auditável.
+- (+) Migração futura é local: trocar implementação de `lifecycleForCategory` para fazer SELECT em `lifecycle_rules` com fallback hardcoded — zero impacto nos call sites.
+- (–) Workspaces que querem regra customizada precisam esperar FUTURE-001.
+
+### Impacta
+MOD-PRODUCT, BR-PRODUCT-001.
+
+---
+
+## ADR-037 — `launch_products` substitui `workspaces.config.integrations.guru.product_launch_map` (Sprint 16)
+
+### Status
+aceito.
+
+### Contexto
+Antes do Sprint 16 a relação produto↔launch (Guru) vivia em JSONB free-form em `workspaces.config.integrations.guru.product_launch_map: Record<external_product_id, { launch_public_id, funnel_role: string }>`. Problemas:
+- `funnel_role` era string livre — inconsistência entre workspaces (um usa `main`, outro `principal`, outro `oferta`).
+- Sem FK — produto deletado deixava entry órfã.
+- Sem RLS dedicada — qualquer mudança em `workspaces.config` exigia rewrite do JSONB inteiro.
+- Acoplado a Guru — Hotmart/Kiwify/Stripe replicariam o padrão, criando 4 maps paralelos.
+
+### Decisão
+Tabela tipada `launch_products(workspace_id, launch_id, product_id, launch_role)` com:
+- `launch_role` enum `{main_offer, main_order_bump, bait_offer, bait_order_bump}` (ver `LaunchProductRole` em `01-enums.md`),
+- UNIQUE `(launch_id, product_id)` — produto ocupa 1 role por launch,
+- RLS `workspace_isolation`,
+- API CRUD em `/v1/launches/:public_id/products/*`.
+
+`guru-launch-resolver.ts` ganha **Strategy 0** (consulta `launch_products` JOIN `products` via `external_provider`+`external_product_id`) como fonte primária; legacy `product_launch_map` mantido como **Strategy 1 fallback** durante migração. Backfill aplicado para o workspace CNE em Sprint 16: 5 entries migradas (heurística: nome com prefix "Pack" → `bait_order_bump`; "workshop" no nome → `bait_offer`; demais → `main_offer`).
+
+### Alternativas consideradas
+- **Manter JSONB com schema validado** — não resolve problema de FK, RLS dedicada, ou múltiplos providers.
+- **Tabela genérica `launch_external_products` com provider/external_id direto** (sem `products` separado) — perde o catálogo unificado; impossibilita lifecycle promote por categoria.
+
+### Consequências
+- (+) `launch_role` tipado elimina string drift.
+- (+) Provider-agnostic: Hotmart/Kiwify/Stripe usam o mesmo `launch_products` quando seus webhooks também upsertarem em `products`.
+- (+) UI mostra nome do produto (do `products.name`) em vez de raw `external_product_id`.
+- (–) Custo de migração: backfill por workspace + manter Strategy 1 fallback até deprecation final (FUTURE-003).
+
+### Impacta
+MOD-PRODUCT, MOD-LAUNCH, MOD-FUNNEL (`guru-launch-resolver.ts`), CONTRACT-api-launch-products-*.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
