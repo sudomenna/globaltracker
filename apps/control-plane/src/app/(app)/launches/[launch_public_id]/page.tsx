@@ -337,17 +337,7 @@ function LaunchProductsPanel({
               Associe produtos do catálogo a este lançamento e defina o papel de cada um.
             </CardDescription>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setModalOpen(true)}
-            disabled={availableProducts.length === 0}
-            title={
-              availableProducts.length === 0
-                ? 'Nenhum produto disponível para adicionar (todos já estão associados ou catálogo vazio).'
-                : undefined
-            }
-          >
+          <Button variant="outline" size="sm" onClick={() => setModalOpen(true)}>
             <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
             Adicionar produto
           </Button>
@@ -446,7 +436,7 @@ function LaunchProductsPanel({
                     value={pickedProductId}
                     onChange={(e) => setPickedProductId(e.target.value)}
                     className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={saving}
+                    disabled={saving || availableProducts.length === 0}
                   >
                     <option value="">— Selecione —</option>
                     {availableProducts.map((p) => (
@@ -455,6 +445,17 @@ function LaunchProductsPanel({
                       </option>
                     ))}
                   </select>
+                  {availableProducts.length === 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {catalog.length === 0
+                        ? 'Nenhum produto cadastrado no catálogo. '
+                        : 'Todos os produtos do catálogo já estão associados a este lançamento. '}
+                      <Link href="/products" className="underline hover:no-underline">
+                        Cadastre um novo produto em /products
+                      </Link>
+                      .
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-1">
@@ -497,7 +498,11 @@ function LaunchProductsPanel({
                 >
                   Cancelar
                 </Button>
-                <Button size="sm" onClick={() => void handleAdd()} disabled={saving}>
+                <Button
+                  size="sm"
+                  onClick={() => void handleAdd()}
+                  disabled={saving || !pickedProductId}
+                >
                   {saving ? (
                     <>
                       <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
