@@ -30,6 +30,7 @@ import { type AttributionParams, recordTouches } from './attribution.js';
 import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
+import { promoteLeadLifecycle } from './lifecycle-promoter.js';
 import { hashPii } from './pii.js';
 
 // ---------------------------------------------------------------------------
@@ -688,6 +689,24 @@ export async function processRawEvent(
       ok: false,
       error: { code: 'db_error', message },
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // BR-PRODUCT-001: tracker disparou Lead event com lead resolvido → promove
+  // para 'lead'. Idempotente/monotônico — não regride se já é 'cliente' ou
+  // superior. INV-PRIVACY-006-soft: falha aqui é não-fatal.
+  // -------------------------------------------------------------------------
+  if (insertedEventId && resolvedLeadId && payload.event_name === 'Lead') {
+    try {
+      await promoteLeadLifecycle(db, resolvedLeadId, 'lead');
+    } catch (err) {
+      safeLog('warn', {
+        event: 'lead_lifecycle_promotion_failed',
+        raw_event_id,
+        // BR-PRIVACY-001: sem PII em logs.
+        error: err instanceof Error ? err.message.slice(0, 200) : String(err),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------

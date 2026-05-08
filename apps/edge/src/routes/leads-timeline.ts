@@ -41,6 +41,10 @@ import { and, eq } from 'drizzle-orm';
 import { auditLog, createDb, leads, workspaceMembers } from '@globaltracker/db';
 import { z } from 'zod';
 import { createLeadsQueryFns } from '../lib/leads-queries.js';
+import {
+  LIFECYCLE_STATUSES,
+  type LifecycleStatus,
+} from '../lib/lifecycle-rules.js';
 import { maskEmail, maskPhone } from '../lib/pii-mask.js';
 import {
   canRevealPii,
@@ -85,6 +89,20 @@ const TimelineQuerySchema = z
     cursor: z.string().optional(), // ISO timestamp — only nodes before this are returned
     limit: z.coerce.number().min(1).max(50).default(50),
     filters: z.string().optional(), // JSON string: { types?: string[], statuses?: string[] }
+  })
+  .strict();
+
+// List query schema — keeps existing behaviour, adds optional lifecycle filter
+// (T-PRODUCTS-006). lifecycle_status is not PII (BR-PRIVACY-001), safe to expose.
+const ListLeadsQuerySchema = z
+  .object({
+    q: z.string().optional(),
+    launch_public_id: z.string().optional(),
+    cursor: z.string().optional(),
+    limit: z.coerce.number().min(1).max(100).optional(),
+    lifecycle: z
+      .enum(LIFECYCLE_STATUSES as readonly [LifecycleStatus, ...LifecycleStatus[]])
+      .optional(),
   })
   .strict();
 
@@ -213,6 +231,7 @@ export type GetLeadSummaryFn = (
   display_email: string | null;
   display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
+  lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
 } | null>;
@@ -221,6 +240,7 @@ export type ListLeadsFn = (opts: {
   workspaceId: string;
   q?: string;
   launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
   cursor?: Date | null;
   limit: number;
 }) => Promise<
@@ -230,6 +250,7 @@ export type ListLeadsFn = (opts: {
     display_email: string | null;
     display_phone: string | null;
     status: 'active' | 'merged' | 'erased';
+    lifecycle_status: LifecycleStatus;
     first_seen_at: string;
     last_seen_at: string;
   }>
@@ -568,13 +589,33 @@ export function createLeadsTimelineRoute(opts?: {
     const seePlain = canSeePiiPlainByDefault(role);
 
     const rawQuery = c.req.query();
-    const q = rawQuery.q?.trim() || undefined;
-    const launchPublicId = rawQuery.launch_public_id?.trim() || undefined;
+    const listParseResult = ListLeadsQuerySchema.safeParse({
+      q: rawQuery.q,
+      launch_public_id: rawQuery.launch_public_id,
+      cursor: rawQuery.cursor,
+      limit: rawQuery.limit,
+      lifecycle: rawQuery.lifecycle,
+    });
+    if (!listParseResult.success) {
+      return c.json(
+        {
+          code: 'validation_error',
+          message: 'Invalid query parameters',
+          details: listParseResult.error.flatten().fieldErrors,
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+    const q = listParseResult.data.q?.trim() || undefined;
+    const launchPublicId = listParseResult.data.launch_public_id?.trim() || undefined;
+    const lifecycle = listParseResult.data.lifecycle;
     const rawLimit = Math.min(
-      Math.max(1, Number(rawQuery.limit ?? 30)),
+      Math.max(1, Number(listParseResult.data.limit ?? 30)),
       100,
     );
-    const cursorRaw = rawQuery.cursor;
+    const cursorRaw = listParseResult.data.cursor;
     const cursor = cursorRaw ? new Date(cursorRaw) : null;
 
     const qfns = resolveQueryFns(c.env);
@@ -589,6 +630,7 @@ export function createLeadsTimelineRoute(opts?: {
       workspaceId,
       q,
       launchPublicId,
+      lifecycle,
       cursor,
       limit: rawLimit + 1,
     });

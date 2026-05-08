@@ -31,6 +31,9 @@ import {
   matchesStageFilters,
 } from './raw-events-processor.js';
 import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
+import { upsertProduct } from './products-resolver.js';
+import { promoteLeadLifecycle } from './lifecycle-promoter.js';
+import { lifecycleForCategory } from './lifecycle-rules.js';
 
 // Re-export ProcessingError for callers that want to type the error union.
 export type { ProcessingError, Result };
@@ -452,6 +455,47 @@ export async function processGuruRawEvent(
   }
 
   // -------------------------------------------------------------------------
+  // BR-PRODUCT-001 + BR-PRODUCT-002: auto-criar product e promover lead
+  // lifecycle quando Purchase event chega via Guru. Falha aqui é não-fatal
+  // (INV-PRIVACY-006-soft pattern) — nunca bloqueia o processamento do evento.
+  // -------------------------------------------------------------------------
+  let productDbId: string | null = null;
+  if (
+    payload._guru_event_type === 'Purchase' &&
+    resolvedLeadId &&
+    payload.product?.id
+  ) {
+    try {
+      // BR-PRODUCT-002: produto desconhecido é auto-criado com category=NULL.
+      const product = await upsertProduct(db, {
+        workspaceId: rawEvent.workspaceId,
+        externalProvider: 'guru',
+        externalProductId: String(payload.product.id),
+        name: payload.product.name ?? 'Produto sem nome',
+      });
+      productDbId = product.id;
+
+      // BR-PRODUCT-001: promote monotônico baseado na category atual do produto
+      // (NULL → 'cliente'; categorizado → mapping em lifecycle-rules).
+      const candidate = lifecycleForCategory(
+        rawEvent.workspaceId,
+        product.category,
+      );
+      await promoteLeadLifecycle(db, resolvedLeadId, candidate);
+    } catch (err) {
+      // BR-PRODUCT non-fatal: never block Purchase processing on lifecycle failure.
+      safeLog('warn', {
+        event: 'guru_product_lifecycle_promotion_failed',
+        raw_event_id,
+        // BR-PRIVACY-001: lead_id e product.id são UUIDs/IDs internos, sem PII.
+        lead_id: resolvedLeadId,
+        product_id: String(payload.product?.id ?? ''),
+        error: err instanceof Error ? err.message.slice(0, 200) : String(err),
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Step 4: Insert events row
   // INV-EVENT-001: (workspace_id, event_id) unique
   // BR-EVENT-002: idempotency via pre-insert lookup
@@ -533,6 +577,9 @@ export async function processGuruRawEvent(
         currency: payload.payment?.currency ?? null,
         product_id: payload.product?.id ?? null,
         product_name: payload.product?.name ?? null,
+        // BR-PRODUCT-002: product_db_id liga o evento ao products row interno
+        // (preserva o id mesmo quando uma re-categorização altera category).
+        ...(productDbId ? { product_db_id: productDbId } : {}),
         dates: payload.dates ?? null,
       };
 
@@ -620,6 +667,9 @@ export async function processGuruRawEvent(
           currency: payload.payment?.currency ?? null,
           product_id: payload.product?.id ?? null,
           product_name: payload.product?.name ?? null,
+          // BR-PRODUCT-002: product_db_id liga o evento ao products row interno
+          // (operador pode re-categorizar depois sem perder a referência).
+          ...(productDbId ? { product_db_id: productDbId } : {}),
           // T-13-010: armazenamos `dates` inteiro pra que retries posteriores
           // com `dates.updated_at` mais recente possam atualizar via
           // update-if-newer (lógica no bloco existingEvent acima).

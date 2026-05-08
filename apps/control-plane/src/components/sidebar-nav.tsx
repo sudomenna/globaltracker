@@ -9,6 +9,7 @@ import {
   Globe,
   HelpCircle,
   Home,
+  Package,
   Plug,
   Settings,
   Shield,
@@ -49,6 +50,11 @@ const navItems: NavItemDef[] = [
     icon: Users,
     resolveHealth: () => 'unknown',
     resolveTooltip: () => 'Dados de saúde de leads indisponíveis',
+  },
+  {
+    href: '/products',
+    label: 'Produtos',
+    icon: Package,
   },
   {
     href: '/audiences',

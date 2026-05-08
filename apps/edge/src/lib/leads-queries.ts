@@ -17,6 +17,7 @@ import {
 import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
 import { decryptPii, hashPii } from './pii.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
+import type { LifecycleStatus } from './lifecycle-rules.js';
 import type {
   GetDispatchJobsFn,
   GetEventsFn,
@@ -36,6 +37,7 @@ export type LeadSummary = {
   display_email: string | null;
   display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
+  lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
 };
@@ -46,6 +48,7 @@ export type LeadListItem = {
   display_email: string | null;
   display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
+  lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
 };
@@ -54,6 +57,7 @@ export type ListLeadsOpts = {
   workspaceId: string;
   q?: string; // UUID / email / phone / name substring
   launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
   cursor?: Date | null;
   limit: number;
 };
@@ -107,6 +111,7 @@ export function createLeadsQueryFns(
       .select({
         id: leads.id,
         status: leads.status,
+        lifecycleStatus: leads.lifecycleStatus,
         name: leads.name,
         nameEnc: leads.nameEnc,
         emailEnc: leads.emailEnc,
@@ -148,6 +153,7 @@ export function createLeadsQueryFns(
       display_email: displayEmail,
       display_phone: displayPhone,
       status: row.status as LeadSummary['status'],
+      lifecycle_status: row.lifecycleStatus as LifecycleStatus,
       first_seen_at: row.firstSeenAt.toISOString(),
       last_seen_at: row.lastSeenAt.toISOString(),
     };
@@ -284,9 +290,13 @@ export function createLeadsQueryFns(
   //   4. Else → ILIKE %q% on lower(leads.name) (indexed)
   // -------------------------------------------------------------------------
   async function listLeads(opts: ListLeadsOpts): Promise<LeadListItem[]> {
-    const { workspaceId, q, launchPublicId, cursor, limit } = opts;
+    const { workspaceId, q, launchPublicId, lifecycle, cursor, limit } = opts;
 
     const conditions = [eq(leads.workspaceId, workspaceId)];
+
+    if (lifecycle) {
+      conditions.push(eq(leads.lifecycleStatus, lifecycle));
+    }
 
     if (q) {
       if (UUID_RE.test(q)) {
@@ -315,6 +325,7 @@ export function createLeadsQueryFns(
       .select({
         id: leads.id,
         status: leads.status,
+        lifecycleStatus: leads.lifecycleStatus,
         name: leads.name,
         nameEnc: leads.nameEnc,
         emailEnc: leads.emailEnc,
@@ -375,6 +386,7 @@ export function createLeadsQueryFns(
           display_email: displayEmail,
           display_phone: displayPhone,
           status: row.status as LeadListItem['status'],
+          lifecycle_status: row.lifecycleStatus as LifecycleStatus,
           first_seen_at: row.firstSeenAt.toISOString(),
           last_seen_at: row.lastSeenAt.toISOString(),
         };

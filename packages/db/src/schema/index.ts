@@ -29,3 +29,4 @@ export * from './dispatch_attempt.js';
 export * from './workspace_integrations.js';
 export * from './orchestrator.js';
 export * from './funnel_template.js';
+export * from './product.js';

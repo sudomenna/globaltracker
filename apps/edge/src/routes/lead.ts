@@ -23,6 +23,7 @@ import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
 import { normalizePhone as normalizePhoneForEnc, resolveLeadByAliases } from '../lib/lead-resolver.js';
 import { issueLeadToken } from '../lib/lead-token.js';
+import { promoteLeadLifecycle } from '../lib/lifecycle-promoter.js';
 import { enrichLeadPii } from '../lib/pii-enrich.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import {
@@ -339,6 +340,23 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
           request_id: requestId,
           workspace_id: workspaceId,
           message: err instanceof Error ? err.message : 'unknown',
+        });
+      }
+
+      // BR-PRODUCT-001: form submit em LP atrelada a launch promove lifecycle
+      // 'contato' → 'lead'. Idempotente — promote é monotônico, nunca regride
+      // se o lead já é 'cliente' ou superior (BR-PRODUCT-001).
+      // INV-PRIVACY-006-soft: nunca bloqueia o 202 em falha de enrichment/promoção.
+      try {
+        await promoteLeadLifecycle(effectiveDb, leadId, 'lead');
+      } catch (err) {
+        safeLog('warn', {
+          event: 'lead_lifecycle_promotion_failed',
+          request_id: requestId,
+          workspace_id: workspaceId,
+          // BR-PRIVACY-001: sem PII; lead_id é UUID interno mas não logamos
+          // pra manter logs minimalistas.
+          message: err instanceof Error ? err.message.slice(0, 200) : 'unknown',
         });
       }
 

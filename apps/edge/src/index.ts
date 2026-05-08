@@ -108,6 +108,7 @@ import { onboardingStateRoute } from './routes/onboarding-state.js';
 import { orchestratorRoute } from './routes/orchestrator.js';
 import { createPagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
+import { createProductsRoute } from './routes/products.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
@@ -625,6 +626,15 @@ app.route('/v1/orchestrator/workflows', orchestratorRoute);
 // Auth: Bearer token; OPERATOR/ADMIN role required (TODO T-AUTH-CP: full JWT RBAC).
 // BR-RBAC-002: workspace_id from auth context, never from body.
 app.route('/v1/workspace', workspaceConfigRoute);
+
+// Products catalog (T-PRODUCTS-005). GET ≥ viewer, PATCH ≥ admin/owner.
+// BR-PRODUCT-001/002/003: lifecycle backfill on category change.
+app.route(
+  '/v1/products',
+  createProductsRoute({
+    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Queue consumer — gt-dispatch

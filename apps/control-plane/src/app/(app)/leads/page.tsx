@@ -1,7 +1,15 @@
 'use client';
 
+import { type Lifecycle, LifecycleBadge } from '@/components/lifecycle-badge';
 import { Badge } from '@/components/ui/badge';
-import { ChevronRight, Loader2, Mail, Phone, Search, Users } from 'lucide-react';
+import {
+  ChevronRight,
+  Loader2,
+  Mail,
+  Phone,
+  Search,
+  Users,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -39,9 +47,26 @@ interface LeadItem {
   display_email: string | null;
   display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
+  lifecycle_status?: Lifecycle;
   first_seen_at: string;
   last_seen_at: string;
 }
+
+const LIFECYCLE_OPTIONS: Lifecycle[] = [
+  'contato',
+  'lead',
+  'cliente',
+  'aluno',
+  'mentorado',
+];
+
+const LIFECYCLE_LABEL: Record<Lifecycle, string> = {
+  contato: 'Contato',
+  lead: 'Lead',
+  cliente: 'Cliente',
+  aluno: 'Aluno',
+  mentorado: 'Mentorado',
+};
 
 interface Launch {
   name: string;
@@ -103,6 +128,8 @@ export default function LeadsPage() {
   const [debouncedQ, setDebouncedQ] = useState('');
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [selectedLifecycle, setSelectedLifecycle] = useState<string>('');
+
   const [items, setItems] = useState<LeadItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -137,6 +164,7 @@ export default function LeadsPage() {
       const params = new URLSearchParams({ limit: '30' });
       if (debouncedQ) params.set('q', debouncedQ);
       if (selectedLaunch) params.set('launch_public_id', selectedLaunch);
+      if (selectedLifecycle) params.set('lifecycle', selectedLifecycle);
       if (cursor) params.set('cursor', cursor);
 
       const isLoadMore = !!cursor;
@@ -168,7 +196,7 @@ export default function LeadsPage() {
         setLoadingMore(false);
       }
     },
-    [accessToken, debouncedQ, selectedLaunch],
+    [accessToken, debouncedQ, selectedLaunch, selectedLifecycle],
   );
 
   // Re-fetch when filters or search change
@@ -215,6 +243,20 @@ export default function LeadsPage() {
             ))}
           </select>
         )}
+
+        <select
+          value={selectedLifecycle}
+          onChange={(e) => setSelectedLifecycle(e.target.value)}
+          aria-label="Filtrar por lifecycle"
+          className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 max-w-xs"
+        >
+          <option value="">Todos os lifecycles</option>
+          {LIFECYCLE_OPTIONS.map((l) => (
+            <option key={l} value={l}>
+              {LIFECYCLE_LABEL[l]}
+            </option>
+          ))}
+        </select>
       </div>
 
       {/* Results */}
@@ -254,18 +296,27 @@ export default function LeadsPage() {
                         <Badge variant={STATUS_BADGE[lead.status]}>
                           {STATUS_LABEL[lead.status]}
                         </Badge>
+                        {lead.lifecycle_status && (
+                          <LifecycleBadge lifecycle={lead.lifecycle_status} />
+                        )}
                       </div>
 
                       {/* Linha 2: Email | WhatsApp inline em sm+, stack em mobile */}
                       <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
                         <span className="inline-flex items-center gap-1.5 truncate">
-                          <Mail className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          <Mail
+                            className="h-3 w-3 shrink-0"
+                            aria-hidden="true"
+                          />
                           <span className="truncate">
                             {lead.display_email ?? '—'}
                           </span>
                         </span>
                         <span className="inline-flex items-center gap-1.5 truncate">
-                          <Phone className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          <Phone
+                            className="h-3 w-3 shrink-0"
+                            aria-hidden="true"
+                          />
                           <span className="truncate">
                             {lead.display_phone
                               ? formatPhone(lead.display_phone)
@@ -303,7 +354,10 @@ export default function LeadsPage() {
                   className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
                   {loadingMore ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    <Loader2
+                      className="h-4 w-4 animate-spin"
+                      aria-hidden="true"
+                    />
                   ) : null}
                   Carregar mais
                 </button>

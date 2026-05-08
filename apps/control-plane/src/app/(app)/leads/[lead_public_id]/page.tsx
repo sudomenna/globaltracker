@@ -1,3 +1,4 @@
+import { type Lifecycle, LifecycleBadge } from '@/components/lifecycle-badge';
 import { Badge } from '@/components/ui/badge';
 import { edgeFetch } from '@/lib/api-client';
 import { createSupabaseServer } from '@/lib/supabase-server';
@@ -19,6 +20,7 @@ interface LeadSummary {
   display_email: string | null;
   display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
+  lifecycle_status?: Lifecycle;
   created_at?: string;
   role?: string;
   pii_masked?: boolean;
@@ -160,6 +162,9 @@ export default async function LeadDetailPage({
           <Badge variant={STATUS_BADGE[leadStatus]}>
             {STATUS_LABEL[leadStatus]}
           </Badge>
+          {lead?.lifecycle_status && (
+            <LifecycleBadge lifecycle={lead.lifecycle_status} />
+          )}
         </div>
 
         <p className="text-sm text-muted-foreground font-mono">
