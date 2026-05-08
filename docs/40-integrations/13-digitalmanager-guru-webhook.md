@@ -11,6 +11,7 @@ Receber notificações de transações, assinaturas e e-tickets do Digital Manag
 | `transaction` | `refunded` | `RefundProcessed` | `sha256("guru:transaction:" + id + ":refunded")[:32]` |
 | `transaction` | `chargedback` | `Chargeback` | `sha256("guru:transaction:" + id + ":chargedback")[:32]` |
 | `transaction` | `canceled` | `OrderCanceled` | `sha256("guru:transaction:" + id + ":canceled")[:32]` |
+| `transaction` | `abandoned` | `InitiateCheckout` | `sha256("guru:transaction:" + id + ":abandoned")[:32]` |
 | `subscription` | `active` | `SubscriptionActivated` | `sha256("guru:subscription:" + id + ":active")[:32]` |
 | `subscription` | `canceled` | `SubscriptionCanceled` | `sha256("guru:subscription:" + id + ":canceled")[:32]` |
 | `eticket` | qualquer | *(Fase 4+, ignorar por ora)* | — |
@@ -145,6 +146,18 @@ Prioridade decrescente:
 3. `contact.phone_local_code + contact.phone_number` (hash SHA-256)
 4. `subscriber.email` (hash SHA-256) — apenas para `subscription`
 
+## PII enrichment via webhook (Sprint 14)
+
+Após `resolveLeadByAliases` resolver/criar o lead, o `guru-raw-events-processor` chama `enrichLeadPii({ leadId, workspaceId, email, phone, name, db, masterKey })` (`apps/edge/src/lib/pii-enrich.js`). Esta etapa preenche os campos plain-text + ciphertext do lead que o resolver não toca:
+
+- `leads.email_enc` / `leads.phone_enc` / `leads.name_enc` — AES-256-GCM workspace-scoped via `PII_MASTER_KEY_V1`.
+- `leads.name` — plaintext (ADR-034).
+- `leads.fn_hash` / `leads.ln_hash` (T-OPB) — hashes externos do nome split via `splitName`.
+
+Antes desta etapa, leads criados exclusivamente por webhook ficavam com `email_hash` / `phone_hash` populados (via `resolveLeadByAliases`) mas **sem** `email_enc` / `phone_enc` / `name`. Resultado prático: na tela Contatos, esses leads apareciam com dados mascarados/vazios mesmo para roles privilegiadas. `enrichLeadPii` é idempotente — só escreve em colunas atualmente `NULL`.
+
+Requer `PII_MASTER_KEY_V1` propagado do queue consumer (`apps/edge/src/index.ts`). Se a key não estiver presente, `enrichLeadPii` faz soft-fail (log, sem bloquear o pipeline).
+
 ## Campos monetários
 
 Os valores monetários no Guru são retornados em **centavos** (inteiros). Converter para unidade monetária antes de persistir:
@@ -167,6 +180,8 @@ Quando o payload Guru inclui `contact.address` (depende do plano Guru / habilita
 | `contact.address.country` | `geo_country` |
 
 Spread é condicional — quando ausente no payload, os campos `geo_*` ficam fora do JSONB (sem `null`). Não há fallback para `request.cf.*` em eventos Guru: o request vem do servidor do Guru, não do comprador (ADR-033).
+
+> **`contact.address` aceita string ou objeto.** Algumas instalações Guru emitem `contact.address` como string plana (ex.: `"Rua Acre"`) em vez do objeto estruturado `{ city, state, zip_code, country }`. O Zod schema do `guru-raw-events-processor.ts` aplica `z.preprocess(v => typeof v === 'string' ? null : v, ...)` antes do parse — string é coerced para `null` (não dá pra extrair geo confiável de string livre); objeto continua aceito normalmente. Antes deste fix, payloads com address-string falhavam em `payload_validation` → 400 → eventos perdidos.
 
 Os campos são consumidos por dispatchers outbound:
 - **Meta CAPI** hasheia para `user_data.{ct,st,zp,country}` em `buildMetaCapiDispatchFn`.
@@ -191,9 +206,12 @@ Para `subscription`: `id` = campo `id` da assinatura (ex: `sub_BOAEj2WTKoclmg4X`
 | `refunded` | Processar como `RefundProcessed` |
 | `chargedback` | Processar como `Chargeback` |
 | `canceled` | Processar como `OrderCanceled` |
+| `abandoned` | Processar como `InitiateCheckout` (recuperação de checkout iniciado e não finalizado — Sprint 14, T-RECOVERY-001) |
 | `waiting_payment` | Ignorar (pedido pendente) |
 | `expired` | Ignorar |
 | outros | DLQ com `processing_status='failed'` |
+
+> **`abandoned` → `InitiateCheckout`**: dispara dispatch outbound para Meta CAPI (`InitiateCheckout`) e GA4 MP (`begin_checkout`). Antes de Sprint 14 caía em `default → unknown_status` (mapping_failed). Use case: alimentar tela `GET /v1/launches/:id/recovery` com checkouts iniciados mas não completados.
 
 ## Status de assinatura mapeáveis
 

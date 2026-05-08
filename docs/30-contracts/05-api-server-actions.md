@@ -41,7 +41,8 @@ Identifica/cria lead, registra consent, emite `lead_token`.
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-lead-v1` |
 | **Auth** | `X-Funil-Site` |
-| **Body** | `{ event_id, schema_version, launch_public_id, page_public_id, email?, phone?, name?, attribution, consent }` (mín. um de email/phone) |
+| **Body** | `{ event_id, schema_version, launch_public_id, page_public_id, email?, phone?, name?, attribution, consent, cf_turnstile_response? }` (mín. um de email/phone) |
+| **Consent** | `consent.analytics` e `consent.marketing` aceitam tanto `boolean` quanto string GA-style (`'granted'/'denied'/'unknown'`) — string é normalizada para boolean (`'granted' → true`). `consent.functional` permanece `boolean` (default `true`). Campos opcionais granulares (GA4/Meta) `ad_user_data`, `ad_personalization`, `customer_match` aceitos como string `'granted'/'denied'/'unknown'` (passthrough — `lead` handler não usa, mas evita rejeição de `.strict()`). Mesmo padrão de `EventPayloadSchema.consent` para alinhar com tracker.js que envia strings. |
 | **Side effects** | (1) Insert em `raw_events`; (2) ingestion processor cria/atualiza lead via `lead_aliases`; (3) emit `lead_token`; (4) `Set-Cookie: __ftk` |
 | **Response 202** | `{ lead_public_id, lead_token, expires_at, status: 'accepted' }` |
 | **Set-Cookie** | `__ftk=<token>; Path=/; SameSite=Lax; Secure; Max-Age=5184000` (60d default — configurável por workspace) |
@@ -314,6 +315,40 @@ Lista launches do workspace. Passa a incluir `funnel_blueprint` em cada objeto d
 | **Auth** | `Authorization: Bearer <token>` |
 | **Response 200** | `{ launches: [{ id, public_id, name, status, config, funnel_blueprint, created_at }], request_id }` — `funnel_blueprint` é `null` quando não configurado |
 | **Errors** | `401 unauthorized`, `503 service_unavailable` |
+
+### `GET /v1/launches/:public_id/leads` (Sprint 16 — T-LEADS-VIEW-002)
+
+Lista paginada de leads que tocaram o funil de um launch (events.launch_id ou lead_stages.launch_id), com flags booleanas dinâmicas derivadas de `funnel_blueprint.leads_view`.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launch-leads-list-v1` |
+| **Auth** | JWT Supabase (mesmo pattern do `/v1/leads` e `/v1/launches/:id/recovery`); `workspace_id` resolvido por `workspace_members` (BR-RBAC-001) — nunca via body/path |
+| **Path** | `:public_id` = `launches.public_id` |
+| **Query** | `limit?` (default 50, max 100), `cursor?` (ISO timestamp em `leads.created_at`), `q?` (UUID/email/phone/name — mesmo detection de `/v1/leads`), `column_filter?` (chave de coluna do `leads_view`), `stage_filter?` (slug presente em `leads_view.stage_progression`) |
+| **Resolução de colunas** | Colunas vêm de `funnel_blueprint.leads_view.columns[]`. Cada coluna tem `type ∈ {tag, stage, event, any}` + `source` ou `sources[]`. Edge constrói EXISTS subqueries parametrizadas (BR-PRIVACY-001 — sem string interpolation; chaves sanitizadas para `[a-z0-9_]`). |
+| **CTE `launch_leads`** | DISTINCT lead_ids com pelo menos 1 evento ou stage no launch; previne lead "alheio" aparecer. |
+| **Mascaramento** | `display_email` / `display_phone` em claro para `owner`/`admin`/`marketer`/`privacy`; mascarados para `operator`/`viewer` (ADR-034 / BR-IDENTITY-006). `pii_masked` no item indica se mascaramento foi aplicado. |
+| **Response 200** | `{ items: Array<{ lead_id, lead_name, display_email, display_phone, pii_masked, current_stage, current_stage_index, columns: Record<string, boolean>, last_event_at, created_at }>, next_cursor, total, leads_view, role }` |
+| **`current_stage`** | Stage com maior `array_position` em `stage_progression` para o lead naquele launch (NULLS LAST → stages fora da progressão não sobrescrevem stages conhecidos). |
+| **`last_event_at`** | `GREATEST(MAX(events.event_time), MAX(lead_stages.ts))` no launch. |
+| **Mount order (Hono)** | Mounted **antes** de `launchesRoute` em `apps/edge/src/index.ts` para evitar que o middleware catch-all `*` de `launchesRoute` intercepte `/:public_id/leads`. |
+| **Errors** | `400 validation_error` (query params, cursor inválido, column_filter/stage_filter desconhecido), `401 unauthorized`, `404 launch_not_found`, `422 leads_view_not_configured`, `422 leads_view_invalid` (Zod falhou em `funnel_blueprint.leads_view`), `500 internal_error`, `503 service_unavailable` |
+
+### `GET /v1/launches/:public_id/recovery` (Sprint 14 — T-RECOVERY-004)
+
+Lista paginada de eventos de recuperação (intenção de compra não-completada) para um launch. Todos os eventos vêm de `event_source = 'webhook:guru'`.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-launch-recovery-list-v1` |
+| **Auth** | JWT Supabase (mesmo pattern do `/v1/leads` e `/v1/launches/:id/leads`); `workspace_id` resolvido por `workspace_members` (BR-RBAC-001) |
+| **Path** | `:public_id` = `launches.public_id` |
+| **Query** | `limit?` (default 50, max 100), `cursor?` (ISO timestamp; só eventos com `event_time < cursor`), `event_type?` ∈ `InitiateCheckout` \| `OrderCanceled` \| `RefundProcessed` \| `Chargeback` (omitido = todos) |
+| **Filtragem** | `events.workspace_id = $ws AND events.launch_id = $launch AND event_name IN (RECOVERY_EVENT_NAMES) AND event_source = 'webhook:guru'` (LEFT JOIN `leads` para `name`/`email_enc`/`phone_enc`/`pii_key_version`). Ordenação por `event_time DESC`. |
+| **Mascaramento** | `display_email` / `display_phone` decifrados on-demand (best-effort — `null` em falha de chave); BR-PRIVACY-001 garante que plaintexts nunca aparecem em logs. |
+| **Response 200** | `{ items: Array<{ event_id, event_name, event_time, lead_id, lead_name, display_email, display_phone, amount, currency, product_name }>, next_cursor, total }` — `amount`/`currency`/`product_name` extraídos de `events.custom_data` jsonb (parser defensivo contra double-encoding). |
+| **Errors** | `400 validation_error` (query params, cursor inválido), `401 unauthorized`, `404 launch_not_found`, `500 internal_error`, `503 service_unavailable` |
 
 ### `PATCH /v1/launches/:id` (Sprint 10)
 

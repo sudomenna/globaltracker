@@ -62,7 +62,7 @@ Definidas em `50-business-rules/` (Fase 5).
 
 | Domínio | Quantidade prevista | Status |
 |---|---:|---|
-| BR-IDENTITY | ~6 | planned |
+| BR-IDENTITY | 8 (001–006, 008 + 007 derivado) | active |
 | BR-PRIVACY | ~5 | planned |
 | BR-CONSENT | ~4 | planned |
 | BR-EVENT | ~6 | planned |
@@ -96,6 +96,8 @@ Definidos em `30-contracts/` (Fase 4).
 | CONTRACT-api-products-patch-v1 | API endpoint (Sprint 16) | active |
 | CONTRACT-api-launch-products-list-v1 | API endpoint (Sprint 16) | active |
 | CONTRACT-api-launch-products-upsert-v1 | API endpoint (Sprint 16) | active |
+| CONTRACT-api-launch-leads-list-v1 | API endpoint (Sprint 16, T-LEADS-VIEW-002) | active |
+| CONTRACT-api-launch-recovery-list-v1 | API endpoint (Sprint 14, T-RECOVERY-004) | active |
 
 ## TE-* (Timeline events / domain events)
 
@@ -192,6 +194,28 @@ Em `90-meta/03-open-questions-log.md`.
 | OQ-011 | **fechada** (Sprint 3) | bloqueante (resolvida) |
 | OQ-012 | aberta | pode esperar (antes Sprint 6) |
 
+## INV-* (Invariantes — registro vivo)
+
+Subset registrado a partir de Sprint 16 (T-LEADS-VIEW-002 / T-CONTACTS-LASTSEEN-002). INVs estabelecidas anteriormente vivem nos respectivos `docs/20-domain/<NN>-mod-*.md § 7`.
+
+| ID | Módulo | Enforcement | Doc canônica |
+|---|---|---|---|
+| INV-IDENTITY-001..008 | MOD-IDENTITY | DB constraint + domain | `20-domain/04-mod-identity.md § 7` |
+| INV-IDENTITY-LASTSEEN-MONOTONIC | MOD-IDENTITY | Domain (`GREATEST` no UPDATE) | `20-domain/04-mod-identity.md § 7` + `BR-IDENTITY-008` |
+| INV-LEAD-TAG-001 | MOD-IDENTITY | DB UNIQUE `(workspace_id, lead_id, tag_name)` + UPSERT idempotente | `20-domain/04-mod-identity.md § 7` |
+| INV-LEAD-TAG-002 | MOD-IDENTITY | Service-layer (formato de `set_by`) | `20-domain/04-mod-identity.md § 7` |
+| INV-EVENT-007 | MOD-EVENT | Domain (raw-events-processor) — eventos com `lead_token` válido têm `lead_id` resolvido pelo processor; backfill retroativo `visitor_id → lead_id` em Step 8 | `20-domain/05-mod-event.md § 7` |
+
 ## T-*
 
 Definidas nos arquivos de sprint em `80-roadmap/` (Fase 7 da geração de docs).
+
+### Registrados desde Sprint 16
+
+| ID | Onda / Sprint | Docs afetadas |
+|---|---|---|
+| T-LEADS-VIEW-001 | Sprint 16 | migration `0044_lead_tags_and_blueprint_extension.sql`, `20-domain/04-mod-identity.md` (entidade LeadTag) |
+| T-LEADS-VIEW-002 | Sprint 16 | `30-contracts/05-api-server-actions.md` (GET /v1/launches/:id/leads), `30-contracts/07-module-interfaces.md` (setLeadTag/applyTagRules) |
+| T-RECOVERY-001 | Sprint 14 | `40-integrations/13-digitalmanager-guru-webhook.md` (abandoned → InitiateCheckout) |
+| T-RECOVERY-004 | Sprint 14 | `30-contracts/05-api-server-actions.md` (GET /v1/launches/:id/recovery) |
+| T-CONTACTS-LASTSEEN-002 | Sprint 16 | `BR-IDENTITY-008`, `INV-IDENTITY-LASTSEEN-MONOTONIC`, `30-contracts/07-module-interfaces.md` (resolveLeadByAliases options.eventTime) |

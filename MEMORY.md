@@ -143,17 +143,194 @@
 | Sprint 13 | **planned** (refocado 2026-05-05 — funil B foundation: phone normalizer BR + SendFlow inbound + cleanups S12) | `docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md` |
 | Sprint 14 | **completed** (2026-05-08, commit f19b488 — Ondas 1-6 entregues; T-14-017 backfill adiado — ver §6 Tarefas futuras) | `docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md` |
 | Sprint 15 | **planned** (renumerado de Sprint 14 antigo em 2026-05-06 — webhook adapters Hotmart/Kiwify/Stripe) | `docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md` |
-| Sprint 16 | **in progress** (Ondas 1-8 entregues + commitadas + doc-sync ok 2026-05-08) | a criar |
+| Sprint 16 | **in progress** (Ondas 1-12 entregues + commitadas + doc-sync ok 2026-05-08) | a criar |
 
 ## §5 Ponto atual de desenvolvimento
 
 ```
 Estado:        SPRINT 14 ENCERRADO (2026-05-08, commit f19b488).
-               SPRINT 16 ABERTO — Ondas 1-8 entregues e doc-sync feito (2026-05-08).
+               SPRINT 16 ABERTO — Ondas 1-12 entregues e doc-sync feito (2026-05-08).
                Onda 7 = Lead Lifecycle + Products Catalog (commit cf66e83).
                Onda 8 = Launch Products + UI revamp + cadastro manual de produtos
                         (commits 0fb5ca6, 2c04c97, 542c5e0, 0d6a0ed).
-               Doc-sync Ondas 7+8 entregue (commit a fazer).
+               Onda 9 = Recovery de Vendas (commit 938a01f).
+               Onda 10 = Contatos vs Leads + lead_tags + tag_rules (commit 72ce0ee).
+               Onda 11 = PII enrichment via Guru + last_seen_at monotônico (commit 1279304).
+               Onda 12 = lead-payload consent string|bool + visitor_id arch docs
+                        (commits ed14fd5, 854ecd5).
+               Doc-sync Ondas 9-12 entregue (commit a fazer).
+
+               ====================================================================
+               SPRINT 16 — Onda 12: Lead-payload consent fix + visitor_id arch (2026-05-08)
+               ====================================================================
+
+               ✅ Bug crítico encontrado em E2E real: POST /v1/lead retornava 400
+                  silencioso. Form submit nunca criava lead em prod.
+
+               Causa raiz:
+                  • lead-payload.ts ConsentSchema esperava boolean estrito
+                    { analytics, marketing, functional }
+                  • Tracker.js evoluiu pra mandar consent como string
+                    'granted'/'denied' (padrão GA4/Meta) + 5 campos
+                    (ad_user_data, ad_personalization, customer_match)
+                  • Schema .strict() rejeitava → 400
+                  • event-payload.ts (POST /v1/events) já tinha BoolOrConsentString
+                    desde T-OPB; lead-payload.ts ficou para trás.
+
+               Fix:
+                  • lead-payload.ts: BoolOrConsentString aplicado em
+                    analytics/marketing + 3 campos GA4 opcionais aceitos.
+                  • Schema mantém .strict() pra outros campos.
+
+               E2E validado (browser real via Playwright MCP):
+                  • Form submit → 202
+                  • Lead criado: E2E Test Tiago 2 (4f81e470)
+                  • PII enriquecida (email_enc + phone_enc) via fix Onda 11
+                  • Eventos PageView/click_buy_workshop anteriores
+                    re-atribuídos retroativamente via INV-EVENT-007
+                  • Stage lead_workshop promovido (blueprint)
+                  • Dispatch Meta CAPI succeeded (external_id, IP, UA, geo)
+                  • Dispatch GA4 MP succeeded (client_id do _ga)
+
+               Doc-sync (visitor_id architecture, commit 854ecd5):
+                  • Investigação revelou que visitor_id está em coluna
+                    dedicada events.visitor_id, NÃO em events.user_data JSONB.
+                  • Confundiu durante debug (olhei no JSONB primeiro).
+                  • Documentado em docs/20-domain/04-mod-identity.md
+                    §"Storage de visitor_id" + docs/40-integrations/01-meta-capi.md
+                    §"Origem do external_id" + comentário inline no UserDataSchema.
+
+               Deploys edge: 83afe16c (consent fix).
+
+               ====================================================================
+               SPRINT 16 — Onda 11: PII enrichment via Guru + last_seen_at (2026-05-08)
+               ====================================================================
+
+               ✅ Bugs críticos descobertos via tela Contatos:
+                  • Bug A: Leads vindos de webhook Guru ficavam sem PII em claro
+                    (email_enc=NULL, phone_enc=NULL, name=NULL) — só com hash.
+                    Apareciam como "—" na tela Contatos.
+                  • Bug B: leads.last_seen_at = NOW() ignorava event_time real,
+                    causando "clusters" de timestamps duplicados em backfills/replays.
+
+               Bug A — Guru enrichLeadPii:
+                  • guru-raw-events-processor.ts agora chama enrichLeadPii após
+                    resolveLeadByAliases. Mesmo padrão de routes/lead.ts e sendflow.
+                  • index.ts queue consumer passa env.PII_MASTER_KEY_V1 ao processor
+                    (assinatura ganhou parâmetro opcional).
+                  • Backfill: 115 webhooks Guru re-postados → ~30 leads orphan
+                    enriquecidos (nome+email+phone em claro).
+
+               Bug B — last_seen_at monotônico:
+                  • resolveLeadByAliases ganhou options?: { eventTime?: Date }
+                  • Case A insert: firstSeenAt + lastSeenAt = eventTime ?? now
+                  • Case B update: lastSeenAt = GREATEST(current, eventTime)
+                  • Case C merge: mesmo GREATEST no canonical
+                  • updatedAt continua = NOW() (separado)
+                  • 4 call sites atualizados (lead.ts, raw-events, guru, sendflow)
+                  • INV-IDENTITY-LASTSEEN-MONOTONIC + BR-IDENTITY-008 novos
+                  • Backfill SQL: 54 leads tiveram timestamp restaurado para
+                    max(events.event_time) — eliminados clusters 04:31/22:45 BRT.
+
+               Estado final tela Contatos:
+                  • 86 leads totais
+                  • 18 sem PII em claro restantes — todos legítimos:
+                    10 visitors anônimos só do tracker, 3 SendFlow-only
+                    (SendFlow só fornece phone), 5 sem fonte de PII
+
+               Tests: 3 novos lead-resolver-event-time. Suite identity 112/112.
+               Deploy edge: d6ff7b4a.
+
+               ====================================================================
+               SPRINT 16 — Onda 10: Contatos vs Leads + lead_tags (2026-05-08)
+               ====================================================================
+
+               ✅ Separa "Contatos" (visão workspace-wide) de "Leads" (visão por launch).
+                  Introduz 3 conceitos distintos: Stage, Event, Tag.
+
+               Schema (migration 0044):
+                  • lead_tags table workspace-scoped + RLS + uq por
+                    (workspace_id, lead_id, tag_name) + idx por tag_name.
+                  • Adiciona leads_view + tag_rules ao funnel_blueprint
+                    (template paid_workshop_v3 + snapshot wkshop-cs-jun26)
+                    via jsonb_set.
+
+               Conceitos:
+                  • Stage (lead_stages — já existia): progressão monotônica
+                    no funil, max 1 ativa por lead/launch.
+                  • Event (events — já existia): fato pontual, pode repetir.
+                  • Tag (lead_tags — NOVO): atributo binário, atemporal,
+                    workspace-scoped. Eventos podem disparar simultaneamente
+                    stage promotion + tag set via tag_rules do blueprint.
+
+               Backend:
+                  • lib/lead-tags.ts: setLeadTag (UPSERT idempotente) +
+                    applyTagRules (lê regras, filtra por event + when).
+                  • 3 processadores (raw-events, guru, sendflow) chamam
+                    applyTagRules após stage promotion. Falha não bloqueia.
+
+               API nova: GET /v1/launches/:public_id/leads
+                  • Colunas dinâmicas geradas a partir do leads_view.columns
+                    do blueprint (type stage|event|tag|any com EXISTS por col).
+                  • current_stage computado via array_position(progression)
+                    DESC NULLS LAST → stage mais avançada do lead no funil.
+                  • RBAC + masking ADR-034. Cursor pagination.
+                  • Hotfix array literal pg-cloudflare-workers: progression
+                    serializada como '{"a","b"}'::text[] em vez de JS array.
+
+               CP:
+                  • /leads → /contatos (mv do diretório + sidebar + 2 links
+                    em EventConsole).
+                  • Nova aba "Leads" no detalhe do launch consumindo o
+                    endpoint, com colunas dinâmicas, badges humanizados,
+                    filtros column/stage, search debounced, paginação.
+
+               Backfill retroativo: 73 lead_tags em events históricos
+                  (47 bait_purchased + 26 joined_group).
+
+               Tests: 13 unit lead-tags + 3 lead-resolver-event-time. Verde.
+               Deploys edge: bc11afa8 → e818d984 (array literal hotfix).
+
+               ====================================================================
+               SPRINT 16 — Onda 9: Recovery de Vendas (2026-05-08)
+               ====================================================================
+
+               ✅ Conceito de "Recuperação de Vendas": leads que mostraram
+                  intenção de compra mas não completaram. Inclui checkouts
+                  abandonados, vendas canceladas, refunds, chargebacks.
+
+               Bug 1 — Guru abandoned status:
+                  • mapper.ts adiciona case 'abandoned' → InitiateCheckout.
+                  • Antes caía em default → mapping_failed:unknown_status (5
+                    eventos failed nas últimas 24h).
+                  • Dispatch automático: Meta CAPI InitiateCheckout +
+                    GA4 begin_checkout (mapeamentos já existiam).
+                  • Backfill: 5 abandoned históricos → 2 InitiateCheckout
+                    únicos após dedup + 4 dispatch_jobs pending.
+
+               Bug 2 — contact.address string:
+                  • guru-raw-events-processor.ts usa z.preprocess para
+                    coercer string plana → null (não dá pra extrair geo
+                    de "Rua Acre" livre).
+                  • 2 eventos approved backfillados.
+
+               Bug 3 — SendFlow 56 raw_events pending:
+                  • Processor tinha código correto (markRawEventProcessed em
+                    todos paths). Causa: backfill da Onda 4 inseriu novos
+                    raw_events sem enfileirar — ficaram órfãos.
+                  • Script fix: 56 marcados como processed via match
+                    events.event_id = payload.id.
+                  • Verificado: meta_capi + ga4_mp dispatch_jobs cobrem
+                    todos os 28 events únicos.
+
+               Recovery API: GET /v1/launches/:public_id/recovery
+                  • Lista paginada de eventos InitiateCheckout/OrderCanceled/
+                    RefundProcessed/Chargeback de event_source=webhook:guru.
+                  • Mount ANTES de launchesRoute em index.ts.
+
+               CP: aba "Recuperação" no detalhe do lançamento.
+
+               Deploy edge: f798d162.
 
                ====================================================================
                SPRINT 16 — Onda 8: Launch Products + UI revamp (2026-05-08)

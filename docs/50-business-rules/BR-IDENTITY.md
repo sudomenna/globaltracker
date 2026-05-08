@@ -313,3 +313,68 @@ Scenario: viewer tenta revelar PII
 ```ts
 // BR-IDENTITY-006 (ADR-034): role ≥ marketer → PII em claro; operator → reveal+audit; viewer → bloqueado
 ```
+
+---
+
+## BR-IDENTITY-008 — `leads.last_seen_at` reflete o tempo do evento mais recente, não o tempo de processamento
+
+### Status
+Stable (Sprint 16 — T-CONTACTS-LASTSEEN-002).
+
+### Enunciado
+`leads.last_seen_at` **DEVE** corresponder ao maior `event_time` (timestamp de origem, não de processamento) entre todos os eventos já associados ao lead. Replays e backfills de eventos antigos **NÃO PODEM** regredir o valor para o passado nem bumpá-lo para `NOW()` quando o evento real é antigo.
+
+### Motivação
+- `last_seen_at` é a métrica de "última atividade" exibida no Control Plane (tela Contatos, ranking de engajamento).
+- Reprocessar eventos antigos (replay de webhook, recovery via Guru REST API, migrations de raw_events) não é nova atividade do lead — é trabalho de infraestrutura.
+- Sem essa garantia: replay de webhook semana atrás faz lead "reaparecer" no topo da lista; ou pior, ordem cronológica é destruída e leads recém-ativos somem.
+
+### Enforcement
+- **Domain:** `resolveLeadByAliases(input, workspace_id, db, options?: { eventTime })` aceita `options.eventTime` opcional. Implementação em `apps/edge/src/lib/lead-resolver.ts`:
+  - Caso A (`createNewLead`): `firstSeenAt = lastSeenAt = eventTime ?? NOW()`.
+  - Caso B (`updateExistingLead`): `lastSeenAt = GREATEST(COALESCE(current, '-infinity'::timestamptz), eventTime ?? NOW())`.
+  - Caso C (`mergeLeads`): mesmo `GREATEST` aplicado ao canonical.
+  - `updatedAt` sempre `= NOW()` (decorrelacionado de `last_seen_at`).
+- **Call sites:**
+  - `routes/lead.ts` (live form submit) → `new Date()`.
+  - `lib/raw-events-processor.ts` (tracker pipeline) → `new Date(payload.event_time)`.
+  - `lib/guru-raw-events-processor.ts` (Guru webhook) → `dates.confirmed_at ?? created_at ?? rawEvent.receivedAt`.
+  - `routes/webhooks/sendflow.ts` → `payload.data.createdAt` com fallback.
+- **Retrocompat:** `options?` opcional — call sites legacy sem `eventTime` mantêm comportamento `NOW()` (live submit semantics).
+
+### Invariante derivada
+**INV-IDENTITY-LASTSEEN-MONOTONIC** — `leads.last_seen_at` é monotonicamente não-decrescente. Garantido por `GREATEST(current, candidate)` em todos os UPDATE paths do resolver.
+
+### Aplica-se a
+MOD-IDENTITY, MOD-EVENT (raw-events-processor), MOD-WEBHOOK (guru/sendflow).
+
+### Critérios de aceite
+
+```gherkin
+Scenario: live form submit usa NOW
+  Given lead L sem last_seen_at
+  When POST /v1/lead → resolveLeadByAliases sem options.eventTime
+  Then leads.last_seen_at ≈ NOW()
+
+Scenario: webhook com event_time recente avança last_seen_at
+  Given lead L last_seen_at = 2026-01-01
+  When webhook chega com event_time = 2026-05-08 → resolveLeadByAliases com options.eventTime = 2026-05-08
+  Then leads.last_seen_at = 2026-05-08
+
+Scenario: replay de webhook antigo NÃO regride last_seen_at
+  Given lead L last_seen_at = 2026-05-08
+  When replay de webhook chega com event_time = 2025-12-01 → resolveLeadByAliases com options.eventTime = 2025-12-01
+  Then leads.last_seen_at permanece 2026-05-08 (GREATEST guarda)
+
+Scenario: merge canônico não regride last_seen_at do canonical
+  Given lead canonical C last_seen_at = 2026-05-08
+  And lead secondary S last_seen_at = 2026-04-01
+  When mergeLeads com options.eventTime = 2026-04-15 (event que disparou o merge)
+  Then C.last_seen_at permanece 2026-05-08
+```
+
+### Citação em código
+```ts
+// BR-IDENTITY-008 / INV-IDENTITY-LASTSEEN-MONOTONIC: last_seen_at é monotônico
+//   GREATEST(COALESCE(current, '-infinity'::timestamptz), eventTime ?? NOW())
+```

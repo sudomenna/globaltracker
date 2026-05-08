@@ -76,6 +76,23 @@
 - `page_token_hash` (binding — token roubado não funciona em outra página)
 - `issued_at`, `expires_at`, `revoked_at`, `last_used_at`
 
+### LeadTag (T-LEADS-VIEW-001 — Sprint 16)
+- `id` (uuid PK), `workspace_id` (FK → workspaces, ON DELETE CASCADE)
+- `lead_id` (FK → leads, ON DELETE CASCADE — tag desaparece em hard-delete/SAR)
+- `tag_name` (text — operator-defined; convenções vivem em `funnel_blueprint.tag_rules`)
+- `set_at` (timestamptz, default now)
+- `set_by` (text — proveniência; INV-LEAD-TAG-002 — formato `system | user:<uuid> | integration:<name> | event:<event_name>`; validação em service-layer, sem CHECK DB)
+- **UNIQUE** `(workspace_id, lead_id, tag_name)` via index `uq_lead_tags_workspace_lead_tag` — INV-LEAD-TAG-001
+- **RLS** policy `lead_tags_workspace_isolation` (dual-mode: GUC `app.current_workspace_id` + JWT-derived `auth_workspace_id()`)
+- **Indexes:** `idx_lead_tags_workspace_tag (workspace_id, tag_name)` para "todos leads com tag X"; `idx_lead_tags_lead (lead_id)` para "todas tags de um lead"
+
+Diferença canônica:
+- `lead_stages` → progressão monotônica num funil (com `source_event_id`, recurring, etc.).
+- `events` → fato pontual com timestamp.
+- `lead_tags` → atributo binário do lead, atemporal, workspace-scoped.
+
+Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:wpp_joined` → stage `group_joined` + tag `joined_group`). Helpers `setLeadTag` / `applyTagRules` em `apps/edge/src/lib/lead-tags.ts` (ver MOD-IDENTITY § 10 e `30-contracts/07-module-interfaces.md`).
+
 ## 4. Relações
 
 - `Lead 1—N LeadAlias`
@@ -114,6 +131,9 @@
 - **INV-IDENTITY-006 — `LeadToken` válido só com claim `page_token_hash` correspondente a `page_token` ativa ou rotating.** Validador no Edge. Testável.
 - **INV-IDENTITY-007 — Hash de email/phone usa normalização canônica antes do SHA-256.** Email: lowercase + trim. Phone: E.164. Testável: `hash('  Foo@Bar.COM ') === hash('foo@bar.com')`.
 - **INV-IDENTITY-008 — `leads.email_hash` e `leads.phone_hash` são populados (denormalizados) no momento da criação/atualização do lead por `resolveLeadByAliases()`.** Ao criar um novo lead (`createNewLead`), `emailHash` e `phoneHash` recebem os hashes dos aliases correspondentes. Ao atualizar um lead existente (`updateExistingLead`), as colunas são atualizadas quando novos aliases de email/phone são fornecidos. Essa denormalização permite que o dispatcher verifique elegibilidade (presença de `user_data`) sem join em `lead_aliases` a cada despacho.
+- **INV-IDENTITY-LASTSEEN-MONOTONIC — `leads.last_seen_at` é monotonicamente não-decrescente.** `resolveLeadByAliases(input, workspace_id, db, options?: { eventTime })` aplica `lastSeenAt = GREATEST(COALESCE(current, '-infinity'::timestamptz), eventTime ?? NOW())` no UPDATE — em casos B (lead existente) e C (mergeLeads → canonical). No caso A (createNewLead), `firstSeenAt = lastSeenAt = eventTime ?? NOW()`. Backfills/replays de eventos antigos não bumpam o timestamp para trás (nem para frente além do event_time real). `updatedAt` continua sempre `= NOW()` (separado de last_seen_at). Testável: `tests/unit/identity/lead-resolver-lastseen-monotonic.test.ts`. Ver BR-IDENTITY-008.
+- **INV-LEAD-TAG-001 — `(workspace_id, lead_id, tag_name)` é único em `lead_tags`.** Garantido via UNIQUE index + UPSERT idempotente em `setLeadTag` (`ON CONFLICT DO NOTHING`).
+- **INV-LEAD-TAG-002 — `lead_tags.set_by` segue formato canônico `system | user:<uuid> | integration:<name> | event:<event_name>`.** Validação no service layer (não há CHECK DB — flexibilidade para novas fontes sem migration).
 
 ### Storage de `visitor_id`
 
@@ -145,7 +165,9 @@
 
 ## 10. Contratos expostos
 
-- `resolveLeadByAliases({email, phone, external_id}, workspace_id, ctx): Result<{lead_id, was_created, merge_executed, merged_lead_ids}, ResolutionError>`
+- `resolveLeadByAliases({email, phone, external_id}, workspace_id, ctx, options?: { eventTime?: Date }): Result<{lead_id, was_created, merge_executed, merged_lead_ids}, ResolutionError>` — `options.eventTime` (Sprint 16) é usado como `first_seen_at` (caso A) e como candidato a `last_seen_at` via `GREATEST` (casos B e C). Omitir = `NOW()`. Ver INV-IDENTITY-LASTSEEN-MONOTONIC.
+- `setLeadTag({ db, workspaceId, leadId, tagName, setBy }): { ok: true } | { ok: false; error }` — UPSERT idempotente em `lead_tags` (`apps/edge/src/lib/lead-tags.ts`). INV-LEAD-TAG-001/002.
+- `applyTagRules({ db, workspaceId, leadId, eventName, eventContext?, tagRules, requestId? }): { applied, skipped }` — lê regras do blueprint (`tag_rules[]`), filtra por `event` + `when` (AND lógico de keys), chama `setLeadTag` para cada match. Não levanta — falhas viram log + `skipped++`.
 - `createLeadConsent(lead_id, consent, source, policy_version, ctx): Result<LeadConsent>`
 - `getLatestConsent(lead_id, finality): Result<ConsentValue, NotFound>` — para dispatcher checar consent antes de envio.
 - `issueLeadToken(lead_id, page_token_hash, ttl_days, ctx): Result<{token_clear, expires_at}>`
@@ -173,9 +195,12 @@
 - `packages/db/src/schema/lead_merge.ts`
 - `packages/db/src/schema/lead_consent.ts`
 - `packages/db/src/schema/lead_token.ts`
+- `packages/db/src/schema/lead_tag.ts`
 - `apps/edge/src/lib/lead-resolver.ts`
+- `apps/edge/src/lib/lead-tags.ts`
 - `apps/edge/src/lib/lead-token.ts`
 - `apps/edge/src/lib/pii.ts`
+- `apps/edge/src/lib/pii-enrich.ts`
 - `apps/edge/src/lib/consent.ts`
 - `apps/edge/src/lib/cookies.ts` (set/read `__ftk`)
 - `apps/edge/src/routes/admin/leads-erase.ts`

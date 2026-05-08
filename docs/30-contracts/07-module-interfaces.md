@@ -102,12 +102,26 @@ export interface IdentityModule {
     identifiers: { email?: string; phone?: string; external_id?: string },
     workspace_id: string,
     ctx: Ctx,
+    options?: { eventTime?: Date }, // T-CONTACTS-LASTSEEN-002 (Sprint 16)
   ): Promise<Result<{
     lead_id: string;
     was_created: boolean;
     merge_executed: boolean;
     merged_lead_ids: string[];
   }, ResolutionError>>;
+  // options.eventTime — quando informado, é usado como timestamp do
+  //   first_seen_at (caso A — novo lead) e como candidato a last_seen_at via
+  //   GREATEST() (casos B — lead existente — e C — merge canônico). Use o
+  //   event_time real em paths webhook/replay para que reprocesso não bumpe
+  //   last_seen_at para NOW(). Omitir = NOW() (live form submit). `updated_at`
+  //   sempre = NOW() (separado de last_seen_at).
+  // INV-IDENTITY-LASTSEEN-MONOTONIC: last_seen_at é monotonicamente
+  //   não-decrescente — preservado por GREATEST(current, candidate).
+  // Call sites que passam eventTime: routes/lead.ts (live form → NOW),
+  //   lib/raw-events-processor.ts (payload.event_time),
+  //   lib/guru-raw-events-processor.ts (dates.confirmed_at ?? created_at ??
+  //   rawEvent.receivedAt), routes/webhooks/sendflow.ts (payload.data.createdAt
+  //   com fallback).
 
   createLeadConsent(
     lead_id: string,
@@ -150,6 +164,41 @@ export interface IdentityModule {
     actor: ActorRef,
     ctx: Ctx,
   ): Promise<Result<{email?: string; phone?: string; name?: string}, Forbidden>>;
+
+  // ---------------------------------------------------------------------
+  // Lead tags (T-LEADS-VIEW-002 — Sprint 16)
+  //
+  // Atributos binários atemporais por lead, workspace-scoped, complementando
+  // lead_stages (progressão monotônica) e events (fatos pontuais).
+  // Tag rules vivem no funnel_blueprint (`blueprint.tag_rules`).
+  // Ver MOD-IDENTITY § 3 (entidade `lead_tags`).
+  // ---------------------------------------------------------------------
+
+  setLeadTag(args: {
+    db: Db;
+    workspaceId: string;
+    leadId: string;
+    tagName: string;
+    /** 'system' | 'user:<uuid>' | 'integration:<name>' | 'event:<event_name>' */
+    setBy: string;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
+  // INV-LEAD-TAG-001: UPSERT idempotente via UNIQUE (workspace_id, lead_id,
+  //   tag_name) + ON CONFLICT DO NOTHING.
+  // INV-LEAD-TAG-002: validação de formato de set_by é responsabilidade do
+  //   caller (service-layer) — DB aceita qualquer string para flexibilidade.
+
+  applyTagRules(args: {
+    db: Db;
+    workspaceId: string;
+    leadId: string;
+    eventName: string;
+    eventContext?: Record<string, unknown>;
+    tagRules: Array<{ event: string; when?: Record<string, unknown>; tag: string }> | undefined;
+    requestId?: string;
+  }): Promise<{ applied: number; skipped: number }>;
+  // Lê regras do blueprint, filtra por event + when (AND lógico de keys),
+  // chama setLeadTag para cada match. Não levanta — falhas viram log
+  // estruturado e contagem skipped++.
 }
 ```
 
