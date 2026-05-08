@@ -37,8 +37,21 @@
  */
 
 import { Hono } from 'hono';
+import { and, eq } from 'drizzle-orm';
+import { auditLog, createDb, leads, workspaceMembers } from '@globaltracker/db';
 import { z } from 'zod';
 import { createLeadsQueryFns } from '../lib/leads-queries.js';
+import { maskEmail, maskPhone } from '../lib/pii-mask.js';
+import {
+  canRevealPii,
+  canSeePiiPlainByDefault,
+  isValidRole,
+  type WorkspaceRole,
+} from '../lib/rbac.js';
+import {
+  supabaseJwtMiddleware,
+  type LookupWorkspaceMemberFn,
+} from '../middleware/auth-supabase-jwt.js';
 import { safeLog } from '../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -51,6 +64,7 @@ type AppBindings = {
   DATABASE_URL?: string;
   PII_MASTER_KEY_V1?: string;
   DEV_WORKSPACE_ID?: string;
+  SUPABASE_URL?: string;
 };
 
 type AppVariables = {
@@ -503,6 +517,39 @@ export function createLeadsTimelineRoute(opts?: {
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Auth middleware — verifies Supabase JWT and resolves workspace_member
+  // ---------------------------------------------------------------------------
+  const buildLookupMember = (env: AppBindings): LookupWorkspaceMemberFn => {
+    return async (userId: string) => {
+      const connStr = opts?.getConnStr
+        ? opts.getConnStr(env)
+        : (env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '');
+      if (!connStr) return null;
+      const db = createDb(connStr);
+      const rows = await db
+        .select({
+          workspace_id: workspaceMembers.workspaceId,
+          role: workspaceMembers.role,
+        })
+        .from(workspaceMembers)
+        .where(eq(workspaceMembers.userId, userId))
+        .limit(1);
+      const row = rows[0];
+      if (!row || !isValidRole(row.role)) return null;
+      return { workspace_id: row.workspace_id, role: row.role };
+    };
+  };
+
+  // Middleware applied to all /v1/leads routes. Required mode: requires JWT
+  // unless DEV_WORKSPACE_ID is configured, in which case it falls back.
+  route.use('*', async (c, next) => {
+    const mw = supabaseJwtMiddleware<AppEnv>({
+      lookupMember: buildLookupMember(c.env),
+    });
+    return mw(c, next);
+  });
+
   // -------------------------------------------------------------------------
   // GET / — list leads (paginated, optional search + launch filter)
   // -------------------------------------------------------------------------
@@ -510,17 +557,15 @@ export function createLeadsTimelineRoute(opts?: {
     const requestId: string =
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
 
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader?.startsWith('Bearer ') || !authHeader.slice(7).trim()) {
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    if (!workspaceId) {
       return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
         'X-Request-Id': requestId,
       });
     }
 
-    const workspaceId =
-      (c.get('workspace_id') as string | undefined) ??
-      c.env.DEV_WORKSPACE_ID ??
-      '';
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+    const seePlain = canSeePiiPlainByDefault(role);
 
     const rawQuery = c.req.query();
     const q = rawQuery.q?.trim() || undefined;
@@ -555,9 +600,20 @@ export function createLeadsTimelineRoute(opts?: {
         ? page[page.length - 1]!.last_seen_at
         : null;
 
-    return c.json({ items: page, next_cursor: nextCursor }, 200, {
-      'X-Request-Id': requestId,
-    });
+    // ADR-034 / BR-IDENTITY-006: mask email/phone for operator/viewer.
+    const masked = seePlain
+      ? page
+      : page.map((lead) => ({
+          ...lead,
+          display_email: maskEmail(lead.display_email),
+          display_phone: maskPhone(lead.display_phone),
+        }));
+
+    return c.json(
+      { items: masked, next_cursor: nextCursor, role, pii_masked: !seePlain },
+      200,
+      { 'X-Request-Id': requestId },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -567,17 +623,15 @@ export function createLeadsTimelineRoute(opts?: {
     const requestId: string =
       (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
 
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader?.startsWith('Bearer ') || !authHeader.slice(7).trim()) {
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    if (!workspaceId) {
       return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
         'X-Request-Id': requestId,
       });
     }
 
-    const workspaceId =
-      (c.get('workspace_id') as string | undefined) ??
-      c.env.DEV_WORKSPACE_ID ??
-      '';
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+    const seePlain = canSeePiiPlainByDefault(role);
     const publicId = c.req.param('public_id');
 
     const qfnsSummary = resolveQueryFns(c.env);
@@ -599,7 +653,19 @@ export function createLeadsTimelineRoute(opts?: {
       );
     }
 
-    return c.json(summary, 200, { 'X-Request-Id': requestId });
+    const masked = seePlain
+      ? summary
+      : {
+          ...summary,
+          display_email: maskEmail(summary.display_email),
+          display_phone: maskPhone(summary.display_phone),
+        };
+
+    return c.json(
+      { ...masked, role, pii_masked: !seePlain },
+      200,
+      { 'X-Request-Id': requestId },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -855,6 +921,122 @@ export function createLeadsTimelineRoute(opts?: {
     };
 
     return c.json(response, 200, { 'X-Request-Id': requestId });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /:public_id/reveal-pii — operator+ reveals masked PII with audit
+  // ADR-034 / BR-IDENTITY-006
+  // -------------------------------------------------------------------------
+  const RevealBodySchema = z.object({
+    reason: z.string().min(3).max(500),
+  });
+
+  route.post('/:public_id/reveal-pii', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userId = (c as any).get('user_id') as string | undefined;
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+
+    if (!workspaceId || !userId) {
+      return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    if (!canRevealPii(role)) {
+      // Even denied attempts are audited (AUTHZ-001 spec).
+      const connStr = opts?.getConnStr
+        ? opts.getConnStr(c.env)
+        : (c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? '');
+      if (connStr) {
+        try {
+          const db = createDb(connStr);
+          await db.insert(auditLog).values({
+            workspaceId,
+            actorId: userId,
+            actorType: 'user',
+            action: 'read_pii_decrypted_denied',
+            entityType: 'lead',
+            entityId: c.req.param('public_id'),
+            after: { role, request_id: requestId },
+            requestContext: { request_id: requestId },
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+      return c.json({ code: 'forbidden_role', role }, 403, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = RevealBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ code: 'invalid_body', issues: parsed.error.issues }, 400, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const publicId = c.req.param('public_id');
+
+    const qfns = resolveQueryFns(c.env);
+    if (!qfns.getLeadSummary) {
+      return c.json({ code: 'unavailable' }, 503, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const summary = await qfns.getLeadSummary(publicId, workspaceId);
+    if (!summary) {
+      return c.json({ code: 'not_found' }, 404, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    // Audit BEFORE returning the plaintext.
+    const connStr = opts?.getConnStr
+      ? opts.getConnStr(c.env)
+      : (c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? '');
+    if (connStr) {
+      try {
+        const db = createDb(connStr);
+        await db.insert(auditLog).values({
+          workspaceId,
+          actorId: userId,
+          actorType: 'user',
+          action: 'read_pii_decrypted',
+          entityType: 'lead',
+          entityId: publicId,
+          after: {
+            role,
+            fields_accessed: ['email', 'phone'],
+            reason: parsed.data.reason,
+            request_id: requestId,
+          },
+          requestContext: { request_id: requestId },
+        });
+      } catch (err) {
+        safeLog('error', {
+          event: 'audit_log_failed',
+          request_id: requestId,
+          error: err instanceof Error ? err.message.slice(0, 200) : 'unknown',
+        });
+      }
+    }
+
+    return c.json(
+      {
+        lead_public_id: summary.lead_public_id,
+        display_email: summary.display_email,
+        display_phone: summary.display_phone,
+      },
+      200,
+      { 'X-Request-Id': requestId },
+    );
   });
 
   return route;

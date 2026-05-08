@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/badge';
 import { edgeFetch } from '@/lib/api-client';
 import { createSupabaseServer } from '@/lib/supabase-server';
+import { Mail, Phone } from 'lucide-react';
 import { redirect } from 'next/navigation';
 import { LeadTimelineClient } from './lead-timeline-client';
 import type {
@@ -8,14 +9,19 @@ import type {
   NodeType,
   PeriodPreset,
 } from './lead-timeline-client';
+import { RevealPiiButton } from './reveal-pii-button';
 
 // BR-IDENTITY-013: lead_public_id é o identificador externo seguro; nunca expor lead_id interno
 
 interface LeadSummary {
   lead_public_id: string;
   display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
-  created_at: string;
+  created_at?: string;
+  role?: string;
+  pii_masked?: boolean;
 }
 
 const STATUS_BADGE: Record<
@@ -132,6 +138,10 @@ export default async function LeadDetailPage({
 
   const displayName = maskDisplayName(lead?.display_name ?? null, role);
   const leadStatus = lead?.status ?? 'active';
+  const piiMasked = lead?.pii_masked === true;
+  const canReveal = role !== 'viewer' && piiMasked;
+  const edgeUrl =
+    process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
 
   return (
     <div className="space-y-6">
@@ -155,6 +165,31 @@ export default async function LeadDetailPage({
         <p className="text-sm text-muted-foreground font-mono">
           {lead_public_id}
         </p>
+
+        {/* Email + WhatsApp (mascarados quando role operator/viewer; ADR-034) */}
+        {(lead?.display_email || lead?.display_phone) && (
+          <div className="flex flex-col gap-1 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1 pt-1">
+            {lead?.display_email && (
+              <span className="inline-flex items-center gap-1.5">
+                <Mail className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="font-mono">{lead.display_email}</span>
+              </span>
+            )}
+            {lead?.display_phone && (
+              <span className="inline-flex items-center gap-1.5">
+                <Phone className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="font-mono">{lead.display_phone}</span>
+              </span>
+            )}
+            {canReveal && (
+              <RevealPiiButton
+                leadPublicId={lead_public_id}
+                accessToken={accessToken}
+                edgeUrl={edgeUrl}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* SAR/erased banner */}

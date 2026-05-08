@@ -152,6 +152,8 @@ type Bindings = {
   GA4_API_SECRET: string;
   DEBUG_GA4?: string;
   DATABASE_URL?: string;
+  // Supabase project URL — used by JWKS verification in auth middleware (ADR-034)
+  SUPABASE_URL?: string;
 };
 
 // ---------------------------------------------------------------------------

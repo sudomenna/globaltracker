@@ -32,6 +32,8 @@ ENVIRONMENT = "development"
 # Dev shortcut: workspace UUID fixo para local dev (substitui auth-cp.ts em prod)
 # Workspace "Outsiders Digital" — kaxcmhfaqrxwnpftkslj.supabase.co
 DEV_WORKSPACE_ID = "74860330-a528-4951-bf49-90f0b5c72521"
+# Supabase project URL — used by JWKS verification on auth middleware (ADR-034)
+SUPABASE_URL = "https://kaxcmhfaqrxwnpftkslj.supabase.co"
 # Bot mitigation — Cloudflare Turnstile (ADR-024)
 # Valor real via: wrangler secret put TURNSTILE_SECRET_KEY
 # Este placeholder NÃO vai para produção — é substituído pelo secret.
