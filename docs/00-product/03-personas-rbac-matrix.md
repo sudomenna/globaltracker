@@ -104,7 +104,8 @@ Convenções:
 | **AudienceSnapshot/Members** | R | R | R | R | R | − | scoped |
 | **AudienceSyncJob** | CR (trigger) | CR | CR | R | R | − | scoped |
 | **Lead (PII enc)** | R | R | Rs (hash) | Rs (hash) | R (decrypt + audit) | − | scoped (write only) |
-| **Lead (PII em claro)** | − | − | − | − | R (audit log) | − | − |
+| **Lead (PII em claro: email/phone)** | R | R | R | R (mascarado por padrão; reveal on-demand + audit) | R (audit log) | − | − |
+| **Lead (name plaintext, ADR-034)** | R | R | R | R | R | − | − |
 | **LeadAlias** | R | R | R | R | R | − | scoped |
 | **LeadMerge** | R | R | R | R | R | − | scoped |
 | **LeadConsent** | R | R | R | R | R | − | scoped |
@@ -129,9 +130,20 @@ Convenções:
 
 ## Regras de acesso (AUTHZ-*)
 
-### AUTHZ-001 — Lead PII em claro só visível por ROLE-PRIVACY ou ROLE-OWNER, sempre com audit_log
+### AUTHZ-001 — Lead PII em claro: matriz por role + audit (ampliado por ADR-034)
 
-Qualquer leitura de `leads.email_enc` decryptado, `leads.phone_enc` decryptado ou `leads.name_enc` decryptado **DEVE** gerar entry em `audit_log` com `actor_id`, `actor_type`, `entity_id=lead_id`, `action='read_pii_decrypted'`. Operação restrita a roles `owner` e `privacy`. Tentativa de leitura por outro role retorna 403 + audit log de tentativa negada.
+Acesso a `leads.email_enc` / `leads.phone_enc` decifrados segue a matriz abaixo. `leads.name` deixou de ser cifrado (ADR-034) e é plaintext em todas roles exceto Viewer.
+
+| Role | email/phone em claro | Audit em toda decifragem |
+|---|---|---|
+| `owner` | sim, sempre | não (acesso natural) |
+| `admin` | sim, sempre | não |
+| `marketer` | sim, sempre | não |
+| `privacy` | sim, sempre | sim |
+| `operator` | mascarado por padrão; reveal on-demand via `POST /v1/leads/:id/reveal-pii` | sim, on reveal |
+| `viewer` | nunca; reveal retorna 403 | n/a (sempre denied) |
+
+Tentativa de reveal por `viewer` retorna 403 + audit `read_pii_decrypted_denied`.
 
 ### AUTHZ-002 — PageToken só pode ser rotacionado por Owner/Admin/Operator
 

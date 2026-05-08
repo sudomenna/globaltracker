@@ -196,6 +196,8 @@ export type GetLeadSummaryFn = (
 ) => Promise<{
   lead_public_id: string;
   display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
   first_seen_at: string;
   last_seen_at: string;
@@ -211,6 +213,8 @@ export type ListLeadsFn = (opts: {
   Array<{
     lead_public_id: string;
     display_name: string | null;
+    display_email: string | null;
+    display_phone: string | null;
     status: 'active' | 'merged' | 'erased';
     first_seen_at: string;
     last_seen_at: string;

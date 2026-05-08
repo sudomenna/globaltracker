@@ -247,19 +247,36 @@ Scenario: token aceito durante rotação da page
 
 ---
 
-## BR-IDENTITY-006 — Decrypt de PII em claro exige role privacy/owner + audit_log
+## BR-IDENTITY-006 — Acesso a PII em claro: matriz por role + audit (ampliado por ADR-034)
 
 ### Status
-Stable (AUTHZ-001).
+Stable (AUTHZ-001) — ampliada via ADR-034 (2026-05-08).
 
 ### Enunciado
-`decryptLeadPII()` **DEVE** exigir role `privacy` ou `owner`. Cada chamada **DEVE** gerar `audit_log` entry com `action='read_pii_decrypted'` mesmo se a leitura for indireta.
+
+Acesso a `email`/`phone` em claro segue a matriz por role:
+
+| Role | Lista (`/v1/leads`) | Detalhe (`/v1/leads/:id`) | Reveal-on-demand | Audit |
+|---|---|---|---|---|
+| `owner` | claro | claro | n/a | (acesso natural — sem audit) |
+| `admin` | claro | claro | n/a | (sem audit) |
+| `marketer` | claro | claro | n/a | (sem audit) |
+| `privacy` | claro | claro | n/a | sim, em toda decifragem |
+| `operator` | mascarado | mascarado | sim, via `POST /v1/leads/:id/reveal-pii` | sim, on reveal |
+| `viewer` | mascarado | mascarado | proibido (403) | n/a (sempre denied) |
+
+**Mascaramento** (BR-IDENTITY-007 derivado):
+- Email → `<1ª letra>***@<domínio>` (ex.: `t***@gmail.com`).
+- Phone → `+<DDI> <DDD> <1º dígito>****-<últimos 4>` (ex.: `+55 11 9****-7777`).
+
+**`name`** (nome do lead) **deixou de ser PII protegido** (ADR-034) — armazenado plaintext em `leads.name` para search ILIKE. Sempre visível em todos roles.
 
 ### Motivação
-PII em claro é dado mais sensível do sistema. Acesso sem audit é violação de LGPD/GDPR.
+PII em claro de email/phone é dado sensível do sistema. Acesso sem audit é violação de LGPD/GDPR. ADR-034 amplia roles privilegiadas (`admin`, `marketer`) reconhecendo que são roles operacionais internos que precisam de acesso natural para suporte ao cliente, mantendo `operator` em fluxo de reveal-consciente e `viewer` totalmente bloqueado.
 
 ### Enforcement
-- **Domain:** `decryptLeadPII()` valida role + chama `recordAuditEntry()` antes de retornar valor.
+- **Domain:** `decryptLeadPII()` valida role + chama `recordAuditEntry()` antes de retornar valor (apenas para `privacy` e quando `operator` revela on-demand).
+- **API:** `/v1/leads` aplica máscara conforme role do JWT antes de retornar. `POST /v1/leads/:id/reveal-pii` exige role ≥ `operator`, grava audit.
 
 ### Aplica-se a
 MOD-IDENTITY, MOD-AUDIT.
@@ -267,20 +284,32 @@ MOD-IDENTITY, MOD-AUDIT.
 ### Critérios de aceite
 
 ```gherkin
-Scenario: privacy lê PII; audit log criado
-  Given role=privacy
-  When decryptLeadPII(lead_id, ['email'])
-  Then retorna email decrypted
-  And audit_log row criada com action='read_pii_decrypted', actor_id=privacy_user, fields_accessed=['email']
+Scenario: admin lê lista; PII em claro; sem audit
+  Given role=admin
+  When GET /v1/leads
+  Then response items têm display_email e display_phone em claro
+  And nenhum audit_log row criado
 
-Scenario: marketer tenta decrypt
-  Given role=marketer
-  When decryptLeadPII(lead_id, ['email'])
-  Then retorna error 'forbidden_role'
-  And audit_log row criada com action='read_pii_decrypted_denied' (registro de tentativa negada)
+Scenario: operator lê lista; PII mascarado
+  Given role=operator
+  When GET /v1/leads
+  Then response items têm display_email mascarado (formato a***@dominio.com)
+  And display_phone mascarado (formato +55 DD 9****-XXXX)
+
+Scenario: operator revela PII de um lead específico
+  Given role=operator
+  When POST /v1/leads/<id>/reveal-pii com body { reason: "suporte cliente #12345" }
+  Then retorna email e phone em claro
+  And audit_log row criada com action='read_pii_decrypted', actor_id, target_lead_id, fields_accessed=['email','phone'], reason
+
+Scenario: viewer tenta revelar PII
+  Given role=viewer
+  When POST /v1/leads/<id>/reveal-pii
+  Then retorna 403 'forbidden_role'
+  And audit_log row criada com action='read_pii_decrypted_denied'
 ```
 
 ### Citação em código
 ```ts
-// BR-IDENTITY-006: decrypt PII exige privacy/owner + audit
+// BR-IDENTITY-006 (ADR-034): role ≥ marketer → PII em claro; operator → reveal+audit; viewer → bloqueado
 ```

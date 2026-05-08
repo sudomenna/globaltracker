@@ -133,29 +133,30 @@ export async function enrichLeadPii(
     );
 
   // T-OPB-003b: Populate fn_hash / ln_hash from plaintext name (pure SHA-256 for Meta/Google).
-  // This UPDATE is unconditional — fn/ln hashes always reflect the latest known name.
-  // BR-PRIVACY-002: only hash is persisted — plaintext name is transient.
+  // ADR-034: also populate `leads.name` plaintext for ILIKE search.
+  // This UPDATE is unconditional — always reflects latest known name.
+  // BR-PRIVACY-002: only hash + plaintext name persist; raw email/phone stay encrypted.
   if (input.name) {
     const { first, last } = splitName(input.name);
     const fnHashVal = first ? await hashPiiExternal(first) : null;
     const lnHashVal = last ? await hashPiiExternal(last) : null;
 
-    if (fnHashVal !== null || lnHashVal !== null) {
-      await opts.db
-        .update(leads)
-        .set({
-          ...(fnHashVal ? { fnHash: fnHashVal } : {}),
-          ...(lnHashVal ? { lnHash: lnHashVal } : {}),
-        })
-        .where(
-          and(
-            eq(leads.id, opts.leadId),
-            eq(leads.workspaceId, opts.workspaceId),
-          ),
-        );
-      if (fnHashVal) updatedColumns.push('fnHash');
-      if (lnHashVal) updatedColumns.push('lnHash');
-    }
+    await opts.db
+      .update(leads)
+      .set({
+        name: input.name, // ADR-034: plaintext for search
+        ...(fnHashVal ? { fnHash: fnHashVal } : {}),
+        ...(lnHashVal ? { lnHash: lnHashVal } : {}),
+      })
+      .where(
+        and(
+          eq(leads.id, opts.leadId),
+          eq(leads.workspaceId, opts.workspaceId),
+        ),
+      );
+    updatedColumns.push('name');
+    if (fnHashVal) updatedColumns.push('fnHash');
+    if (lnHashVal) updatedColumns.push('lnHash');
   }
 
   return { ok: true, updated_columns: updatedColumns };

@@ -14,8 +14,9 @@ import {
   leads,
   leadStages,
 } from '@globaltracker/db';
-import { and, desc, eq, lt, sql } from 'drizzle-orm';
-import { decryptPii } from './pii.js';
+import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
+import { decryptPii, hashPii } from './pii.js';
+import { normalizeEmail, normalizePhone } from './lead-resolver.js';
 import type {
   GetDispatchJobsFn,
   GetEventsFn,
@@ -32,6 +33,8 @@ import type {
 export type LeadSummary = {
   lead_public_id: string;
   display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
   first_seen_at: string;
   last_seen_at: string;
@@ -40,6 +43,8 @@ export type LeadSummary = {
 export type LeadListItem = {
   lead_public_id: string;
   display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
   first_seen_at: string;
   last_seen_at: string;
@@ -47,11 +52,16 @@ export type LeadListItem = {
 
 export type ListLeadsOpts = {
   workspaceId: string;
-  q?: string; // UUID search
+  q?: string; // UUID / email / phone / name substring
   launchPublicId?: string;
   cursor?: Date | null;
   limit: number;
 };
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const PHONE_RE = /^[+\d][\d\s\-()]+$/;
 
 // ---------------------------------------------------------------------------
 // Factory — builds all query fns bound to a single DB connection string
@@ -87,7 +97,7 @@ export function createLeadsQueryFns(
   };
 
   // -------------------------------------------------------------------------
-  // getLeadSummary — decrypts name_enc for display
+  // getLeadSummary — returns plaintext name (ADR-034) + decrypted email/phone
   // -------------------------------------------------------------------------
   async function getLeadSummary(
     publicId: string,
@@ -97,7 +107,10 @@ export function createLeadsQueryFns(
       .select({
         id: leads.id,
         status: leads.status,
+        name: leads.name,
         nameEnc: leads.nameEnc,
+        emailEnc: leads.emailEnc,
+        phoneEnc: leads.phoneEnc,
         piiKeyVersion: leads.piiKeyVersion,
         firstSeenAt: leads.firstSeenAt,
         lastSeenAt: leads.lastSeenAt,
@@ -111,8 +124,10 @@ export function createLeadsQueryFns(
     const row = rows[0];
     if (!row) return null;
 
-    let displayName: string | null = null;
-    if (row.nameEnc) {
+    // ADR-034: prefer plaintext leads.name. Fall back to decrypt name_enc for
+    // legacy rows not yet backfilled.
+    let displayName: string | null = row.name;
+    if (!displayName && row.nameEnc) {
       const result = await decryptPii(
         row.nameEnc,
         workspaceId,
@@ -122,13 +137,35 @@ export function createLeadsQueryFns(
       if (result.ok) displayName = result.value;
     }
 
+    const [displayEmail, displayPhone] = await Promise.all([
+      decryptOrNull(row.emailEnc, workspaceId, row.piiKeyVersion),
+      decryptOrNull(row.phoneEnc, workspaceId, row.piiKeyVersion),
+    ]);
+
     return {
       lead_public_id: row.id,
       display_name: displayName,
+      display_email: displayEmail,
+      display_phone: displayPhone,
       status: row.status as LeadSummary['status'],
       first_seen_at: row.firstSeenAt.toISOString(),
       last_seen_at: row.lastSeenAt.toISOString(),
     };
+  }
+
+  async function decryptOrNull(
+    ciphertext: string | null,
+    workspaceId: string,
+    keyVersion: number,
+  ): Promise<string | null> {
+    if (!ciphertext) return null;
+    const r = await decryptPii(
+      ciphertext,
+      workspaceId,
+      masterKeyRegistry,
+      keyVersion,
+    );
+    return r.ok ? r.value : null;
   }
 
   // -------------------------------------------------------------------------
@@ -238,21 +275,38 @@ export function createLeadsQueryFns(
   };
 
   // -------------------------------------------------------------------------
-  // listLeads — paginated list with optional search and launch filter
+  // listLeads — paginated list with multi-field search (UUID/email/phone/name)
+  //
+  // Search detection (in order):
+  //   1. UUID format → exact match on leads.id
+  //   2. Email format → hashPii(workspace, normalizedEmail) → match email_hash
+  //   3. Phone format → normalizePhone + hashPii → match phone_hash
+  //   4. Else → ILIKE %q% on lower(leads.name) (indexed)
   // -------------------------------------------------------------------------
   async function listLeads(opts: ListLeadsOpts): Promise<LeadListItem[]> {
     const { workspaceId, q, launchPublicId, cursor, limit } = opts;
 
     const conditions = [eq(leads.workspaceId, workspaceId)];
 
-    // UUID search — exact match on leads.id
     if (q) {
-      const uuidLike =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (uuidLike.test(q)) {
+      if (UUID_RE.test(q)) {
         conditions.push(eq(leads.id, q));
+      } else if (EMAIL_RE.test(q)) {
+        const normalized = normalizeEmail(q);
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.emailHash, hash));
+      } else if (PHONE_RE.test(q)) {
+        const normalized = normalizePhone(q);
+        if (!normalized) return [];
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.phoneHash, hash));
+      } else {
+        // Name substring search — uses idx_leads_name_lower (lower(name) text_pattern_ops).
+        // For text_pattern_ops, the leading % defeats the index. With dataset size we
+        // currently see (sub-thousand leads/workspace) the seq scan is fine; revisit
+        // with pg_trgm if it becomes a hotspot.
+        conditions.push(ilike(leads.name, `%${q}%`));
       }
-      // Email search not supported client-side without hashing — return empty for non-UUID q
     }
 
     if (cursor) conditions.push(lt(leads.lastSeenAt, cursor));
@@ -261,7 +315,10 @@ export function createLeadsQueryFns(
       .select({
         id: leads.id,
         status: leads.status,
+        name: leads.name,
         nameEnc: leads.nameEnc,
+        emailEnc: leads.emailEnc,
+        phoneEnc: leads.phoneEnc,
         piiKeyVersion: leads.piiKeyVersion,
         firstSeenAt: leads.firstSeenAt,
         lastSeenAt: leads.lastSeenAt,
@@ -269,7 +326,6 @@ export function createLeadsQueryFns(
       .from(leads)
       .$dynamic();
 
-    // Filter by launch via lead_attributions join
     if (launchPublicId) {
       query = query
         .innerJoin(
@@ -294,22 +350,30 @@ export function createLeadsQueryFns(
       .orderBy(desc(leads.lastSeenAt))
       .limit(limit);
 
-    // Decrypt names in parallel (best-effort — null on failure)
     const items = await Promise.all(
       rows.map(async (row) => {
-        let displayName: string | null = null;
-        if (row.nameEnc) {
-          const result = await decryptPii(
+        // ADR-034: prefer plaintext leads.name; fall back to decrypt for legacy rows.
+        let displayName: string | null = row.name;
+        if (!displayName && row.nameEnc) {
+          const r = await decryptPii(
             row.nameEnc,
             workspaceId,
             masterKeyRegistry,
             row.piiKeyVersion,
           );
-          if (result.ok) displayName = result.value;
+          if (r.ok) displayName = r.value;
         }
+
+        const [displayEmail, displayPhone] = await Promise.all([
+          decryptOrNull(row.emailEnc, workspaceId, row.piiKeyVersion),
+          decryptOrNull(row.phoneEnc, workspaceId, row.piiKeyVersion),
+        ]);
+
         return {
           lead_public_id: row.id,
           display_name: displayName,
+          display_email: displayEmail,
+          display_phone: displayPhone,
           status: row.status as LeadListItem['status'],
           first_seen_at: row.firstSeenAt.toISOString(),
           last_seen_at: row.lastSeenAt.toISOString(),

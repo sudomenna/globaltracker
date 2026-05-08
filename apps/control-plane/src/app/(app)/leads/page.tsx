@@ -1,7 +1,7 @@
 'use client';
 
 import { Badge } from '@/components/ui/badge';
-import { ChevronRight, Loader2, Search, Users } from 'lucide-react';
+import { ChevronRight, Loader2, Mail, Phone, Search, Users } from 'lucide-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -36,6 +36,8 @@ function useAccessToken(): string {
 interface LeadItem {
   lead_public_id: string;
   display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
   status: 'active' | 'merged' | 'erased';
   first_seen_at: string;
   last_seen_at: string;
@@ -65,12 +67,28 @@ const STATUS_LABEL: Record<LeadItem['status'], string> = {
   erased: 'Anonimizado',
 };
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleDateString('pt-BR', {
+// ADR-034: data + hora em America/Sao_Paulo (GMT-3) — fuso operacional padrão.
+function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
+}
+
+// Format phone for display: +55 11 9XXXX-YYYY (best-effort).
+function formatPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('55')) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 9)}-${digits.slice(9)}`;
+  }
+  if (digits.length === 12 && digits.startsWith('55')) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 8)}-${digits.slice(8)}`;
+  }
+  return raw;
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
@@ -178,7 +196,7 @@ export default function LeadsPage() {
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Buscar por ID do lead…"
+            placeholder="Buscar por nome, email, telefone ou ID…"
             className="flex h-10 w-full rounded-md border border-input bg-background pl-9 pr-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           />
         </div>
@@ -225,9 +243,10 @@ export default function LeadsPage() {
                 <li key={lead.lead_public_id}>
                   <Link
                     href={`/leads/${lead.lead_public_id}`}
-                    className="flex items-center justify-between py-3 px-4 hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                    className="flex items-start justify-between gap-4 py-3 px-4 hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                   >
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      {/* Linha 1: Nome + status */}
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-medium truncate">
                           {lead.display_name ?? '—'}
@@ -236,17 +255,33 @@ export default function LeadsPage() {
                           {STATUS_LABEL[lead.status]}
                         </Badge>
                       </div>
-                      <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
-                        {lead.lead_public_id}
-                      </p>
+
+                      {/* Linha 2: Email | WhatsApp inline em sm+, stack em mobile */}
+                      <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
+                        <span className="inline-flex items-center gap-1.5 truncate">
+                          <Mail className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          <span className="truncate">
+                            {lead.display_email ?? '—'}
+                          </span>
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 truncate">
+                          <Phone className="h-3 w-3 shrink-0" aria-hidden="true" />
+                          <span className="truncate">
+                            {lead.display_phone
+                              ? formatPhone(lead.display_phone)
+                              : '—'}
+                          </span>
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 ml-4 shrink-0">
+
+                    <div className="flex items-center gap-3 shrink-0">
                       <div className="text-right hidden sm:block">
                         <p className="text-xs text-muted-foreground">
                           Última atividade
                         </p>
-                        <p className="text-xs font-medium">
-                          {formatDate(lead.last_seen_at)}
+                        <p className="text-xs font-medium tabular-nums">
+                          {formatDateTime(lead.last_seen_at)}
                         </p>
                       </div>
                       <ChevronRight

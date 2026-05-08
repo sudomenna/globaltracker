@@ -62,7 +62,13 @@ export const leads = pgTable('leads', {
   phoneEnc: text('phone_enc'),
 
   // BR-PRIVACY-003: name_enc is AES-256-GCM encrypted value (base64)
+  // DEPRECATED (ADR-034): name no longer requires cryptographic protection.
+  // Writers should populate `name` plaintext column instead. Kept for legacy reads.
   nameEnc: text('name_enc'),
+
+  // ADR-034: plaintext name for ILIKE search and direct display.
+  // Indexed via idx_leads_name_lower (lower(name) text_pattern_ops).
+  name: text('name'),
 
   // Key version for AES-256-GCM envelope encryption; used for key rotation (ADR-009)
   piiKeyVersion: smallint('pii_key_version').notNull().default(1),

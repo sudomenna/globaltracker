@@ -1019,6 +1019,73 @@ Remover ramos `if (event.user_data?.ct)` etc nos mappers e o bloco de extração
 
 ---
 
+## ADR-034 — Roles privilegiadas para PII em claro: ampliação para admin/marketer + reveal-on-demand para operator (Sprint 16)
+
+**Data:** 2026-05-08
+**Status:** Aceito
+
+### Contexto
+
+`BR-IDENTITY-006` original (AUTHZ-001) restringia decifragem de PII em claro a `privacy` e `owner`, com audit log obrigatório. Na operação real do GlobalTracker (CNE como primeiro cliente operacional), o role que efetivamente faz triagem de leads, suporte ao cliente e investigação de funil é `admin` e `marketer`. O constraint original criava fricção (toda consulta exigia troca de chapéu pra `privacy`) sem ganho de proteção concreto: `admin`/`marketer` são roles internos de equipe, não públicos.
+
+Ao mesmo tempo, exibir 30+ emails+telefones em lote num scroll de leads é exposição massiva — o tipo que LGPD pune. Para roles operacionais inferiores (`operator`, `viewer`), faz sentido manter mascarado por padrão e exigir intenção consciente para revelar.
+
+### Decisão
+
+Matriz de acesso a PII em claro (`email`, `phone`, `name` permanece sempre visível pois deixou de ser PII protegido — ver §Storage abaixo):
+
+| Role | Lista (`/v1/leads`) | Detalhe (`/v1/leads/:id`) | Audit |
+|---|---|---|---|
+| `owner` | claro | claro | (não — acesso natural) |
+| `admin` | claro | claro | (não) |
+| `marketer` | claro | claro | (não) |
+| `privacy` | claro | claro | sim, sempre |
+| `operator` | mascarado | mascarado + botão "Revelar PII" | sim, on reveal |
+| `viewer` | mascarado | mascarado, sem reveal | n/a (sempre denied) |
+
+**Mascaramento**:
+- Email: `a***@gmail.com` (1ª letra + `***@` + domínio).
+- Phone: `+55 11 9****-7777` (DDI + DDD + 9 + `****` + últimos 4 dígitos).
+
+**Reveal-on-demand** (operator):
+- Endpoint `POST /v1/leads/:public_id/reveal-pii` com body `{ reason: string }`.
+- Grava `audit_log` com `action='read_pii_decrypted'`, `actor_id`, `target_lead_id`, `fields_accessed=['email','phone']`, `reason`.
+- Retorna PII em claro no response.
+- Front-end Control Plane usa o endpoint quando o usuário clica "Revelar PII" no detalhe do lead.
+
+**Storage canônico de `name`**: ver migration 0041 — `name` deixa de ser cifrado (`name_enc`) e passa a ser plaintext em `leads.name` com índice `lower(name)` para search ILIKE. Justificativa: o nome não é PII de risco operacional (público em redes sociais, recibos, recibo de compra, NF), e a busca por nome é a feature mais pedida pra triagem. Email/phone permanecem cifrados em `email_enc`/`phone_enc` + hash determinístico em `email_hash`/`phone_hash` para search.
+
+### Alternativas descartadas
+
+- **Manter spec original** (`privacy`/`owner` apenas) — bloqueia operação real; usuário pediria troca de role o tempo todo.
+- **Mascarar para todos por padrão + reveal on-demand pra todos** — fricção desnecessária para `admin`/`marketer` que respondem suporte ao cliente diariamente.
+- **Manter `name` cifrado** — search por nome é a feature mais pedida; decifrar todos os leads em memória pra ILIKE não escala. Adicionar `name_hash` workspace-scoped não habilita busca por substring.
+
+### Consequências
+
+- (+) Operação real destravada: `admin`/`marketer` veem PII sem fricção.
+- (+) Search por nome via ILIKE indexed (`lower(leads.name)`) — performance constante.
+- (+) `operator` continua útil (vê funil + agregados) sem expor PII em massa; reveal pontual é auditável.
+- (–) `name` deixa de ter cripto-defesa em depth (mas hash workspace-scoped não fazia diferença no nível de proteção real — chave é o mesmo `PII_MASTER_KEY_V1`).
+- (–) Migration 0041 e backfill obrigatórios para popular `leads.name` a partir de `name_enc`.
+
+### Implementação
+
+- **Migration 0041**: adiciona `leads.name` text + index btree em `lower(name) varchar_pattern_ops` para ILIKE.
+- **Backfill**: decifra `name_enc` via `decryptPii` para todos leads existentes; grava em `leads.name`.
+- **Writers** (`lead-resolver`, `pii-enrich`, webhooks Guru/SendFlow/Hotmart/Stripe/Kiwify): gravar `leads.name` plaintext em paralelo com `name_enc` (deprecated, ainda lido por compat). Drop de `name_enc` fica para sprint futura.
+- **Backend `listLeads`**: search detection — UUID/email-regex/phone-regex/else. Search por email/phone hash determinístico; por nome ILIKE.
+- **JWT role extraction + RBAC enforcement**: depende do Sprint 6 RBAC concluir auth real (TODO existente em `routes/leads-timeline.ts:631`). Até lá, frontend retorna PII em claro pra todos. Reveal-on-demand entra como Fase 2.
+
+### Doc afetada
+
+- `docs/50-business-rules/BR-IDENTITY.md` BR-IDENTITY-006 (atualizar lista de roles).
+- `docs/50-business-rules/BR-RBAC.md` BR-RBAC-002 (referência atualizada).
+- `docs/00-product/03-personas-rbac-matrix.md` (matriz de roles).
+- `docs/30-contracts/05-api-server-actions.md` (novo endpoint reveal-pii — Fase 2).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
