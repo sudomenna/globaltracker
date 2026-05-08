@@ -155,6 +155,8 @@ const INTERNAL_TO_GA4_EVENT_NAME: Record<string, string | null> = {
   // Custom events mapped to GA4 standard recommended events.
   // join_group: GA4 recommended event for "user joins a group" — fits WhatsApp/Telegram/etc.
   'custom:click_wpp_join': 'join_group',
+  'custom:wpp_joined': 'join_group',
+  'custom:wpp_joined_vip_main': 'join_group',
   'custom:click_buy_workshop': 'begin_checkout',
   'custom:click_buy_main': 'begin_checkout',
   'custom:watched_workshop': 'view_item',

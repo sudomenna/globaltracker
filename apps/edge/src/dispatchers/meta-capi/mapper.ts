@@ -148,6 +148,8 @@ const INTERNAL_TO_META_EVENT_NAME: Record<string, string> = {
   // Both Pixel (browser) and CAPI (server) must send the same Meta event_name
   // for Meta's deduplication algorithm to recognize them as the same event.
   'custom:click_wpp_join': 'Contact',
+  'custom:wpp_joined': 'Contact',
+  'custom:wpp_joined_vip_main': 'Contact',
   'custom:click_buy_workshop': 'InitiateCheckout',
   'custom:click_buy_main': 'InitiateCheckout',
   'custom:watched_workshop': 'ViewContent',
