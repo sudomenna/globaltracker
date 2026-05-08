@@ -110,6 +110,7 @@ import { createPagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { createProductsRoute } from './routes/products.js';
 import { createLaunchProductsRoute } from './routes/launch-products.js';
+import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
@@ -468,6 +469,18 @@ app.route(
   createLaunchProductsRoute({
     getConnStr: (env) =>
       env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
+// Recovery route (T-RECOVERY-004): /v1/launches/:public_id/recovery
+// IMPORTANT: must be mounted BEFORE launchesRoute for the same reason as launch-products.
+// BR-PRIVACY-001: PII decrypted on-demand; never logged.
+// BR-RBAC-001: workspace_id from JWT membership, never from request body.
+app.route(
+  '/v1/launches',
+  createRecoveryRoute({
+    getConnStr: (env) =>
+      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
   }),
 );
 app.route('/v1/launches', launchesRoute);

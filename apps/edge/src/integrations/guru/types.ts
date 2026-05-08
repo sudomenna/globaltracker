@@ -22,6 +22,7 @@ export type GuruTransactionStatus =
   | 'refunded'
   | 'chargedback'
   | 'canceled'
+  | 'abandoned'
   | 'waiting_payment'
   | 'expired'
   | (string & NonNullable<unknown>); // allow unknown statuses for graceful handling
@@ -46,6 +47,21 @@ export interface GuruContact {
   /** BR-PRIVACY-001: PII — do not log */
   phone_number?: string | null;
   phone_local_code?: string | null;
+  /**
+   * Shipping/billing address. Guru sends this as a structured object on most
+   * plans but may send a plain string (e.g. "Rua Acre") on others.
+   * The Zod schema in guru-raw-events-processor.ts coerces string → null
+   * because city/state/zip cannot be reliably extracted from a freeform string.
+   */
+  address?:
+    | string
+    | {
+        city?: string | null;
+        state?: string | null;
+        zip_code?: string | null;
+        country?: string | null;
+      }
+    | null;
 }
 
 export interface GuruPaymentInstallments {

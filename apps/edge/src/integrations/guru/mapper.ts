@@ -37,6 +37,7 @@ export type GuruEventType =
   | 'RefundProcessed'
   | 'Chargeback'
   | 'OrderCanceled'
+  | 'InitiateCheckout'
   | 'SubscriptionActivated'
   | 'SubscriptionCanceled';
 
@@ -197,6 +198,10 @@ export async function mapGuruTransactionToInternal(
       break;
     case 'canceled':
       event_type = 'OrderCanceled';
+      break;
+    // BR-WEBHOOK-003: abandoned = checkout started but not completed → InitiateCheckout
+    case 'abandoned':
+      event_type = 'InitiateCheckout';
       break;
     default:
       // BR-WEBHOOK-003: unknown status → error result (processor marks as failed)

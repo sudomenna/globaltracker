@@ -64,14 +64,20 @@ const GuruRawEventPayloadSchema = z
         // Endereço do comprador — presente em alguns planos do Guru (fiscal/NF).
         // Usado para enriquecer geo fields no events.userData com dados reais
         // do comprador (mais precisos que geolocalização por IP).
-        address: z
-          .object({
-            city: z.string().nullish(),
-            state: z.string().nullish(),
-            zip_code: z.string().nullish(),
-            country: z.string().nullish(),
-          })
-          .nullish(),
+        // Guru pode enviar address como string plana ("Rua Acre") em vez de
+        // objeto — coerce para null porque não é possível extrair campos
+        // estruturados (city/state/zip) de forma confiável de uma string livre.
+        address: z.preprocess(
+          (v) => (typeof v === 'string' ? null : v),
+          z
+            .object({
+              city: z.string().nullish(),
+              state: z.string().nullish(),
+              zip_code: z.string().nullish(),
+              country: z.string().nullish(),
+            })
+            .nullish(),
+        ),
       })
       .optional(),
     source: z

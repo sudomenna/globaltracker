@@ -1,5 +1,6 @@
 'use client';
 
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -130,6 +131,7 @@ const VALID_TABS = [
   'eventos',
   'audiences',
   'performance',
+  'recuperacao',
 ] as const;
 type TabValue = (typeof VALID_TABS)[number];
 
@@ -521,6 +523,262 @@ function LaunchProductsPanel({
   );
 }
 
+
+// ─── Recovery types ───────────────────────────────────────────────────────────
+
+type RecoveryEventType =
+  | 'InitiateCheckout'
+  | 'OrderCanceled'
+  | 'RefundProcessed'
+  | 'Chargeback';
+
+interface RecoveryItem {
+  event_id: string;
+  event_name: RecoveryEventType;
+  event_time: string;
+  lead_id: string;
+  lead_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
+  amount: number | null;
+  currency: string | null;
+  product_name: string | null;
+}
+
+interface RecoveryResponse {
+  items: RecoveryItem[];
+  next_cursor: string | null;
+  total: number;
+}
+
+const RECOVERY_EVENT_LABELS: Record<RecoveryEventType, string> = {
+  InitiateCheckout: 'Checkout Abandonado',
+  OrderCanceled: 'Cancelado',
+  RefundProcessed: 'Reembolsado',
+  Chargeback: 'Chargeback',
+};
+
+const RECOVERY_EVENT_BADGE_CLASS: Record<RecoveryEventType, string> = {
+  InitiateCheckout: 'bg-yellow-100 text-yellow-800',
+  OrderCanceled: 'bg-red-100 text-red-800',
+  RefundProcessed: 'bg-blue-100 text-blue-800',
+  Chargeback: 'bg-orange-100 text-orange-800',
+};
+
+// ─── TabRecuperacao ───────────────────────────────────────────────────────────
+
+function TabRecuperacao({
+  launchPublicId,
+  accessToken,
+  baseUrl,
+  isActive,
+}: {
+  launchPublicId: string;
+  accessToken: string;
+  baseUrl: string;
+  isActive: boolean;
+}) {
+  const [items, setItems] = useState<RecoveryItem[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fetched, setFetched] = useState(false);
+  const [eventTypeFilter, setEventTypeFilter] = useState<RecoveryEventType | ''>('');
+
+  const fetchRecovery = useCallback(
+    async (cursor?: string, filter?: RecoveryEventType | '') => {
+      if (!accessToken) return;
+      const isCursorLoad = !!cursor;
+      if (isCursorLoad) setLoadingMore(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const url = new URL(
+          `${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/recovery`,
+        );
+        url.searchParams.set('limit', '50');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const effectiveFilter = filter !== undefined ? filter : eventTypeFilter;
+        if (effectiveFilter) url.searchParams.set('event_type', effectiveFilter);
+
+        const res = await fetch(url.toString(), {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) {
+          setError(`Erro ao carregar dados de recuperação (HTTP ${res.status}).`);
+          return;
+        }
+        const body = (await res.json()) as RecoveryResponse;
+        if (isCursorLoad) {
+          setItems((prev) => [...prev, ...(body.items ?? [])]);
+        } else {
+          setItems(body.items ?? []);
+        }
+        setNextCursor(body.next_cursor ?? null);
+      } catch {
+        setError('Erro ao carregar dados de recuperação.');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+        setFetched(true);
+      }
+    },
+    [accessToken, baseUrl, launchPublicId, eventTypeFilter],
+  );
+
+  // Lazy load: só busca quando a tab é ativada pela primeira vez
+  useEffect(() => {
+    if (isActive && !fetched && accessToken) {
+      void fetchRecovery();
+    }
+  }, [isActive, fetched, accessToken, fetchRecovery]);
+
+  // Rebusca quando o filtro muda (mas só se já buscou antes)
+  useEffect(() => {
+    if (fetched && accessToken) {
+      setFetched(false);
+      setItems([]);
+      setNextCursor(null);
+      void fetchRecovery(undefined, eventTypeFilter);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventTypeFilter]);
+
+  function handleFilterChange(value: string) {
+    setEventTypeFilter(value as RecoveryEventType | '');
+  }
+
+  function formatAmount(amount: number | null, currency: string | null) {
+    if (amount === null) return '—';
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: currency ?? 'BRL',
+    }).format(amount);
+  }
+
+  function formatDate(iso: string) {
+    return new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Recuperação</CardTitle>
+        <CardDescription>
+          Eventos de checkout abandonado, cancelamentos, reembolsos e chargebacks.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Filtro */}
+        <div className="flex items-center gap-2">
+          <label htmlFor="recovery-filter" className="text-sm text-muted-foreground shrink-0">
+            Tipo:
+          </label>
+          <select
+            id="recovery-filter"
+            value={eventTypeFilter}
+            onChange={(e) => handleFilterChange(e.target.value)}
+            className="h-8 rounded-md border border-input bg-background px-2 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="">Todos</option>
+            <option value="InitiateCheckout">Checkout Abandonado</option>
+            <option value="OrderCanceled">Cancelado</option>
+            <option value="RefundProcessed">Reembolsado</option>
+            <option value="Chargeback">Chargeback</option>
+          </select>
+        </div>
+
+        {/* Estados */}
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-8">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            Carregando...
+          </div>
+        )}
+
+        {!loading && error && (
+          <p className="text-sm text-destructive py-4" role="alert">
+            {error}
+          </p>
+        )}
+
+        {!loading && !error && fetched && items.length === 0 && (
+          <p className="text-sm text-muted-foreground py-4">
+            Nenhum evento de recuperação encontrado para este lançamento.
+          </p>
+        )}
+
+        {!loading && !error && items.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-muted-foreground text-xs">
+                  <th className="text-left py-2 pr-4 font-medium">Lead</th>
+                  <th className="text-left py-2 pr-4 font-medium">Evento</th>
+                  <th className="text-left py-2 pr-4 font-medium">Produto</th>
+                  <th className="text-left py-2 pr-4 font-medium">Valor</th>
+                  <th className="text-left py-2 font-medium">Data</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {items.map((item) => (
+                  <tr key={item.event_id}>
+                    <td className="py-3 pr-4">
+                      <div className="font-medium">{item.lead_name ?? '—'}</div>
+                      {item.display_email && (
+                        <div className="text-xs text-muted-foreground">
+                          {item.display_email}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3 pr-4">
+                      <Badge
+                        className={`text-xs font-medium ${RECOVERY_EVENT_BADGE_CLASS[item.event_name]}`}
+                      >
+                        {RECOVERY_EVENT_LABELS[item.event_name]}
+                      </Badge>
+                    </td>
+                    <td className="py-3 pr-4">
+                      {item.product_name ?? '—'}
+                    </td>
+                    <td className="py-3 pr-4">
+                      {formatAmount(item.amount, item.currency)}
+                    </td>
+                    <td className="py-3 text-xs text-muted-foreground">
+                      {formatDate(item.event_time)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Carregar mais */}
+        {nextCursor && !loading && (
+          <div className="pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void fetchRecovery(nextCursor)}
+              disabled={loadingMore}
+            >
+              {loadingMore ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Carregando...
+                </>
+              ) : (
+                'Carregar mais'
+              )}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -1070,6 +1328,7 @@ export default function LaunchDetailPage() {
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
           <TabsTrigger value="audiences">Audiences</TabsTrigger>
           <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="recuperacao">Recuperação</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -1109,6 +1368,15 @@ export default function LaunchDetailPage() {
           <p className="text-sm text-muted-foreground py-4">
             Métricas disponíveis em breve.
           </p>
+        </TabsContent>
+
+        <TabsContent value="recuperacao">
+          <TabRecuperacao
+            launchPublicId={launchPublicId}
+            accessToken={accessToken}
+            baseUrl={baseUrl}
+            isActive={activeTab === 'recuperacao'}
+          />
         </TabsContent>
 
         <TabsContent value="funil">
