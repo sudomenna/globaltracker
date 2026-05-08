@@ -569,6 +569,8 @@ export async function processRawEvent(
 
   if (!resolvedLeadId && isIdentifyEvent && hasIdentifiers) {
     // BR-PRIVACY-001: do NOT log email/phone in clear — log hashes only
+    // T-CONTACTS-LASTSEEN-002: pass the original event_time so reprocessing or
+    // late-arriving events does not bump leads.last_seen_at to NOW().
     const resolveResult = await resolveLeadByAliases(
       {
         email: payload.email,
@@ -577,6 +579,7 @@ export async function processRawEvent(
       },
       rawEvent.workspaceId,
       db,
+      { eventTime: new Date(payload.event_time) },
     );
 
     if (!resolveResult.ok) {

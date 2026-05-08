@@ -76,7 +76,10 @@ import {
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { normalizePhone, resolveLeadByAliases } from '../../lib/lead-resolver.js';
+import {
+  normalizePhone,
+  resolveLeadByAliases,
+} from '../../lib/lead-resolver.js';
 import { enrichLeadPii } from '../../lib/pii-enrich.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
@@ -373,10 +376,22 @@ export function createSendflowWebhookRoute(
     let leadId: string | null = null;
     let rawEventId: string | undefined;
     if (db) {
+      // T-CONTACTS-LASTSEEN-002: use SendFlow's `data.createdAt` as event_time
+      // so reprocessed/backfilled webhooks don't bump leads.last_seen_at to NOW().
+      // Falls back to the wall clock if the payload field is missing/invalid.
+      const sendflowEventTime = (() => {
+        const raw = payload.data.createdAt;
+        if (raw) {
+          const d = new Date(raw);
+          if (!Number.isNaN(d.getTime())) return d;
+        }
+        return new Date();
+      })();
       const resolveResult = await resolveLeadByAliases(
         { phone: normalizedPhone },
         workspaceId,
         db,
+        { eventTime: sendflowEventTime },
       );
       if (!resolveResult.ok) {
         safeLog('error', {
@@ -446,17 +461,19 @@ export function createSendflowWebhookRoute(
         ...payload,
         // Derived fields for downstream processor convenience.
         _resolved_event_name: eventName,
-        _resolved_stage: payload.event === 'group.updated.members.removed'
-          ? null
-          : campaignEntry.stage,
+        _resolved_stage:
+          payload.event === 'group.updated.members.removed'
+            ? null
+            : campaignEntry.stage,
         ...(launchId !== null && { launch_id: launchId }),
         ...(leadId !== null && { lead_id: leadId }),
         // wpp_campaign_role for analytics/breadcrumb.
-        wpp_campaign_role: payload.event === 'group.updated.members.removed'
-          ? 'left'
-          : campaignEntry.stage === 'wpp_joined'
-            ? 'workshop'
-            : 'main_offer_vip',
+        wpp_campaign_role:
+          payload.event === 'group.updated.members.removed'
+            ? 'left'
+            : campaignEntry.stage === 'wpp_joined'
+              ? 'workshop'
+              : 'main_offer_vip',
       };
 
       try {
@@ -465,7 +482,9 @@ export function createSendflowWebhookRoute(
           .values({
             workspaceId,
             payload: enrichedPayload,
-            headersSanitized: { 'user-agent': c.req.header('user-agent') ?? '' },
+            headersSanitized: {
+              'user-agent': c.req.header('user-agent') ?? '',
+            },
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

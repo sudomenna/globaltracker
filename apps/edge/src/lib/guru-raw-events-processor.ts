@@ -28,10 +28,11 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
-import { resolveLeadByAliases } from './lead-resolver.js';
+import { normalizePhone, resolveLeadByAliases } from './lead-resolver.js';
 import { applyTagRules } from './lead-tags.js';
 import { promoteLeadLifecycle } from './lifecycle-promoter.js';
 import { lifecycleForCategory } from './lifecycle-rules.js';
+import { enrichLeadPii } from './pii-enrich.js';
 import { hashPiiExternal, splitName } from './pii.js';
 import { upsertProduct } from './products-resolver.js';
 import {
@@ -295,6 +296,13 @@ async function resolveLeadByPptc(
 export async function processGuruRawEvent(
   raw_event_id: string,
   db: Db,
+  // T-CONTACTS-PII-001: optional master key for in-clear PII enrichment
+  // (leads.email_enc / phone_enc / name_enc + leads.name plaintext).
+  // Without it, leads remain hash-only and appear as "—" on the Contatos UI.
+  // Optional to keep backward-compat with existing callers; queue handler in
+  // index.ts should forward `env.PII_MASTER_KEY_V1`. INV-PRIVACY-006-soft:
+  // missing key never blocks the pipeline — enrichLeadPii soft-fails.
+  masterKeyHex?: string,
 ): Promise<
   Result<
     {
@@ -387,6 +395,24 @@ export async function processGuruRawEvent(
 
   let resolvedLeadId: string | null = null;
 
+  // T-CONTACTS-LASTSEEN-002: derive the canonical event time once and pass it
+  // to resolveLeadByAliases so reprocessed Guru webhooks do not bump the lead's
+  // last_seen_at to NOW(). Same fallback chain used later for events.event_time
+  // (see Step 5). received_at is a final fallback so we still beat NOW() when
+  // the payload lacks any timestamp.
+  const guruEventTimeForLead = (() => {
+    const raw =
+      payload.dates?.confirmed_at ??
+      payload.confirmed_at ??
+      payload.dates?.created_at ??
+      payload.created_at;
+    if (raw) {
+      const d = new Date(raw);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return rawEvent.receivedAt ?? new Date();
+  })();
+
   // Priority a: pptc
   // BR-WEBHOOK-004: pptc is highest-priority lead resolution signal
   if (payload.source?.pptc) {
@@ -418,10 +444,13 @@ export async function processGuruRawEvent(
 
     if (email || phone) {
       // BR-PRIVACY-001: do NOT log email or phone in clear — pass to resolver only
+      // T-CONTACTS-LASTSEEN-002: send the Guru event_time (confirmed_at /
+      // created_at fallback) so backfills/replays don't regress last_seen_at.
       const resolveResult = await resolveLeadByAliases(
         { email, phone },
         rawEvent.workspaceId,
         db,
+        { eventTime: guruEventTimeForLead },
       );
 
       if (resolveResult.ok) {
@@ -464,6 +493,63 @@ export async function processGuruRawEvent(
             eq(leads.workspaceId, rawEvent.workspaceId),
           ),
         );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-CONTACTS-PII-001: enrich in-clear PII (email_enc / phone_enc / name_enc
+  // + leads.name plaintext). Before this fix, Guru-only leads were created with
+  // hashes only and showed as "—" on the Contatos UI. The other entry points
+  // (/v1/lead, sendflow webhook) already enrich; we mirror that pattern here.
+  //
+  // BR-PRIVACY-004: versioned encryption (pii_key_version=1).
+  // BR-PRIVACY-001: helper logs no plaintext PII; we also log no PII here.
+  // INV-PRIVACY-006-soft: enrichment failure must NOT block the pipeline.
+  // ADR-034: leads.name plaintext is populated for ILIKE search on Contatos UI.
+  //
+  // enrichLeadPii is idempotent: only writes columns currently NULL for *_enc;
+  // and overwrites leads.name + fn/ln_hash unconditionally to reflect the
+  // latest known name. Re-running on already-enriched rows is a no-op.
+  // -------------------------------------------------------------------------
+  if (resolvedLeadId) {
+    const contact = payload.contact;
+    // Coerce null → undefined: contact fields use Zod .nullish() (null | undefined)
+    // but enrichLeadPii expects `string | undefined`.
+    const email = contact?.email ?? undefined;
+    const phoneNumber = contact?.phone_number ?? undefined;
+    const phoneLocalCode = contact?.phone_local_code ?? undefined;
+    const rawPhoneForEnc = phoneNumber
+      ? phoneLocalCode
+        ? `+${phoneLocalCode}${phoneNumber}`
+        : phoneNumber
+      : undefined;
+    const phoneForEnc: string | undefined = rawPhoneForEnc
+      ? (normalizePhone(rawPhoneForEnc) ?? rawPhoneForEnc)
+      : undefined;
+    const name = contact?.name ?? undefined;
+
+    if (email || phoneForEnc || name) {
+      try {
+        await enrichLeadPii(
+          { email, phone: phoneForEnc, name },
+          {
+            leadId: resolvedLeadId,
+            workspaceId: rawEvent.workspaceId,
+            db,
+            masterKeyHex,
+            requestId: raw_event_id,
+          },
+        );
+      } catch (err) {
+        // INV-PRIVACY-006-soft: never block the queue processor on enrichment.
+        safeLog('warn', {
+          event: 'guru_enrich_lead_pii_threw',
+          raw_event_id,
+          workspace_id: rawEvent.workspaceId,
+          // BR-PRIVACY-001: no PII; only error message slice
+          message: err instanceof Error ? err.message.slice(0, 200) : 'unknown',
+        });
+      }
     }
   }
 

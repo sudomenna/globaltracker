@@ -18,7 +18,7 @@
 
 import type { Db } from '@globaltracker/db';
 import { leadAliases, leadMerges, leads } from '@globaltracker/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { hashPii, hashPiiExternal } from './pii.js';
 
 // ---------------------------------------------------------------------------
@@ -203,11 +203,19 @@ async function resolveCanonical(leadId: string, db: Db): Promise<string> {
  * BR-IDENTITY-003: merge canônico N>1
  * BR-IDENTITY-004: merged lead → redirect to canonical
  * INV-IDENTITY-003: resolver follows merged_into_lead_id transitively
+ *
+ * @param options.eventTime - When provided, used as the timestamp for first_seen_at
+ *   (Case A: new lead) and as the candidate for last_seen_at via GREATEST() (Cases
+ *   B/C). Pass the source event's actual timestamp on webhook/replay paths so that
+ *   reprocessing old events does not bump last_seen_at to NOW(). Omit on live form
+ *   submits where NOW() is the correct answer. INV-IDENTITY-LASTSEEN-MONOTONIC:
+ *   last_seen_at is monotonically non-decreasing — preserved by GREATEST().
  */
 export async function resolveLeadByAliases(
   input: { email?: string; phone?: string; external_id?: string },
   workspace_id: string,
   db: Db,
+  options?: { eventTime?: Date },
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   // Validate at least one identifier provided
   if (!input.email && !input.phone && !input.external_id) {
@@ -310,7 +318,7 @@ export async function resolveLeadByAliases(
     // Case A: 0 matches → create new lead + aliases
     // ------------------------------------------------------------------
     if (uniqueCanonicalIds.length === 0) {
-      return await createNewLead(resolvedAliases, workspace_id, db);
+      return await createNewLead(resolvedAliases, workspace_id, db, options);
     }
 
     // ------------------------------------------------------------------
@@ -324,6 +332,7 @@ export async function resolveLeadByAliases(
         resolvedAliases,
         workspace_id,
         db,
+        options,
       );
     }
 
@@ -336,6 +345,7 @@ export async function resolveLeadByAliases(
       resolvedAliases,
       workspace_id,
       db,
+      options,
     );
   } catch (err) {
     return {
@@ -356,8 +366,15 @@ async function createNewLead(
   resolvedAliases: ResolvedAlias[],
   workspace_id: string,
   db: Db,
+  options?: { eventTime?: Date },
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   const now = new Date();
+  // T-CONTACTS-LASTSEEN-002: when ingesting a backdated event (webhook replay,
+  // cron reprocess), seed first_seen_at / last_seen_at with the actual event
+  // time so the "última atividade" metric reflects when the event happened, not
+  // when the row was inserted. Falls back to NOW() for live form submits that
+  // omit options.eventTime.
+  const ts = options?.eventTime ?? now;
 
   // Extract hashes for denormalized columns — enables dispatcher eligibility checks
   // without a join to lead_aliases on every dispatch.
@@ -374,8 +391,8 @@ async function createNewLead(
     .values({
       workspaceId: workspace_id,
       status: 'active',
-      firstSeenAt: now,
-      lastSeenAt: now,
+      firstSeenAt: ts,
+      lastSeenAt: ts,
       emailHash: emailAlias?.identifier_hash ?? null,
       phoneHash: phoneAlias?.identifier_hash ?? null,
       emailHashExternal: emailAlias?.external_hash ?? null, // T-OPB-003a: pure SHA-256 para dispatchers externos
@@ -427,8 +444,15 @@ async function updateExistingLead(
   resolvedAliases: ResolvedAlias[],
   workspace_id: string,
   db: Db,
+  options?: { eventTime?: Date },
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   const now = new Date();
+  // T-CONTACTS-LASTSEEN-002 / INV-IDENTITY-LASTSEEN-MONOTONIC: last_seen_at is
+  // monotonically non-decreasing. Use GREATEST(current, candidate) so reprocessing
+  // an old event never regresses the value below NOW(). When eventTime is omitted
+  // we fall back to NOW() (live form submit / no-op-equivalent).
+  const ts = options?.eventTime ?? now;
+  const tsIso = ts.toISOString();
 
   // Update last_seen_at + denormalized hash columns if newly provided.
   const emailAlias = resolvedAliases.find(
@@ -440,7 +464,9 @@ async function updateExistingLead(
   await db
     .update(leads)
     .set({
-      lastSeenAt: now,
+      // BR-IDENTITY-002: last_seen_at advances only forward — GREATEST against
+      // current value guards backfills/replays from regressing the metric.
+      lastSeenAt: sql`GREATEST(COALESCE(${leads.lastSeenAt}, '-infinity'::timestamptz), ${tsIso}::timestamptz)`,
       updatedAt: now,
       ...(emailAlias ? { emailHash: emailAlias.identifier_hash } : {}),
       ...(phoneAlias ? { phoneHash: phoneAlias.identifier_hash } : {}),
@@ -513,8 +539,13 @@ async function mergeLeads(
   resolvedAliases: ResolvedAlias[],
   workspace_id: string,
   db: Db,
+  options?: { eventTime?: Date },
 ): Promise<Result<ResolveLeadResult, ResolveLeadError>> {
   const now = new Date();
+  // T-CONTACTS-LASTSEEN-002: backdated event must not regress canonical's
+  // last_seen_at. See updateExistingLead for rationale.
+  const ts = options?.eventTime ?? now;
+  const tsIso = ts.toISOString();
 
   // Fetch all lead rows to determine canonical (oldest first_seen_at)
   const leadRows = await db
@@ -533,7 +564,13 @@ async function mergeLeads(
     // Degraded case: concurrent modification or data issue; fall back to single
     // biome-ignore lint/style/noNonNullAssertion: guarded by leadIds.length >= 1 (caller ensures at least 2)
     const fallbackId = leadIds[0]!;
-    return updateExistingLead(fallbackId, resolvedAliases, workspace_id, db);
+    return updateExistingLead(
+      fallbackId,
+      resolvedAliases,
+      workspace_id,
+      db,
+      options,
+    );
   }
 
   // BR-IDENTITY-003: canonical = lead with the smallest first_seen_at (oldest)
@@ -656,15 +693,27 @@ async function mergeLeads(
   }
 
   // Update canonical lead's last_seen_at
+  // T-CONTACTS-LASTSEEN-002: monotonic GREATEST guard so a backdated merge
+  // event never lowers canonical.last_seen_at.
   await db
     .update(leads)
-    .set({ lastSeenAt: now, updatedAt: now })
+    .set({
+      lastSeenAt: sql`GREATEST(COALESCE(${leads.lastSeenAt}, '-infinity'::timestamptz), ${tsIso}::timestamptz)`,
+      updatedAt: now,
+    })
     .where(
       and(eq(leads.id, canonical.id), eq(leads.workspaceId, workspace_id)),
     );
 
-  // Add any new identifier aliases from the current request onto canonical
-  await updateExistingLead(canonical.id, resolvedAliases, workspace_id, db);
+  // Add any new identifier aliases from the current request onto canonical.
+  // Forward options so the inner update keeps the same monotonic semantics.
+  await updateExistingLead(
+    canonical.id,
+    resolvedAliases,
+    workspace_id,
+    db,
+    options,
+  );
 
   return {
     ok: true,

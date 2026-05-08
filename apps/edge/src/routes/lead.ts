@@ -21,7 +21,10 @@ import type { Db } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { buildLeadTokenCookie } from '../lib/cookies.js';
-import { normalizePhone as normalizePhoneForEnc, resolveLeadByAliases } from '../lib/lead-resolver.js';
+import {
+  normalizePhone as normalizePhoneForEnc,
+  resolveLeadByAliases,
+} from '../lib/lead-resolver.js';
 import { issueLeadToken } from '../lib/lead-token.js';
 import { promoteLeadLifecycle } from '../lib/lifecycle-promoter.js';
 import { enrichLeadPii } from '../lib/pii-enrich.js';
@@ -276,7 +279,9 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
       // T-2-008: DB path — real lead resolution + stateful token
       // -----------------------------------------------------------------------
 
-      // 4a. Resolve or create lead via aliases
+      // 4a. Resolve or create lead via aliases.
+      // T-CONTACTS-LASTSEEN-002: form submit is live — passing new Date() makes
+      // intent explicit and is equivalent to the resolver's NOW() default.
       const resolveResult = await resolveLeadByAliases(
         {
           email: businessPayload.email,
@@ -284,6 +289,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
         },
         workspaceId,
         effectiveDb,
+        { eventTime: new Date() },
       );
 
       if (!resolveResult.ok) {
@@ -483,24 +489,32 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
         analytics: businessPayload.consent.analytics ? 'granted' : 'denied',
         marketing: businessPayload.consent.marketing ? 'granted' : 'denied',
         ad_user_data: businessPayload.consent.marketing ? 'granted' : 'denied',
-        ad_personalization: businessPayload.consent.marketing ? 'granted' : 'denied',
-        customer_match: businessPayload.consent.marketing ? 'granted' : 'denied',
+        ad_personalization: businessPayload.consent.marketing
+          ? 'granted'
+          : 'denied',
+        customer_match: businessPayload.consent.marketing
+          ? 'granted'
+          : 'denied',
       },
     };
 
     let rawEventIdForQueue: string | undefined;
     try {
-      const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+      const connString =
+        c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
       const db = createDb(connString);
-      const [inserted] = await db.insert(rawEvents).values({
-        workspaceId,
-        pageId: c.get('page_id'),
-        payload: processablePayload as Record<string, unknown>,
-        headersSanitized: {
-          origin: c.req.header('origin') ?? null,
-          cf_ray: c.req.header('cf-ray') ?? null,
-        },
-      }).returning({ id: rawEvents.id });
+      const [inserted] = await db
+        .insert(rawEvents)
+        .values({
+          workspaceId,
+          pageId: c.get('page_id'),
+          payload: processablePayload as Record<string, unknown>,
+          headersSanitized: {
+            origin: c.req.header('origin') ?? null,
+            cf_ray: c.req.header('cf-ray') ?? null,
+          },
+        })
+        .returning({ id: rawEvents.id });
       rawEventIdForQueue = inserted?.id;
     } catch (err) {
       safeLog('error', {

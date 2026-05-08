@@ -43,8 +43,18 @@ vi.mock('@globaltracker/db', () => ({
 }));
 
 // Mock lead-resolver
+// T-CONTACTS-PII-001: processor now also imports normalizePhone for the
+// in-clear PII enrichment block (called after resolveLeadByAliases).
 vi.mock('../../../apps/edge/src/lib/lead-resolver.js', () => ({
   resolveLeadByAliases: vi.fn(),
+  normalizePhone: vi.fn((p: string) => p),
+}));
+
+// Mock pii-enrich
+// T-CONTACTS-PII-001: enrichLeadPii is invoked after the resolver. Stubbed
+// here so unit tests don't hit the real (DB-touching) implementation.
+vi.mock('../../../apps/edge/src/lib/pii-enrich.js', () => ({
+  enrichLeadPii: vi.fn().mockResolvedValue({ ok: true, updated_columns: [] }),
 }));
 
 // Mock pii (hashPii)
@@ -442,10 +452,13 @@ describe('processGuruRawEvent', () => {
       const result = await processGuruRawEvent(RAW_EVENT_ID, db);
 
       expect(result.ok).toBe(true);
+      // T-CONTACTS-LASTSEEN-002: processor now forwards eventTime so
+      // backfilled webhooks don't bump leads.last_seen_at to NOW().
       expect(resolveLeadByAliases).toHaveBeenCalledWith(
         expect.objectContaining({ email: 'buyer@example.com' }),
         WORKSPACE_ID,
         db,
+        expect.objectContaining({ eventTime: expect.any(Date) }),
       );
     });
 

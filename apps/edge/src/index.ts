@@ -702,7 +702,7 @@ async function queueHandler(
         // BR-EVENT-002: each processor enforces idempotency on (workspace_id, event_id).
         const result =
           platform === 'guru'
-            ? await processGuruRawEvent(raw_event_id, db)
+            ? await processGuruRawEvent(raw_event_id, db, env.PII_MASTER_KEY_V1)
             : platform === 'sendflow'
               ? await processSendflowRawEvent(raw_event_id, db)
               : await processRawEvent(raw_event_id, db);
