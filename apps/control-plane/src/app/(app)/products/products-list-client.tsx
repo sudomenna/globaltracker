@@ -198,6 +198,50 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
     void fetchProducts();
   }, [fetchProducts]);
 
+  async function handleNameSave(productId: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+
+    const previous = items.find((p) => p.id === productId);
+    if (!previous || previous.name === trimmed) return;
+
+    const accessToken = await getAccessToken();
+    if (!accessToken) return;
+
+    // Optimistic update
+    setItems((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, name: trimmed } : p)),
+    );
+
+    try {
+      const res = await edgeFetch(
+        `/v1/products/${encodeURIComponent(productId)}`,
+        accessToken,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ name: trimmed }),
+        },
+      );
+      if (!res.ok) {
+        setItems((prev) =>
+          prev.map((p) =>
+            p.id === productId ? { ...p, name: previous.name } : p,
+          ),
+        );
+        pushToast('Falha ao atualizar nome.', 'error');
+        return;
+      }
+      pushToast('Nome atualizado.');
+    } catch {
+      setItems((prev) =>
+        prev.map((p) =>
+          p.id === productId ? { ...p, name: previous.name } : p,
+        ),
+      );
+      pushToast('Falha ao atualizar nome.', 'error');
+    }
+  }
+
   async function handleCategoryChange(
     productId: string,
     newCategory: ProductCategory | '',
@@ -344,9 +388,16 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
                   {items.map((p) => (
                     <tr key={p.id} className="hover:bg-accent/30">
                       <td className="px-4 py-2.5 font-medium align-middle">
-                        <div className="max-w-xs truncate" title={p.name}>
-                          {p.name}
-                        </div>
+                        {canEdit ? (
+                          <EditableName
+                            value={p.name}
+                            onSave={(name) => void handleNameSave(p.id, name)}
+                          />
+                        ) : (
+                          <div className="max-w-xs truncate" title={p.name}>
+                            {p.name}
+                          </div>
+                        )}
                         <div
                           className="text-[10px] text-muted-foreground font-mono truncate max-w-xs"
                           title={p.external_product_id}
@@ -443,5 +494,70 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
         </div>
       )}
     </div>
+  );
+}
+
+// Inline editable name input. Click → input. Enter or blur → save. Esc → cancel.
+function EditableName({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (newName: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(value);
+      // focus + select after enter edit mode
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [editing, value]);
+
+  function commit() {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== value) onSave(trimmed);
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Clique para editar"
+        className="text-left max-w-xs truncate hover:underline decoration-dotted underline-offset-2 cursor-text"
+      >
+        {value}
+      </button>
+    );
+  }
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
+      maxLength={256}
+      className="w-full max-w-xs h-7 rounded border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    />
   );
 }
