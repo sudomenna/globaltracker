@@ -104,11 +104,33 @@ const ROLE_COLORS: Record<string, string> = {
   survey: 'bg-gray-100 text-gray-700',
 };
 
-const GURU_FUNNEL_ROLES = [
-  { value: 'workshop', label: 'Workshop' },
-  { value: 'main_offer', label: 'Oferta principal' },
-  { value: 'outro', label: 'Outro' },
+// Launch roles tipados (T-PRODUCTS-008): assoc product↔launch via launch_products table.
+const LAUNCH_ROLES = [
+  { value: 'main_offer', label: 'Main Offer' },
+  { value: 'main_order_bump', label: 'Main Order Bump' },
+  { value: 'bait_offer', label: 'Bait Offer' },
+  { value: 'bait_order_bump', label: 'Bait Order Bump' },
 ] as const;
+
+type LaunchRoleValue = (typeof LAUNCH_ROLES)[number]['value'];
+
+interface LaunchProductRow {
+  id: string;
+  product_id: string;
+  name: string;
+  category: string | null;
+  external_provider: string;
+  external_product_id: string;
+  launch_role: LaunchRoleValue;
+}
+
+interface ProductCatalogItem {
+  id: string;
+  name: string;
+  category: string | null;
+  external_provider: string;
+  external_product_id: string;
+}
 
 const VALID_TABS = [
   'overview',
@@ -153,14 +175,359 @@ function useAccessToken(): string {
 // ─── GuruMappingPanel ─────────────────────────────────────────────────────────
 
 /**
- * T-FUNIL-023: Painel "Mapeamento Guru" — exibido na tab Overview do launch.
- * Lê workspace.config.integrations.guru.product_launch_map via Supabase,
- * filtrando apenas entradas associadas a este launch_public_id.
- * Permite adicionar e remover mapeamentos via PATCH /v1/workspace/config.
+ * T-PRODUCTS-008: Painel "Produtos do lançamento".
+ * Substitui o legacy "Mapeamento Guru" que lia workspaces.config.integrations.guru.product_launch_map.
  *
- * BR-RBAC-002: workspace_id como âncora multi-tenant — o endpoint já verifica
- *   OPERATOR/ADMIN server-side; botão de edição é sempre visível (sem role CP
- *   disponível client-side neste momento; segurança garantida no servidor).
+ * Fontes de dados:
+ *   - GET /v1/launches/:public_id/products  — produtos associados a este launch (com role)
+ *   - GET /v1/products?status=active        — catálogo completo (para o picker)
+ * Mutations:
+ *   - PUT    /v1/launches/:public_id/products/:product_id  — assoc/upsert role
+ *   - DELETE /v1/launches/:public_id/products/:product_id  — remove assoc
+ *
+ * BR-RBAC-001/002: workspace_id da auth context. PUT/DELETE ≥ admin (server-side).
+ */
+function LaunchProductsPanel({
+  launchPublicId,
+  accessToken,
+  baseUrl,
+}: {
+  launchPublicId: string;
+  accessToken: string;
+  baseUrl: string;
+}) {
+  const [items, setItems] = useState<LaunchProductRow[]>([]);
+  const [catalog, setCatalog] = useState<ProductCatalogItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [pickedProductId, setPickedProductId] = useState('');
+  const [pickedRole, setPickedRole] = useState<LaunchRoleValue>('main_offer');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [resAssoc, resCatalog] = await Promise.all([
+        fetch(`${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/products`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+        fetch(`${baseUrl}/v1/products?status=active&limit=100`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+      ]);
+      if (resAssoc.ok) {
+        const body = (await resAssoc.json()) as { items: LaunchProductRow[] };
+        setItems(body.items ?? []);
+      }
+      if (resCatalog.ok) {
+        const body = (await resCatalog.json()) as { items: ProductCatalogItem[] };
+        setCatalog(body.items ?? []);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [accessToken, baseUrl, launchPublicId]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  async function setRole(productId: string, newRole: LaunchRoleValue) {
+    const previous = items.find((i) => i.product_id === productId);
+    if (!previous || previous.launch_role === newRole) return;
+
+    // Optimistic
+    setItems((prev) =>
+      prev.map((i) =>
+        i.product_id === productId ? { ...i, launch_role: newRole } : i,
+      ),
+    );
+
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/products/${encodeURIComponent(productId)}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ launch_role: newRole }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast.success('Papel atualizado.');
+    } catch (err) {
+      setItems((prev) =>
+        prev.map((i) =>
+          i.product_id === productId
+            ? { ...i, launch_role: previous.launch_role }
+            : i,
+        ),
+      );
+      toast.error(
+        err instanceof Error ? err.message : 'Erro ao atualizar papel.',
+      );
+    }
+  }
+
+  async function handleAdd() {
+    setFormError(null);
+    if (!pickedProductId) {
+      setFormError('Selecione um produto.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/products/${encodeURIComponent(pickedProductId)}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ launch_role: pickedRole }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
+        throw new Error(body.message ?? `HTTP ${res.status}`);
+      }
+      await reload();
+      setModalOpen(false);
+      setPickedProductId('');
+      setPickedRole('main_offer');
+      toast.success('Produto adicionado ao lançamento.');
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : 'Erro ao adicionar produto.',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRemove(productId: string, name: string) {
+    if (!window.confirm(`Remover "${name}" deste lançamento?`)) return;
+    try {
+      const res = await fetch(
+        `${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/products/${encodeURIComponent(productId)}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setItems((prev) => prev.filter((i) => i.product_id !== productId));
+      toast.success('Produto removido.');
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Erro ao remover produto.',
+      );
+    }
+  }
+
+  // Catálogo filtrado pra mostrar só produtos NÃO já associados
+  const associatedIds = new Set(items.map((i) => i.product_id));
+  const availableProducts = catalog.filter((p) => !associatedIds.has(p.id));
+
+  const roleLabel = (v: string) =>
+    LAUNCH_ROLES.find((r) => r.value === v)?.label ?? v;
+
+  return (
+    <>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle className="text-base">Produtos do lançamento</CardTitle>
+            <CardDescription>
+              Associe produtos do catálogo a este lançamento e defina o papel de cada um.
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setModalOpen(true)}
+            disabled={availableProducts.length === 0}
+            title={
+              availableProducts.length === 0
+                ? 'Nenhum produto disponível para adicionar (todos já estão associados ou catálogo vazio).'
+                : undefined
+            }
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            Adicionar produto
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Carregando produtos...
+            </div>
+          ) : items.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4">
+              Nenhum produto associado a este lançamento.
+              {catalog.length === 0 && (
+                <>
+                  {' '}Cadastre produtos primeiro em{' '}
+                  <Link href="/products" className="underline hover:no-underline">
+                    /products
+                  </Link>
+                  .
+                </>
+              )}
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-muted-foreground text-xs">
+                    <th className="text-left py-2 pr-4 font-medium">Produto</th>
+                    <th className="text-left py-2 pr-4 font-medium">Papel</th>
+                    <th className="py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {items.map((m) => (
+                    <tr key={m.id}>
+                      <td className="py-3 pr-4">
+                        <div className="font-medium">{m.name}</div>
+                        <div className="text-[10px] text-muted-foreground font-mono">
+                          {m.external_product_id}
+                        </div>
+                      </td>
+                      <td className="py-3 pr-4">
+                        <select
+                          value={m.launch_role}
+                          onChange={(e) =>
+                            void setRole(m.product_id, e.target.value as LaunchRoleValue)
+                          }
+                          aria-label={`Papel de ${m.name}`}
+                          className="h-8 rounded-md border border-input bg-background px-2 py-1 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {LAUNCH_ROLES.map((r) => (
+                            <option key={r.value} value={r.value}>
+                              {r.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive h-7 px-2"
+                          onClick={() => void handleRemove(m.product_id, m.name)}
+                          aria-label={`Remover ${m.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span className="sr-only">Remover</span>
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-50" role="dialog" aria-labelledby="lp-modal-title" aria-modal="true">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !saving && setModalOpen(false)} />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg w-full max-w-sm p-6 space-y-4 relative">
+              <h2 id="lp-modal-title" className="text-base font-semibold">
+                Adicionar produto ao lançamento
+              </h2>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label htmlFor="lp-product" className="text-sm font-medium">
+                    Produto
+                  </label>
+                  <select
+                    id="lp-product"
+                    value={pickedProductId}
+                    onChange={(e) => setPickedProductId(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    <option value="">— Selecione —</option>
+                    {availableProducts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label htmlFor="lp-role" className="text-sm font-medium">
+                    Papel no lançamento
+                  </label>
+                  <select
+                    id="lp-role"
+                    value={pickedRole}
+                    onChange={(e) => setPickedRole(e.target.value as LaunchRoleValue)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={saving}
+                  >
+                    {LAUNCH_ROLES.map((r) => (
+                      <option key={r.value} value={r.value}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {formError && (
+                  <p className="text-sm text-destructive" role="alert">
+                    {formError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setModalOpen(false);
+                    setPickedProductId('');
+                    setPickedRole('main_offer');
+                    setFormError(null);
+                  }}
+                  disabled={saving}
+                >
+                  Cancelar
+                </Button>
+                <Button size="sm" onClick={() => void handleAdd()} disabled={saving}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                      Salvando...
+                    </>
+                  ) : (
+                    'Confirmar'
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * @deprecated Substituído por LaunchProductsPanel. Mantido temporariamente para
+ * migração — não é mais renderizado. Pode ser removido em sprint futura.
  */
 function GuruMappingPanel({
   launchPublicId,
@@ -571,8 +938,8 @@ function TabOverview({
         </CardContent>
       </Card>
 
-      {/* T-FUNIL-023: Painel de mapeamento Guru — após conteúdo de overview */}
-      <GuruMappingPanel
+      {/* T-PRODUCTS-008: Produtos do lançamento (substitui Mapeamento Guru legacy) */}
+      <LaunchProductsPanel
         launchPublicId={launch.public_id}
         accessToken={accessToken}
         baseUrl={baseUrl}

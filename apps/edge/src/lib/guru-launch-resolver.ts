@@ -17,9 +17,11 @@
 
 import type { Db } from '@globaltracker/db';
 import {
+  launchProducts,
   leadAliases,
   leadAttributions,
   launches,
+  products,
   workspaces,
 } from '@globaltracker/db';
 import { and, desc, eq } from 'drizzle-orm';
@@ -34,7 +36,7 @@ import { normalizeEmail, normalizePhone } from './lead-resolver.js';
 export type GuruLaunchResolutionResult = {
   launch_id: string | null;
   funnel_role: string | null;
-  strategy: 'mapping' | 'last_attribution' | 'none';
+  strategy: 'launch_products' | 'mapping' | 'last_attribution' | 'none';
 };
 
 export type ResolveLaunchParams = {
@@ -204,7 +206,47 @@ export async function resolveLaunchForGuruEvent(
   const { workspaceId, productId, leadHints, db } = params;
 
   // ------------------------------------------------------------------
-  // Strategy 1: product_launch_map lookup
+  // Strategy 0: launch_products lookup (T-PRODUCTS-008 — primary)
+  // JOIN products via (workspace, provider='guru', external_product_id).
+  // ------------------------------------------------------------------
+  if (productId) {
+    const lpRows = await db
+      .select({
+        launchId: launchProducts.launchId,
+        launchRole: launchProducts.launchRole,
+      })
+      .from(launchProducts)
+      .innerJoin(products, eq(products.id, launchProducts.productId))
+      .where(
+        and(
+          eq(launchProducts.workspaceId, workspaceId),
+          eq(products.workspaceId, workspaceId),
+          eq(products.externalProvider, 'guru'),
+          eq(products.externalProductId, productId),
+        ),
+      )
+      .limit(1);
+
+    if (lpRows[0]) {
+      const result: GuruLaunchResolutionResult = {
+        launch_id: lpRows[0].launchId,
+        funnel_role: lpRows[0].launchRole,
+        strategy: 'launch_products',
+      };
+      safeLog('info', {
+        event: 'guru_launch_resolved',
+        workspace_id: workspaceId,
+        product_id: productId,
+        strategy: result.strategy,
+        launch_id: result.launch_id,
+        funnel_role: result.funnel_role,
+      });
+      return result;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Strategy 1: product_launch_map lookup (legacy fallback)
   // ------------------------------------------------------------------
   if (productId) {
     const workspaceRows = await db

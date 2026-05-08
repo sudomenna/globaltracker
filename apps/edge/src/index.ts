@@ -109,6 +109,7 @@ import { orchestratorRoute } from './routes/orchestrator.js';
 import { createPagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { createProductsRoute } from './routes/products.js';
+import { createLaunchProductsRoute } from './routes/launch-products.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
@@ -459,6 +460,16 @@ app.route('/v1/integrations/sendflow', integrationsSendflowRoute);
 app.route('/v1/integrations', integrationsTestRoute);
 
 // Control Plane endpoints (Sprint 6 — Wave 2: T-6-005, T-6-008, T-6-009, T-6-010)
+// Sub-router: /v1/launches/:launch_public_id/products (T-PRODUCTS-008)
+// IMPORTANT: must be mounted BEFORE launchesRoute, otherwise launchesRoute's
+// catch-all auth middleware ('*') intercepts the path first.
+app.route(
+  '/v1/launches/:launch_public_id/products',
+  createLaunchProductsRoute({
+    getConnStr: (env) =>
+      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
 app.route('/v1/launches', launchesRoute);
 app.route(
   '/v1/funnel-templates',

@@ -30,3 +30,4 @@ export * from './workspace_integrations.js';
 export * from './orchestrator.js';
 export * from './funnel_template.js';
 export * from './product.js';
+export * from './launch_product.js';
