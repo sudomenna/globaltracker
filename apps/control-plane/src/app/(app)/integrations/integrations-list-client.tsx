@@ -17,6 +17,40 @@ import { CheckCircle, Settings, XCircle } from 'lucide-react';
 import Link from 'next/link';
 import useSWR from 'swr';
 
+// T-14-012: workspace config types for OAuth-aware badge
+interface GoogleAdsConfig {
+  oauth_token_state?: 'pending' | 'connected' | 'expired';
+  enabled?: boolean;
+}
+
+interface WorkspaceConfigResponse {
+  config: {
+    integrations?: {
+      google_ads?: GoogleAdsConfig;
+    };
+    [key: string]: unknown;
+  };
+}
+
+// T-14-012: derive HealthState from google_ads OAuth config
+// BR-RBAC-001: visible to all authenticated users (read-only badge)
+function googleAdsOauthHealthState(
+  cfg: GoogleAdsConfig | undefined,
+): HealthState {
+  if (
+    cfg == null ||
+    cfg.oauth_token_state == null ||
+    cfg.oauth_token_state === 'pending'
+  ) {
+    return 'unknown';
+  }
+  if (cfg.oauth_token_state === 'expired') {
+    return 'degraded';
+  }
+  // connected
+  return cfg.enabled === true ? 'healthy' : 'degraded';
+}
+
 interface ProviderHealth {
   provider: string;
   state: HealthState;
@@ -54,6 +88,19 @@ async function fetchIntegrationsHealth(
   return res.json() as Promise<IntegrationsHealthResponse>;
 }
 
+async function fetchWorkspaceConfig(
+  url: string,
+): Promise<WorkspaceConfigResponse> {
+  const supabase = createSupabaseBrowser();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const token = session?.access_token ?? '';
+  const res = await edgeFetch(url, token);
+  if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
+  return res.json() as Promise<WorkspaceConfigResponse>;
+}
+
 const PROVIDERS = [
   'meta',
   'ga4',
@@ -67,7 +114,12 @@ const PROVIDERS = [
 const INBOUND_ONLY_PROVIDERS = new Set<string>(['sendflow']);
 
 // Health state severity order (higher index = worse)
-const STATE_SEVERITY: HealthState[] = ['unknown', 'healthy', 'degraded', 'unhealthy'];
+const STATE_SEVERITY: HealthState[] = [
+  'unknown',
+  'healthy',
+  'degraded',
+  'unhealthy',
+];
 
 function worstState(a: HealthState, b: HealthState): HealthState {
   const ia = STATE_SEVERITY.indexOf(a);
@@ -89,10 +141,7 @@ function buildProviderMap(
   const enh = map.get('google_enhancement');
 
   if (conv != null || enh != null) {
-    const state = worstState(
-      conv?.state ?? 'unknown',
-      enh?.state ?? 'unknown',
-    );
+    const state = worstState(conv?.state ?? 'unknown', enh?.state ?? 'unknown');
     const metrics_24h =
       conv?.metrics_24h != null || enh?.metrics_24h != null
         ? {
@@ -132,6 +181,15 @@ export function IntegrationsListClient({
     },
   );
 
+  // T-14-012: fetch workspace config to derive OAuth-aware badge for google_ads
+  // BR-PRIVACY-001: config response never exposes refresh_token in clear
+  const { data: configData } = useSWR<WorkspaceConfigResponse>(
+    '/v1/workspace/config',
+    fetchWorkspaceConfig,
+    { refreshInterval: 60_000 },
+  );
+  const googleAdsCfg = configData?.config?.integrations?.google_ads;
+
   if (isLoading) {
     return (
       <div className="grid gap-4 sm:grid-cols-2">
@@ -169,9 +227,13 @@ export function IntegrationsListClient({
       {PROVIDERS.map((providerId) => {
         const isInboundOnly = INBOUND_ONLY_PROVIDERS.has(providerId);
         const health = providerMap.get(providerId);
+        // T-14-012: for google_ads, use OAuth token state as primary health signal
+        // (dispatch health only reflects past dispatches, not current connectivity)
         const state: HealthState = isInboundOnly
           ? 'unknown'
-          : (health?.state ?? 'unknown');
+          : providerId === 'google_ads'
+            ? googleAdsOauthHealthState(googleAdsCfg)
+            : (health?.state ?? 'unknown');
         const metrics = isInboundOnly ? undefined : health?.metrics_24h;
         const label = PROVIDER_LABELS[providerId] ?? providerId;
 
@@ -191,9 +253,15 @@ export function IntegrationsListClient({
               <CardDescription>
                 {isInboundOnly
                   ? 'Webhook inbound — sem métricas de saúde'
-                  : state === 'unknown'
-                    ? 'Nenhuma tentativa registrada'
-                    : 'Últimas 24 horas'}
+                  : providerId === 'google_ads'
+                    ? googleAdsCfg?.oauth_token_state === 'connected'
+                      ? 'OAuth conectado'
+                      : googleAdsCfg?.oauth_token_state === 'expired'
+                        ? 'Token expirado — reconecte'
+                        : 'OAuth não configurado'
+                    : state === 'unknown'
+                      ? 'Nenhuma tentativa registrada'
+                      : 'Últimas 24 horas'}
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3 flex-1">
