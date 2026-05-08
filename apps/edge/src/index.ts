@@ -110,6 +110,7 @@ import { createPagesStatusRoute } from './routes/pages-status.js';
 import { pagesRoute } from './routes/pages.js';
 import { createProductsRoute } from './routes/products.js';
 import { createLaunchProductsRoute } from './routes/launch-products.js';
+import { createLaunchLeadsRoute } from './routes/launches-leads.js';
 import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
@@ -478,6 +479,19 @@ app.route(
 app.route(
   '/v1/launches',
   createRecoveryRoute({
+    getConnStr: (env) =>
+      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
+  }),
+);
+// Leads tab route (T-LEADS-VIEW-002): /v1/launches/:public_id/leads
+// IMPORTANT: must be mounted BEFORE launchesRoute for the same reason as launch-products.
+// BR-PRIVACY-001: PII decrypted on-demand; never logged.
+// BR-RBAC-001: workspace_id from JWT membership, never from request body.
+// BR-IDENTITY-006 / ADR-034: PII masked for operator/viewer.
+app.route(
+  '/v1/launches',
+  createLaunchLeadsRoute({
     getConnStr: (env) =>
       env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
     getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',

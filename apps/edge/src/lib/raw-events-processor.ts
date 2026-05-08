@@ -22,14 +22,21 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, launches, leadStages, rawEvents, workspaces } from '@globaltracker/db';
+import {
+  events,
+  launches,
+  leadStages,
+  rawEvents,
+  workspaces,
+} from '@globaltracker/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type AttributionParams, recordTouches } from './attribution.js';
-import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
+import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
+import { applyTagRules } from './lead-tags.js';
 import { promoteLeadLifecycle } from './lifecycle-promoter.js';
 import { hashPii } from './pii.js';
 
@@ -212,12 +219,39 @@ const BlueprintStageSchema = z.object({
 });
 
 /**
+ * T-LEADS-VIEW-002: tag rule schema. Espelha TagRuleSchema de
+ * @globaltracker/shared (não importado aqui pelos mesmos motivos do
+ * FunnelBlueprintSchema inline). Aplicação acontece em lead-tags.ts.
+ *
+ * `when` usa passthrough() para tolerar futuras chaves de filtro sem
+ * exigir alterações de schema.
+ */
+const BlueprintTagRuleSchema = z.object({
+  event: z.string().min(1),
+  when: z
+    .object({
+      funnel_role: z.string().optional(),
+    })
+    .passthrough()
+    .optional(),
+  tag: z.string().min(1),
+});
+
+/**
  * Funnel blueprint stored in launches.funnel_blueprint (jsonb, nullable).
- * Added by migration 0029.
+ * Added by migration 0029. Migration 0044 (T-LEADS-VIEW-001) acrescentou
+ * `tag_rules` (opcional para retrocompat com blueprints antigos).
  */
 const FunnelBlueprintSchema = z.object({
-  version: z.preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().positive()).default(1),
+  version: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? Number(v) : v),
+      z.number().int().positive(),
+    )
+    .default(1),
   stages: z.array(BlueprintStageSchema),
+  // T-LEADS-VIEW-002: optional — blueprints anteriores à migration 0044 não têm.
+  tag_rules: z.array(BlueprintTagRuleSchema).optional(),
 });
 
 type FunnelBlueprint = z.infer<typeof FunnelBlueprintSchema>;
@@ -299,7 +333,13 @@ async function getBlueprintForLaunch(
   // jsonb via sql`` template may come back as a string — parse if needed.
   const bpValue =
     typeof row.funnelBlueprint === 'string'
-      ? (() => { try { return JSON.parse(row.funnelBlueprint); } catch { return row.funnelBlueprint; } })()
+      ? (() => {
+          try {
+            return JSON.parse(row.funnelBlueprint);
+          } catch {
+            return row.funnelBlueprint;
+          }
+        })()
       : row.funnelBlueprint;
   const parsed = FunnelBlueprintSchema.safeParse(bpValue);
 
@@ -425,7 +465,14 @@ export async function processRawEvent(
   db: Db,
   _kv?: KvStore,
 ): Promise<
-  Result<{ event_id: string; dispatch_jobs_created: number; dispatch_job_ids: Array<{ id: string; destination: string }> }, ProcessingError>
+  Result<
+    {
+      event_id: string;
+      dispatch_jobs_created: number;
+      dispatch_job_ids: Array<{ id: string; destination: string }>;
+    },
+    ProcessingError
+  >
 > {
   // -------------------------------------------------------------------------
   // Step 1: Fetch raw_events row
@@ -776,6 +823,54 @@ export async function processRawEvent(
         );
       }
     }
+
+    // -----------------------------------------------------------------------
+    // T-LEADS-VIEW-002: aplicar tag_rules do blueprint para este evento.
+    //
+    // Tags são atributos binários atemporais workspace-scoped — complementam
+    // stages (progressão monotônica) e events (fatos pontuais). A regra
+    // dispara dentro deste mesmo bloco (resolvedLeadId + launch_id presentes)
+    // porque blueprint vem da launch.
+    //
+    // BR-PRIVACY-001: só workspace_id, lead_id (UUIDs) e tag_name (string de
+    // domínio) circulam — nenhum PII. INV-LEAD-TAG-001/002 enforced em
+    // applyTagRules. Falha não bloqueia o pipeline (mesmo padrão do
+    // promoteLeadLifecycle acima).
+    //
+    // tracker.js não emite Purchase nem injeta funnel_role hoje, então o
+    // contexto do `when` típico para este processador é vazio (`{}`) — regras
+    // sem `when` (ex.: `custom:wpp_joined` → `joined_group`) já funcionam.
+    // -----------------------------------------------------------------------
+    try {
+      await applyTagRules({
+        db,
+        workspaceId: rawEvent.workspaceId,
+        leadId: resolvedLeadId,
+        eventName: payload.event_name,
+        eventContext: {
+          // tracker payload pode trazer funnel_role via custom_data (futuro);
+          // null-safe quando ausente.
+          funnel_role:
+            typeof (payload.custom_data as Record<string, unknown>)
+              ?.funnel_role === 'string'
+              ? ((payload.custom_data as Record<string, unknown>)
+                  .funnel_role as string)
+              : undefined,
+        },
+        tagRules: blueprint?.tag_rules,
+      });
+    } catch (tagErr) {
+      safeLog('warn', {
+        event: 'apply_tag_rules_failed',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        // BR-PRIVACY-001: sem PII.
+        error:
+          tagErr instanceof Error
+            ? tagErr.message.slice(0, 200)
+            : String(tagErr),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -908,8 +1003,7 @@ export async function processRawEvent(
         ga.customer_id.length > 0 &&
         ga.conversion_actions
       ) {
-        const conversionActionId =
-          ga.conversion_actions[payload.event_name];
+        const conversionActionId = ga.conversion_actions[payload.event_name];
         if (
           typeof conversionActionId === 'string' &&
           conversionActionId.length > 0
@@ -949,7 +1043,10 @@ export async function processRawEvent(
       safeLog('error', {
         event: 'dispatch_jobs_creation_failed',
         raw_event_id,
-        error: dispatchErr instanceof Error ? dispatchErr.message.slice(0, 200) : String(dispatchErr),
+        error:
+          dispatchErr instanceof Error
+            ? dispatchErr.message.slice(0, 200)
+            : String(dispatchErr),
       });
     }
   }

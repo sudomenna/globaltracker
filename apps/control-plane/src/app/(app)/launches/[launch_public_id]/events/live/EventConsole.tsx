@@ -264,7 +264,7 @@ function EventItem({ event, replayed, onReplayClick }: EventItemProps) {
             <span>Fonte: {event.event_source}</span>
             {event.lead_id && (
               <a
-                href={`/leads/${event.lead_id}`}
+                href={`/contatos/${event.lead_id}`}
                 className="text-primary hover:underline"
                 onClick={(e) => e.stopPropagation()}
               >
@@ -314,7 +314,7 @@ function EventItem({ event, replayed, onReplayClick }: EventItemProps) {
           {event.lead_id && (
             <div className="pt-1">
               <a
-                href={`/leads/${event.lead_id}`}
+                href={`/contatos/${event.lead_id}`}
                 className="text-primary hover:underline font-sans"
               >
                 Ver lead na timeline →

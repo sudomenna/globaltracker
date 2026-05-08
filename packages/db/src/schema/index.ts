@@ -12,6 +12,7 @@ export * from './lead_merge.js';
 export * from './lead_consent.js';
 export * from './lead_token.js';
 export * from './lead_stage.js';
+export * from './lead_tag.js';
 export * from './lead_survey_response.js';
 export * from './lead_icp_score.js';
 export * from './webinar_attendance.js';

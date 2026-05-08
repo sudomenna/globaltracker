@@ -17,23 +17,30 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { events, leadStages, leads, rawEvents, workspaces } from '@globaltracker/db';
+import {
+  events,
+  leadStages,
+  leads,
+  rawEvents,
+  workspaces,
+} from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
+import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
+import { applyTagRules } from './lead-tags.js';
+import { promoteLeadLifecycle } from './lifecycle-promoter.js';
+import { lifecycleForCategory } from './lifecycle-rules.js';
 import { hashPiiExternal, splitName } from './pii.js';
+import { upsertProduct } from './products-resolver.js';
 import {
   type FunnelBlueprint,
-  type Result,
   type ProcessingError,
+  type Result,
   getBlueprintForLaunch,
   matchesStageFilters,
 } from './raw-events-processor.js';
-import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
-import { upsertProduct } from './products-resolver.js';
-import { promoteLeadLifecycle } from './lifecycle-promoter.js';
-import { lifecycleForCategory } from './lifecycle-rules.js';
 
 // Re-export ProcessingError for callers that want to type the error union.
 export type { ProcessingError, Result };
@@ -407,7 +414,7 @@ export async function processGuruRawEvent(
     const rawPhone = payload.contact?.phone_number;
     const localCode = payload.contact?.phone_local_code;
     const phone =
-      rawPhone && localCode ? `+${localCode}${rawPhone}` : rawPhone ?? null;
+      rawPhone && localCode ? `+${localCode}${rawPhone}` : (rawPhone ?? null);
 
     if (email || phone) {
       // BR-PRIVACY-001: do NOT log email or phone in clear — pass to resolver only
@@ -603,7 +610,8 @@ export async function processGuruRawEvent(
         workspace_id: rawEvent.workspaceId,
         event_id: payload._guru_event_id,
         new_dates_updated_at: newUpdatedAt.toISOString(),
-        existing_dates_updated_at: existingDatesUpdatedAt?.toISOString() ?? null,
+        existing_dates_updated_at:
+          existingDatesUpdatedAt?.toISOString() ?? null,
       });
     } else {
       safeLog('info', {
@@ -791,6 +799,42 @@ export async function processGuruRawEvent(
         );
       }
     }
+
+    // -----------------------------------------------------------------------
+    // T-LEADS-VIEW-002: aplicar tag_rules do blueprint para este evento.
+    //
+    // Guru emite Purchase com `funnel_role` (workshop|main_offer|...) injetado
+    // pelo handler — usado pelo `when` das regras
+    // (ex.: Purchase + funnel_role=bait → bait_purchased).
+    //
+    // BR-PRIVACY-001: só workspace_id, lead_id (UUIDs) e tag_name (string de
+    // domínio) circulam — nenhum PII. INV-LEAD-TAG-001/002 enforced em
+    // applyTagRules. Falha não bloqueia o pipeline (mesmo padrão do
+    // promoteLeadLifecycle acima).
+    // -----------------------------------------------------------------------
+    try {
+      await applyTagRules({
+        db,
+        workspaceId: rawEvent.workspaceId,
+        leadId: resolvedLeadId,
+        eventName: payload._guru_event_type,
+        eventContext: {
+          funnel_role: payload.funnel_role ?? undefined,
+        },
+        tagRules: blueprint?.tag_rules,
+      });
+    } catch (tagErr) {
+      safeLog('warn', {
+        event: 'apply_tag_rules_failed',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        // BR-PRIVACY-001: sem PII.
+        error:
+          tagErr instanceof Error
+            ? tagErr.message.slice(0, 200)
+            : String(tagErr),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -871,8 +915,12 @@ export async function processGuruRawEvent(
       ga.customer_id.length > 0 &&
       ga.conversion_actions
     ) {
-      const conversionActionId = ga.conversion_actions[payload._guru_event_type];
-      if (typeof conversionActionId === 'string' && conversionActionId.length > 0) {
+      const conversionActionId =
+        ga.conversion_actions[payload._guru_event_type];
+      if (
+        typeof conversionActionId === 'string' &&
+        conversionActionId.length > 0
+      ) {
         jobInputs.push({
           workspace_id: rawEvent.workspaceId,
           event_id: insertedEventId,
@@ -905,7 +953,10 @@ export async function processGuruRawEvent(
     safeLog('error', {
       event: 'dispatch_jobs_creation_failed',
       raw_event_id,
-      error: dispatchErr instanceof Error ? dispatchErr.message.slice(0, 200) : String(dispatchErr),
+      error:
+        dispatchErr instanceof Error
+          ? dispatchErr.message.slice(0, 200)
+          : String(dispatchErr),
     });
   }
 

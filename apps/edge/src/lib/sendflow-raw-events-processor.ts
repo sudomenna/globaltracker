@@ -21,13 +21,14 @@ import { events, leadStages, rawEvents, workspaces } from '@globaltracker/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
+import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
+import { applyTagRules } from './lead-tags.js';
 import {
-  type Result,
   type ProcessingError,
+  type Result,
   getBlueprintForLaunch,
   matchesStageFilters,
 } from './raw-events-processor.js';
-import { createDispatchJobs, type DispatchJobInput } from './dispatch.js';
 
 export type { ProcessingError, Result };
 
@@ -40,15 +41,20 @@ const SendflowRawEventPayloadSchema = z
     _provider: z.literal('sendflow'),
     // Original SendFlow fields
     id: z.string().min(1),
-    event: z.enum(['group.updated.members.added', 'group.updated.members.removed']),
-    data: z.object({
-      campaignId: z.string(),
-      campaignName: z.string().nullish(),
-      groupName: z.string().nullish(),
-      groupId: z.string().nullish(),
-      number: z.string().nullish(),
-      createdAt: z.string().nullish(),
-    }).passthrough(),
+    event: z.enum([
+      'group.updated.members.added',
+      'group.updated.members.removed',
+    ]),
+    data: z
+      .object({
+        campaignId: z.string(),
+        campaignName: z.string().nullish(),
+        groupName: z.string().nullish(),
+        groupId: z.string().nullish(),
+        number: z.string().nullish(),
+        createdAt: z.string().nullish(),
+      })
+      .passthrough(),
     // Fields injected by the webhook handler
     _resolved_event_name: z.string(),
     _resolved_stage: z.string().nullish(),
@@ -72,7 +78,10 @@ function isUniqueViolation(message: string): boolean {
   );
 }
 
-async function markRawEventProcessed(raw_event_id: string, db: Db): Promise<void> {
+async function markRawEventProcessed(
+  raw_event_id: string,
+  db: Db,
+): Promise<void> {
   await db
     .update(rawEvents)
     .set({ processingStatus: 'processed', processedAt: new Date() })
@@ -163,7 +172,10 @@ export async function processSendflowRawEvent(
   if (!rawEvent) {
     return {
       ok: false,
-      error: { code: 'not_found', message: `raw_event not found: ${raw_event_id}` },
+      error: {
+        code: 'not_found',
+        message: `raw_event not found: ${raw_event_id}`,
+      },
     };
   }
 
@@ -171,7 +183,11 @@ export async function processSendflowRawEvent(
   if (rawEvent.processingStatus === 'processed') {
     return {
       ok: true,
-      value: { event_id: raw_event_id, dispatch_jobs_created: 0, dispatch_job_ids: [] },
+      value: {
+        event_id: raw_event_id,
+        dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
+      },
     };
   }
 
@@ -239,7 +255,11 @@ export async function processSendflowRawEvent(
     await markRawEventProcessed(raw_event_id, db);
     return {
       ok: true,
-      value: { event_id: eventId, dispatch_jobs_created: 0, dispatch_job_ids: [] },
+      value: {
+        event_id: eventId,
+        dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
+      },
     };
   }
 
@@ -301,11 +321,19 @@ export async function processSendflowRawEvent(
       await markRawEventProcessed(raw_event_id, db);
       return {
         ok: true,
-        value: { event_id: eventId, dispatch_jobs_created: 0, dispatch_job_ids: [] },
+        value: {
+          event_id: eventId,
+          dispatch_jobs_created: 0,
+          dispatch_job_ids: [],
+        },
       };
     }
 
-    await markRawEventFailed(raw_event_id, `db_insert: ${message.slice(0, 500)}`, db);
+    await markRawEventFailed(
+      raw_event_id,
+      `db_insert: ${message.slice(0, 500)}`,
+      db,
+    );
     return { ok: false, error: { code: 'db_error', message } };
   }
 
@@ -353,6 +381,45 @@ export async function processSendflowRawEvent(
         db,
       );
     }
+
+    // -----------------------------------------------------------------------
+    // T-LEADS-VIEW-002: aplicar tag_rules do blueprint para este evento.
+    //
+    // SendFlow emite custom:wpp_joined / custom:wpp_left. wpp_campaign_role é
+    // o discriminador (similar ao funnel_role do Guru) — usado pelo `when`
+    // das regras quando elas precisarem distinguir grupos. Regras sem `when`
+    // (ex.: custom:wpp_joined → joined_group) funcionam direto.
+    //
+    // BR-PRIVACY-001: só workspace_id, lead_id (UUIDs) e tag_name (string de
+    // domínio) circulam — nenhum PII. INV-LEAD-TAG-001/002 enforced em
+    // applyTagRules. Falha não bloqueia o pipeline.
+    // -----------------------------------------------------------------------
+    try {
+      await applyTagRules({
+        db,
+        workspaceId: rawEvent.workspaceId,
+        leadId: resolvedLeadId,
+        eventName,
+        eventContext: {
+          // SendFlow não emite funnel_role; passamos wpp_campaign_role
+          // (compatível com TagRuleCondition.passthrough) caso uma regra
+          // futura precise filtrar por isso.
+          wpp_campaign_role: payload.wpp_campaign_role ?? undefined,
+        },
+        tagRules: blueprint?.tag_rules,
+      });
+    } catch (tagErr) {
+      safeLog('warn', {
+        event: 'apply_tag_rules_failed',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        // BR-PRIVACY-001: sem PII.
+        error:
+          tagErr instanceof Error
+            ? tagErr.message.slice(0, 200)
+            : String(tagErr),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -368,7 +435,11 @@ export async function processSendflowRawEvent(
     await markRawEventProcessed(raw_event_id, db);
     return {
       ok: true,
-      value: { event_id: eventId, dispatch_jobs_created: 0, dispatch_job_ids: [] },
+      value: {
+        event_id: eventId,
+        dispatch_jobs_created: 0,
+        dispatch_job_ids: [],
+      },
     };
   }
 
@@ -389,10 +460,20 @@ export async function processSendflowRawEvent(
       } | null;
     };
 
-    const rawConfig = ws?.config as Record<string, unknown> | string | null | undefined;
+    const rawConfig = ws?.config as
+      | Record<string, unknown>
+      | string
+      | null
+      | undefined;
     const config: Record<string, unknown> | null =
       typeof rawConfig === 'string'
-        ? (() => { try { return JSON.parse(rawConfig) as Record<string, unknown>; } catch { return null; } })()
+        ? (() => {
+            try {
+              return JSON.parse(rawConfig) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })()
         : (rawConfig ?? null);
     const integrations = config?.integrations as IntegrationConfig | undefined;
 
@@ -431,7 +512,10 @@ export async function processSendflowRawEvent(
         ga.conversion_actions
       ) {
         const conversionActionId = ga.conversion_actions[eventName];
-        if (typeof conversionActionId === 'string' && conversionActionId.length > 0) {
+        if (
+          typeof conversionActionId === 'string' &&
+          conversionActionId.length > 0
+        ) {
           jobInputs.push({
             workspace_id: rawEvent.workspaceId,
             event_id: insertedEventId,
@@ -465,7 +549,10 @@ export async function processSendflowRawEvent(
     safeLog('error', {
       event: 'dispatch_jobs_creation_failed',
       raw_event_id,
-      error: dispatchErr instanceof Error ? dispatchErr.message.slice(0, 200) : String(dispatchErr),
+      error:
+        dispatchErr instanceof Error
+          ? dispatchErr.message.slice(0, 200)
+          : String(dispatchErr),
     });
   }
 

@@ -150,7 +150,7 @@ export default async function LeadDetailPage({
       {/* Header */}
       <div className="space-y-1">
         <nav className="text-xs text-muted-foreground" aria-label="Localização">
-          <span>Leads</span>
+          <span>Contatos</span>
           <span className="mx-1" aria-hidden="true">
             ›
           </span>
@@ -200,7 +200,7 @@ export default async function LeadDetailPage({
       {/* SAR/erased banner */}
       {leadStatus === 'erased' && (
         <output className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 block">
-          Este lead foi anonimizado por SAR — dados removidos
+          Este contato foi anonimizado por SAR — dados removidos
         </output>
       )}
 

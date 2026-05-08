@@ -45,11 +45,11 @@ const navItems: NavItemDef[] = [
     resolveTooltip: () => 'Dados de saúde de lançamentos indisponíveis',
   },
   {
-    href: '/leads',
-    label: 'Leads',
+    href: '/contatos',
+    label: 'Contatos',
     icon: Users,
     resolveHealth: () => 'unknown',
-    resolveTooltip: () => 'Dados de saúde de leads indisponíveis',
+    resolveTooltip: () => 'Dados de saúde de contatos indisponíveis',
   },
   {
     href: '/products',

@@ -131,6 +131,7 @@ const VALID_TABS = [
   'eventos',
   'audiences',
   'performance',
+  'leads',
   'recuperacao',
 ] as const;
 type TabValue = (typeof VALID_TABS)[number];
@@ -564,6 +565,351 @@ const RECOVERY_EVENT_BADGE_CLASS: Record<RecoveryEventType, string> = {
   RefundProcessed: 'bg-blue-100 text-blue-800',
   Chargeback: 'bg-orange-100 text-orange-800',
 };
+
+// ─── TabLeads ─────────────────────────────────────────────────────────────────
+
+interface LeadsViewColumn {
+  key: string;
+  label: string;
+  type: 'stage' | 'event' | 'tag' | 'any';
+  source?: string;
+  sources?: Array<{ type: string; name: string }>;
+}
+
+interface LaunchLeadItem {
+  lead_id: string;
+  lead_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
+  pii_masked: boolean;
+  current_stage: string | null;
+  current_stage_index: number | null;
+  columns: Record<string, boolean>;
+  last_event_at: string | null;
+  created_at: string;
+}
+
+interface LaunchLeadsResponse {
+  items: LaunchLeadItem[];
+  next_cursor: string | null;
+  total: number;
+  leads_view: {
+    stage_progression: string[];
+    columns: LeadsViewColumn[];
+  };
+  role: 'owner' | 'admin' | 'marketer' | 'operator' | 'viewer';
+}
+
+const STAGE_LABELS: Record<string, string> = {
+  clicked_buy_workshop: 'Clicou Comprar Workshop',
+  lead_workshop: 'Lead',
+  purchased_workshop: 'Comprou Workshop',
+  clicked_wpp_join: 'Clicou Entrar Grupo',
+  wpp_joined: 'Entrou no Grupo',
+  survey_responded: 'Respondeu Pesquisa',
+  watched_workshop: 'Assistiu Workshop',
+  clicked_buy_main: 'Clicou Comprar Oferta',
+  purchased_main: 'Comprou Oferta',
+};
+
+function humanizeStage(slug: string): string {
+  return (
+    STAGE_LABELS[slug] ??
+    slug
+      .split('_')
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+      .join(' ')
+  );
+}
+
+function formatLeadPhone(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('55')) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 9)}-${digits.slice(9)}`;
+  }
+  if (digits.length === 12 && digits.startsWith('55')) {
+    return `+${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4, 8)}-${digits.slice(8)}`;
+  }
+  return raw;
+}
+
+function formatLeadDateTime(iso: string | null) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function TabLeads({
+  launchPublicId,
+  accessToken,
+  baseUrl,
+  isActive,
+}: {
+  launchPublicId: string;
+  accessToken: string;
+  baseUrl: string;
+  isActive: boolean;
+}) {
+  const [items, setItems] = useState<LaunchLeadItem[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [columns, setColumns] = useState<LeadsViewColumn[]>([]);
+  const [stageProgression, setStageProgression] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [fetched, setFetched] = useState(false);
+
+  // Filtros
+  const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [columnFilter, setColumnFilter] = useState<string>('');
+  const [stageFilter, setStageFilter] = useState<string>('');
+
+  // Debounce do search
+  useEffect(() => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => setDebouncedQ(q), 350);
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    };
+  }, [q]);
+
+  const fetchLeads = useCallback(
+    async (cursor?: string) => {
+      if (!accessToken) return;
+      const isCursorLoad = !!cursor;
+      if (isCursorLoad) setLoadingMore(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const url = new URL(
+          `${baseUrl}/v1/launches/${encodeURIComponent(launchPublicId)}/leads`,
+        );
+        url.searchParams.set('limit', '50');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        if (debouncedQ) url.searchParams.set('q', debouncedQ);
+        if (columnFilter) url.searchParams.set('column_filter', columnFilter);
+        if (stageFilter) url.searchParams.set('stage_filter', stageFilter);
+
+        const res = await fetch(url.toString(), {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) {
+          setError(`Erro ao carregar leads (HTTP ${res.status}).`);
+          return;
+        }
+        const body = (await res.json()) as LaunchLeadsResponse;
+        if (isCursorLoad) {
+          setItems((prev) => [...prev, ...(body.items ?? [])]);
+        } else {
+          setItems(body.items ?? []);
+        }
+        setNextCursor(body.next_cursor ?? null);
+        setColumns(body.leads_view?.columns ?? []);
+        setStageProgression(body.leads_view?.stage_progression ?? []);
+      } catch {
+        setError('Erro ao carregar leads.');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+        setFetched(true);
+      }
+    },
+    [accessToken, baseUrl, launchPublicId, debouncedQ, columnFilter, stageFilter],
+  );
+
+  // Lazy load: só busca quando a tab é ativada pela primeira vez
+  useEffect(() => {
+    if (isActive && !fetched && accessToken) {
+      void fetchLeads();
+    }
+  }, [isActive, fetched, accessToken, fetchLeads]);
+
+  // Rebusca quando filtros/search mudam (após primeira carga)
+  useEffect(() => {
+    if (fetched && accessToken) {
+      setItems([]);
+      setNextCursor(null);
+      void fetchLeads();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedQ, columnFilter, stageFilter]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Leads</CardTitle>
+        <CardDescription>
+          Leads que atravessaram o funil deste lançamento.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Filtros */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:flex-wrap">
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar por nome, email, telefone ou ID…"
+            className="flex h-9 flex-1 min-w-[220px] rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <select
+            value={columnFilter}
+            onChange={(e) => setColumnFilter(e.target.value)}
+            aria-label="Filtrar por coluna"
+            className="h-9 rounded-md border border-input bg-background px-2 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="">Todas as colunas</option>
+            {columns.map((col) => (
+              <option key={col.key} value={col.key}>
+                {col.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={stageFilter}
+            onChange={(e) => setStageFilter(e.target.value)}
+            aria-label="Filtrar por stage"
+            className="h-9 rounded-md border border-input bg-background px-2 py-1 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="">Todas as stages</option>
+            {stageProgression.map((slug) => (
+              <option key={slug} value={slug}>
+                {humanizeStage(slug)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Estados */}
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-8">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            Carregando…
+          </div>
+        )}
+
+        {!loading && error && (
+          <p className="text-sm text-destructive py-4" role="alert">
+            {error}
+          </p>
+        )}
+
+        {!loading && !error && fetched && items.length === 0 && (
+          <p className="text-sm text-muted-foreground py-4">
+            Nenhum lead neste lançamento ainda.
+          </p>
+        )}
+
+        {!loading && !error && items.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-muted-foreground text-xs">
+                  <th className="text-left py-2 pr-4 font-medium">Lead</th>
+                  <th className="text-left py-2 pr-4 font-medium">Telefone</th>
+                  <th className="text-left py-2 pr-4 font-medium">Stage</th>
+                  {columns.map((col) => (
+                    <th
+                      key={col.key}
+                      className="text-left py-2 pr-4 font-medium"
+                    >
+                      {col.label}
+                    </th>
+                  ))}
+                  <th className="text-left py-2 font-medium">
+                    Última atividade
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {items.map((lead) => (
+                  <tr key={lead.lead_id}>
+                    <td className="py-3 pr-4">
+                      <div className="font-medium">
+                        {lead.lead_name ?? '—'}
+                      </div>
+                      {lead.display_email && (
+                        <div className="text-xs text-muted-foreground">
+                          {lead.display_email}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3 pr-4 text-xs tabular-nums">
+                      {lead.display_phone
+                        ? formatLeadPhone(lead.display_phone)
+                        : '—'}
+                    </td>
+                    <td className="py-3 pr-4">
+                      {lead.current_stage ? (
+                        <Badge>{humanizeStage(lead.current_stage)}</Badge>
+                      ) : (
+                        <Badge variant="outline">—</Badge>
+                      )}
+                    </td>
+                    {columns.map((col) => (
+                      <td key={col.key} className="py-3 pr-4">
+                        {lead.columns?.[col.key] === true ? (
+                          <span
+                            className="text-green-600 font-semibold"
+                            aria-label="Sim"
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <span
+                            className="text-muted-foreground"
+                            aria-label="Não"
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                    <td className="py-3 text-xs text-muted-foreground">
+                      {formatLeadDateTime(lead.last_event_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Carregar mais */}
+        {nextCursor && !loading && (
+          <div className="pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void fetchLeads(nextCursor)}
+              disabled={loadingMore}
+            >
+              {loadingMore ? (
+                <>
+                  <Loader2
+                    className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
+                  Carregando…
+                </>
+              ) : (
+                'Carregar mais'
+              )}
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 // ─── TabRecuperacao ───────────────────────────────────────────────────────────
 
@@ -1328,6 +1674,7 @@ export default function LaunchDetailPage() {
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
           <TabsTrigger value="audiences">Audiences</TabsTrigger>
           <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="leads">Leads</TabsTrigger>
           <TabsTrigger value="recuperacao">Recuperação</TabsTrigger>
         </TabsList>
 
@@ -1368,6 +1715,15 @@ export default function LaunchDetailPage() {
           <p className="text-sm text-muted-foreground py-4">
             Métricas disponíveis em breve.
           </p>
+        </TabsContent>
+
+        <TabsContent value="leads">
+          <TabLeads
+            launchPublicId={launchPublicId}
+            accessToken={accessToken}
+            baseUrl={baseUrl}
+            isActive={activeTab === 'leads'}
+          />
         </TabsContent>
 
         <TabsContent value="recuperacao">

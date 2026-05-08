@@ -207,9 +207,9 @@ export default function LeadsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Leads</h1>
+        <h1 className="text-2xl font-semibold">Contatos</h1>
         <p className="text-sm text-muted-foreground">
-          Busque e analise seus leads
+          Busque e analise seus contatos
         </p>
       </div>
 
@@ -274,8 +274,8 @@ export default function LeadsPage() {
             />
             <p className="text-sm text-muted-foreground">
               {debouncedQ || selectedLaunch
-                ? 'Nenhum lead encontrado com esses filtros.'
-                : 'Nenhum lead registrado ainda.'}
+                ? 'Nenhum contato encontrado com esses filtros.'
+                : 'Nenhum contato registrado ainda.'}
             </p>
           </div>
         ) : (
@@ -284,7 +284,7 @@ export default function LeadsPage() {
               {items.map((lead) => (
                 <li key={lead.lead_public_id}>
                   <Link
-                    href={`/leads/${lead.lead_public_id}`}
+                    href={`/contatos/${lead.lead_public_id}`}
                     className="flex items-start justify-between gap-4 py-3 px-4 hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                   >
                     <div className="min-w-0 flex-1 space-y-1">
