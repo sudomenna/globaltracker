@@ -90,6 +90,32 @@ const ListProductsQuerySchema = z
   })
   .strict();
 
+const ExternalProviderEnum = z.enum([
+  'guru',
+  'hotmart',
+  'kiwify',
+  'stripe',
+  'manual',
+]);
+
+/**
+ * POST body — create a new product manually.
+ *
+ * Operator informs (workspace, provider, external_id) ahead of any webhook
+ * traffic, so the product can be associated to a launch via launch_products
+ * before first purchase. Auto-creation via webhook (upsertProduct) reuses
+ * any existing row matching (workspace, provider, external_id).
+ */
+const PostProductBodySchema = z
+  .object({
+    name: z.string().trim().min(1).max(256),
+    external_provider: ExternalProviderEnum,
+    external_product_id: z.string().trim().min(1).max(256),
+    category: z.union([ProductCategoryEnum, z.null()]).optional(),
+    status: z.enum(['active', 'archived']).optional(),
+  })
+  .strict();
+
 /**
  * PATCH body — at least one field required (refine).
  * `.strict()` rejects unknown keys.
@@ -99,6 +125,8 @@ const PatchProductBodySchema = z
   .object({
     category: z.union([ProductCategoryEnum, z.null()]).optional(),
     name: z.string().trim().min(1).max(256).optional(),
+    external_provider: ExternalProviderEnum.optional(),
+    external_product_id: z.string().trim().min(1).max(256).optional(),
     status: z.enum(['active', 'archived']).optional(),
   })
   .strict()
@@ -106,8 +134,10 @@ const PatchProductBodySchema = z
     (body) =>
       body.category !== undefined ||
       body.name !== undefined ||
+      body.external_provider !== undefined ||
+      body.external_product_id !== undefined ||
       body.status !== undefined,
-    { message: 'At least one of category, name or status must be provided' },
+    { message: 'At least one field must be provided' },
   );
 
 // ---------------------------------------------------------------------------
@@ -313,7 +343,176 @@ export function createProductsRoute(opts?: {
   });
 
   // -------------------------------------------------------------------------
-  // PATCH /:id — update name/category/status.
+  // POST / — create a product manually.
+  //
+  // BR-PRODUCT-002: auto-creation via webhook still works; POST allows the
+  //   operator to pre-register a product BEFORE first webhook arrives,
+  //   so it can be associated to a launch via launch_products immediately.
+  // BR-RBAC-001: requires admin+ or owner.
+  // BR-AUDIT-001 / AUTHZ-012: writes audit_log.
+  // -------------------------------------------------------------------------
+  route.post('/', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    const userId = c.get('user_id') as string | undefined;
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+
+    if (!workspaceId || !userId) {
+      return c.json(
+        { code: 'unauthorized', request_id: requestId },
+        401,
+        { 'X-Request-Id': requestId },
+      );
+    }
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json(
+        { code: 'forbidden_role', request_id: requestId },
+        403,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    let rawBody: unknown;
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json(
+        { code: 'validation_error', message: 'Invalid JSON', request_id: requestId },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const parsed = PostProductBodySchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: 'validation_error',
+          message: parsed.error.errors[0]?.message ?? 'Invalid body',
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const body = parsed.data;
+    const db = resolveDb(c.env);
+    if (!db) {
+      return c.json(
+        { code: 'service_unavailable', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    try {
+      const inserted = await db
+        .insert(products)
+        .values({
+          workspaceId,
+          name: body.name,
+          category: body.category ?? null,
+          externalProvider: body.external_provider,
+          externalProductId: body.external_product_id,
+          status: body.status ?? 'active',
+        })
+        .returning({
+          id: products.id,
+          name: products.name,
+          category: products.category,
+          externalProvider: products.externalProvider,
+          externalProductId: products.externalProductId,
+          status: products.status,
+          createdAt: products.createdAt,
+          updatedAt: products.updatedAt,
+        });
+
+      const created = inserted[0];
+      if (!created) {
+        return c.json(
+          { code: 'internal_error', request_id: requestId },
+          500,
+          { 'X-Request-Id': requestId },
+        );
+      }
+
+      // Audit log (no PII — products têm apenas metadata).
+      try {
+        await db.insert(auditLog).values({
+          workspaceId,
+          actorId: userId,
+          actorType: 'user',
+          action: 'product_created',
+          entityType: 'product',
+          entityId: created.id,
+          before: null,
+          after: {
+            name: created.name,
+            category: created.category,
+            external_provider: created.externalProvider,
+            external_product_id: created.externalProductId,
+            status: created.status,
+          },
+          requestContext: { request_id: requestId, ip: null, user_agent: null },
+        });
+      } catch (err) {
+        safeLog('warn', {
+          event: 'products_post_audit_failed',
+          request_id: requestId,
+          error_type: err instanceof Error ? err.constructor.name : typeof err,
+        });
+      }
+
+      return c.json(
+        {
+          id: created.id,
+          name: created.name,
+          category: created.category,
+          external_provider: created.externalProvider,
+          external_product_id: created.externalProductId,
+          status: created.status,
+          created_at: created.createdAt,
+          updated_at: created.updatedAt,
+        },
+        201,
+        { 'X-Request-Id': requestId },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Postgres unique violation code 23505
+      if (
+        msg.includes('uq_products_workspace_provider_external_id') ||
+        msg.includes('23505')
+      ) {
+        return c.json(
+          {
+            code: 'conflict',
+            message:
+              'Já existe um produto com este external_provider e external_product_id neste workspace.',
+            request_id: requestId,
+          },
+          409,
+          { 'X-Request-Id': requestId },
+        );
+      }
+      safeLog('error', {
+        event: 'products_post_failed',
+        request_id: requestId,
+        error_type: err instanceof Error ? err.constructor.name : typeof err,
+      });
+      return c.json(
+        { code: 'internal_error', request_id: requestId },
+        500,
+        { 'X-Request-Id': requestId },
+      );
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // PATCH /:id — update name/category/status/external_provider/external_product_id.
   //
   // BR-PRODUCT-003: when category changes, recalculate lifecycle for every
   //   lead that bought this product.
@@ -432,13 +631,39 @@ export function createProductsRoute(opts?: {
       if (body.category !== undefined) updates.category = body.category;
       if (body.name !== undefined) updates.name = body.name;
       if (body.status !== undefined) updates.status = body.status;
+      if (body.external_provider !== undefined)
+        (updates as Record<string, unknown>).externalProvider =
+          body.external_provider;
+      if (body.external_product_id !== undefined)
+        (updates as Record<string, unknown>).externalProductId =
+          body.external_product_id;
 
-      await db
-        .update(products)
-        .set(updates)
-        .where(
-          and(eq(products.id, productId), eq(products.workspaceId, workspaceId)),
-        );
+      try {
+        await db
+          .update(products)
+          .set(updates)
+          .where(
+            and(eq(products.id, productId), eq(products.workspaceId, workspaceId)),
+          );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          msg.includes('uq_products_workspace_provider_external_id') ||
+          msg.includes('23505')
+        ) {
+          return c.json(
+            {
+              code: 'conflict',
+              message:
+                'Já existe um produto com este external_provider e external_product_id neste workspace.',
+              request_id: requestId,
+            },
+            409,
+            { 'X-Request-Id': requestId },
+          );
+        }
+        throw err;
+      }
 
       // 3. BR-PRODUCT-003: backfill lifecycle for affected leads when category changes.
       let leadsRecalculated = 0;

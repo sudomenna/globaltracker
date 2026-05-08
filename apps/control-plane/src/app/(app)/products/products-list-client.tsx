@@ -3,7 +3,7 @@
 import { Badge } from '@/components/ui/badge';
 import { edgeFetch } from '@/lib/api-client';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
-import { Loader2, Package, Search } from 'lucide-react';
+import { Loader2, Package, Plus, Search } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -136,6 +136,15 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   const toastIdRef = useRef(0);
 
+  // Add modal state
+  const [addOpen, setAddOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createProvider, setCreateProvider] = useState<string>('guru');
+  const [createExtId, setCreateExtId] = useState('');
+  const [createCategory, setCreateCategory] = useState<ProductCategory | ''>('');
+  const [createError, setCreateError] = useState<string | null>(null);
+
   function pushToast(message: string, kind: 'success' | 'error' = 'success') {
     const id = ++toastIdRef.current;
     setToasts((prev) => [...prev, { id, message, kind }]);
@@ -197,6 +206,122 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
   useEffect(() => {
     void fetchProducts();
   }, [fetchProducts]);
+
+  async function handleExternalIdSave(productId: string, newId: string) {
+    const trimmed = newId.trim();
+    if (!trimmed) return;
+
+    const previous = items.find((p) => p.id === productId);
+    if (!previous || previous.external_product_id === trimmed) return;
+
+    const accessToken = await getAccessToken();
+    if (!accessToken) return;
+
+    // Optimistic
+    setItems((prev) =>
+      prev.map((p) =>
+        p.id === productId ? { ...p, external_product_id: trimmed } : p,
+      ),
+    );
+
+    try {
+      const res = await edgeFetch(
+        `/v1/products/${encodeURIComponent(productId)}`,
+        accessToken,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ external_product_id: trimmed }),
+        },
+      );
+      if (!res.ok) {
+        // rollback
+        setItems((prev) =>
+          prev.map((p) =>
+            p.id === productId
+              ? { ...p, external_product_id: previous.external_product_id }
+              : p,
+          ),
+        );
+        const body = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          code?: string;
+        };
+        pushToast(
+          body.code === 'conflict'
+            ? 'Já existe outro produto com este ID externo.'
+            : (body.message ?? 'Falha ao atualizar ID externo.'),
+          'error',
+        );
+        return;
+      }
+      pushToast('ID externo atualizado.');
+    } catch {
+      setItems((prev) =>
+        prev.map((p) =>
+          p.id === productId
+            ? { ...p, external_product_id: previous.external_product_id }
+            : p,
+        ),
+      );
+      pushToast('Falha ao atualizar ID externo.', 'error');
+    }
+  }
+
+  async function handleCreate() {
+    setCreateError(null);
+    const name = createName.trim();
+    const extId = createExtId.trim();
+    if (!name) {
+      setCreateError('Nome é obrigatório.');
+      return;
+    }
+    if (!extId) {
+      setCreateError('ID externo é obrigatório.');
+      return;
+    }
+
+    const accessToken = await getAccessToken();
+    if (!accessToken) return;
+
+    setCreating(true);
+    try {
+      const res = await edgeFetch('/v1/products', accessToken, {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          external_provider: createProvider,
+          external_product_id: extId,
+          category: createCategory === '' ? null : createCategory,
+        }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          message?: string;
+          code?: string;
+        };
+        if (body.code === 'conflict') {
+          setCreateError(
+            body.message ?? 'Já existe um produto com este ID externo.',
+          );
+        } else {
+          setCreateError(body.message ?? 'Falha ao criar produto.');
+        }
+        return;
+      }
+      // Reset form, close modal, refetch
+      setAddOpen(false);
+      setCreateName('');
+      setCreateProvider('guru');
+      setCreateExtId('');
+      setCreateCategory('');
+      pushToast('Produto cadastrado.');
+      await fetchProducts();
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Erro desconhecido.');
+    } finally {
+      setCreating(false);
+    }
+  }
 
   async function handleNameSave(productId: string, newName: string) {
     const trimmed = newName.trim();
@@ -338,6 +463,17 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
           <option value="active">Ativos</option>
           <option value="archived">Arquivados</option>
         </select>
+
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            className="inline-flex items-center gap-1.5 h-10 rounded-md bg-primary text-primary-foreground px-3 text-sm font-medium hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Adicionar produto
+          </button>
+        )}
       </div>
 
       {/* Count */}
@@ -398,12 +534,21 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
                             {p.name}
                           </div>
                         )}
-                        <div
-                          className="text-[10px] text-muted-foreground font-mono truncate max-w-xs"
-                          title={p.external_product_id}
-                        >
-                          {p.external_product_id}
-                        </div>
+                        {canEdit ? (
+                          <EditableExternalId
+                            value={p.external_product_id}
+                            onSave={(id) =>
+                              void handleExternalIdSave(p.id, id)
+                            }
+                          />
+                        ) : (
+                          <div
+                            className="text-[10px] text-muted-foreground font-mono truncate max-w-xs"
+                            title={p.external_product_id}
+                          >
+                            {p.external_product_id}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2.5 align-middle">
                         {canEdit ? (
@@ -475,6 +620,148 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
           </>
         )}
       </div>
+
+      {/* Add product modal */}
+      {addOpen && (
+        <div
+          className="fixed inset-0 z-50"
+          role="dialog"
+          aria-labelledby="add-product-title"
+          aria-modal="true"
+        >
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => !creating && setAddOpen(false)}
+          />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-zinc-900 rounded-lg shadow-lg w-full max-w-md p-6 space-y-4 relative">
+              <h2 id="add-product-title" className="text-base font-semibold">
+                Adicionar produto
+              </h2>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label htmlFor="prod-name" className="text-sm font-medium">
+                    Nome
+                  </label>
+                  <input
+                    id="prod-name"
+                    type="text"
+                    value={createName}
+                    onChange={(e) => setCreateName(e.target.value)}
+                    placeholder="Ex: Curso Contratos Societários"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    disabled={creating}
+                    maxLength={256}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="prod-provider"
+                      className="text-sm font-medium"
+                    >
+                      Provider
+                    </label>
+                    <select
+                      id="prod-provider"
+                      value={createProvider}
+                      onChange={(e) => setCreateProvider(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                      disabled={creating}
+                    >
+                      <option value="guru">Guru</option>
+                      <option value="hotmart">Hotmart</option>
+                      <option value="kiwify">Kiwify</option>
+                      <option value="stripe">Stripe</option>
+                      <option value="manual">Manual</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="prod-extid"
+                      className="text-sm font-medium"
+                    >
+                      ID externo
+                    </label>
+                    <input
+                      id="prod-extid"
+                      type="text"
+                      value={createExtId}
+                      onChange={(e) => setCreateExtId(e.target.value)}
+                      placeholder="1747647500"
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                      disabled={creating}
+                      maxLength={256}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label htmlFor="prod-cat" className="text-sm font-medium">
+                    Categoria{' '}
+                    <span className="text-muted-foreground font-normal">
+                      (opcional)
+                    </span>
+                  </label>
+                  <select
+                    id="prod-cat"
+                    value={createCategory}
+                    onChange={(e) =>
+                      setCreateCategory(e.target.value as ProductCategory | '')
+                    }
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    disabled={creating}
+                  >
+                    <option value="">— Não categorizado —</option>
+                    {CATEGORY_OPTIONS.map((c) => (
+                      <option key={c} value={c}>
+                        {CATEGORY_LABEL[c]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {createError && (
+                  <p className="text-sm text-destructive" role="alert">
+                    {createError}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddOpen(false);
+                    setCreateError(null);
+                  }}
+                  disabled={creating}
+                  className="inline-flex items-center h-9 rounded-md px-3 text-sm hover:bg-accent disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCreate()}
+                  disabled={creating}
+                  className="inline-flex items-center gap-1.5 h-9 rounded-md bg-primary text-primary-foreground px-3 text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {creating && (
+                    <Loader2
+                      className="h-3.5 w-3.5 animate-spin"
+                      aria-hidden="true"
+                    />
+                  )}
+                  Criar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast container */}
       {toasts.length > 0 && (
@@ -558,6 +845,70 @@ function EditableName({
       }}
       maxLength={256}
       className="w-full max-w-xs h-7 rounded border border-input bg-background px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    />
+  );
+}
+
+// Inline editable external_product_id (Guru/Hotmart/Stripe ID). Same UX as EditableName.
+function EditableExternalId({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (newId: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(value);
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [editing, value]);
+
+  function commit() {
+    setEditing(false);
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== value) onSave(trimmed);
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title="Clique para editar o ID externo"
+        className="text-[10px] text-muted-foreground font-mono truncate max-w-xs hover:underline decoration-dotted underline-offset-2 cursor-text"
+      >
+        {value}
+      </button>
+    );
+  }
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
+      maxLength={256}
+      className="w-full max-w-xs h-6 rounded border border-input bg-background px-1.5 py-0.5 text-[10px] font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     />
   );
 }
