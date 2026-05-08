@@ -371,6 +371,7 @@ export function createSendflowWebhookRoute(
     }
 
     let leadId: string | null = null;
+    let rawEventId: string | undefined;
     if (db) {
       const resolveResult = await resolveLeadByAliases(
         { phone: normalizedPhone },
@@ -459,12 +460,16 @@ export function createSendflowWebhookRoute(
       };
 
       try {
-        await db.insert(rawEvents).values({
-          workspaceId,
-          payload: enrichedPayload,
-          headersSanitized: { 'user-agent': c.req.header('user-agent') ?? '' },
-          processingStatus: 'pending',
-        });
+        const inserted = await db
+          .insert(rawEvents)
+          .values({
+            workspaceId,
+            payload: enrichedPayload,
+            headersSanitized: { 'user-agent': c.req.header('user-agent') ?? '' },
+            processingStatus: 'pending',
+          })
+          .returning({ id: rawEvents.id });
+        rawEventId = inserted[0]?.id;
       } catch (err) {
         safeLog('error', {
           event: 'sendflow_webhook_insert_failed',
@@ -481,6 +486,7 @@ export function createSendflowWebhookRoute(
     // -----------------------------------------------------------------------
     try {
       await c.env.QUEUE_EVENTS.send({
+        raw_event_id: rawEventId,
         platform: 'sendflow',
         workspace_id: workspaceId,
         event_id: payload.id,

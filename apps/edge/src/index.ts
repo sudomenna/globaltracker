@@ -77,6 +77,7 @@ import {
   processDispatchJob,
 } from './lib/dispatch.js';
 import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
+import { processSendflowRawEvent } from './lib/sendflow-raw-events-processor.js';
 import { hashPiiExternal } from './lib/pii.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
 import {
@@ -651,7 +652,9 @@ async function queueHandler(
         const result =
           platform === 'guru'
             ? await processGuruRawEvent(raw_event_id, db)
-            : await processRawEvent(raw_event_id, db);
+            : platform === 'sendflow'
+              ? await processSendflowRawEvent(raw_event_id, db)
+              : await processRawEvent(raw_event_id, db);
 
         if (!result.ok) {
           safeLog('warn', {
