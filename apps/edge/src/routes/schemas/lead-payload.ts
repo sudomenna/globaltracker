@@ -22,10 +22,23 @@ export const AttributionSchema = z
   })
   .default({});
 
+// analytics/marketing accept either boolean (legacy/CP) or GA-style string
+// ('granted'/'denied'/'unknown'). tracker.js sends strings; we normalize to
+// boolean so downstream consumers stay simple. Mesmo padrão de event-payload.ts.
+const BoolOrConsentString = z
+  .union([z.boolean(), z.enum(['granted', 'denied', 'unknown'])])
+  .transform((v) => (typeof v === 'boolean' ? v : v === 'granted'));
+
 export const ConsentSchema = z.object({
-  analytics: z.boolean().default(false),
-  marketing: z.boolean().default(false),
+  analytics: BoolOrConsentString.default(false),
+  marketing: BoolOrConsentString.default(false),
   functional: z.boolean().default(true),
+  // GA4/Meta granular consent — tracker.js sends as strings; lead handler does
+  // not currently use these (only marketing implies them downstream), but accept
+  // them silently to avoid .strict() rejection.
+  ad_user_data: z.enum(['granted', 'denied', 'unknown']).optional(),
+  ad_personalization: z.enum(['granted', 'denied', 'unknown']).optional(),
+  customer_match: z.enum(['granted', 'denied', 'unknown']).optional(),
 });
 
 export const LeadPayloadSchema = z
