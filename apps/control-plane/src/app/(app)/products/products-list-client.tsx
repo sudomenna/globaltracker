@@ -819,7 +819,7 @@ function EditableName({
         type="button"
         onClick={() => setEditing(true)}
         title="Clique para editar"
-        className="text-left max-w-xs truncate hover:underline decoration-dotted underline-offset-2 cursor-text"
+        className="block text-left max-w-xs truncate hover:underline decoration-dotted underline-offset-2 cursor-text"
       >
         {value}
       </button>
@@ -883,7 +883,7 @@ function EditableExternalId({
         type="button"
         onClick={() => setEditing(true)}
         title="Clique para editar o ID externo"
-        className="text-[10px] text-muted-foreground font-mono truncate max-w-xs hover:underline decoration-dotted underline-offset-2 cursor-text"
+        className="block text-left text-[10px] text-muted-foreground font-mono truncate max-w-xs hover:underline decoration-dotted underline-offset-2 cursor-text"
       >
         {value}
       </button>
