@@ -149,7 +149,106 @@
 
 ```
 Estado:        SPRINT 14 ENCERRADO (2026-05-08, commit f19b488).
-               SPRINT 16 ABERTO — Ondas 1-6 entregues + commitadas (até 2026-05-08).
+               SPRINT 16 ABERTO — Ondas 1-7 entregues (até 2026-05-08).
+               Onda 7 = Lead Lifecycle + Products Catalog (commit cf66e83).
+
+               ====================================================================
+               SPRINT 16 — Onda 7: Lead Lifecycle + Products Catalog (2026-05-08)
+               ====================================================================
+
+               ✅ Conceito novo: 5 lifecycle statuses monotonicos para leads
+                  (contato → lead → cliente → aluno → mentorado) derivados de
+                  compras + presenca em funil. Hierarquia hardcoded por enquanto
+                  (FUTURE-002: tornar editavel via tabela lifecycle_rules).
+
+               Schema (migration 0042 aplicada):
+                  • Tabela products (workspace, name, category NULLABLE,
+                    external_provider, external_product_id, status) com RLS
+                    workspace_isolation + UNIQUE (workspace, provider, ext_id) +
+                    CHECK 11 categorias canonicas + NULL.
+                  • Coluna leads.lifecycle_status NOT NULL DEFAULT contato com
+                    CHECK 5 valores + indice parcial WHERE status='active'.
+
+               Backend (apps/edge/src/lib/):
+                  • lifecycle-rules.ts: hardcoded category→lifecycle mapping
+                    (11 cats: ebook/workshop_online/webinar→cliente;
+                    curso_*/pos_*/treinamento_*/evento_*→aluno;
+                    mentoria_*/acompanhamento_*→mentorado). Funcao
+                    lifecycleForCategory(workspaceId, cat) recebe workspaceId
+                    para facilitar migracao futura sem rewrite.
+                  • lifecycle-promoter.ts: promoteLeadLifecycle SELECT current
+                    → promote(monotonic) → UPDATE-only-if-changed. Idempotente.
+                  • products-resolver.ts: upsertProduct idempotente preservando
+                    category atribuida pelo operador (nao sobrescreve em
+                    re-webhook).
+
+               Wiring (3 pontos):
+                  • guru-raw-events-processor: Purchase event chama upsertProduct
+                    + injeta product_db_id em events.custom_data + promote
+                    lifecycle.
+                  • routes/lead.ts: form submit promove contato→lead.
+                  • raw-events-processor: tracker Lead event tambem promove.
+
+               API HTTP nova:
+                  • GET /v1/products: lista + filtros + paginacao cursor +
+                    aggregates purchase_count/affected_leads.
+                  • PATCH /v1/products/:id: RBAC owner|admin. Quando category
+                    muda dispara backfill via promoteLeadLifecycle. Audit log
+                    product_category_updated. Retorna leads_recalculated.
+                  • GET /v1/leads: aceita lifecycle filter + retorna
+                    lifecycle_status em cada item.
+
+               Control Plane:
+                  • lifecycle-badge.tsx: 5 variants + tooltip.
+                  • Tela /products (NOVA): tabela com edit inline categoria,
+                    filtros (search debounced, categoria, status), paginacao.
+                    RBAC: dropdown editavel apenas owner/admin.
+                  • Tela /leads: coluna lifecycle + filtro dropdown.
+                  • Tela /leads/[id]: badge no header.
+                  • Sidebar: item "Produtos" entre Leads e Audiences.
+
+               Backfill executado em prod (workspace CNE) via
+               /tmp/pgquery/backfill-products-and-lifecycle.mjs:
+                  • 4 products inseridos a partir de Purchase events.
+                  • 72 events com product_db_id injetado em custom_data.
+                  • 76/83 leads recalculados:
+                      cliente: 40 (compraram, NULL category default)
+                      lead: 36 (em funil sem compra)
+                      contato: 7 (sem stages, sem purchase)
+                      aluno/mentorado: 0 (ate operador categorizar produtos)
+
+               Bug fix em produção (commit cf66e83 inclui):
+                  • Correlated subquery de GET /v1/products retornava 0 nos
+                    aggregates pq Drizzle nao preservava link com outer products
+                    row. Fix: trocar ${products.id} por literal products.id
+                    no template sql<number>. Deploy edge ed818549.
+
+               Tests: 50/50 verde (lifecycle-rules 30, lifecycle-promoter 12,
+               products-resolver 8). Deploy edge final: ed818549.
+
+               PENDENCIAS [SYNC-PENDING]:
+                  ☐ docs/30-contracts/01-enums.md: adicionar LifecycleStatus
+                    (5 vals) + ProductCategory (11 vals) +
+                    ProductExternalProvider + ProductStatus.
+                  ☐ docs/30-contracts/05-api-server-actions.md: documentar
+                    GET/PATCH /v1/products + filtro lifecycle. Sentinel
+                    category=uncategorized.
+                  ☐ docs/20-domain/14-mod-product.md: criar (NOVO).
+                  ☐ docs/50-business-rules/BR-PRODUCT.md: criar BR-PRODUCT-001
+                    monotonia, 002 auto-criacao NULL, 003 backfill on category
+                    change.
+                  ☐ docs/20-domain/04-mod-identity.md: descrever
+                    lifecycle_status como atributo monotonico do lead.
+                  ☐ ADR-035: lifecycle stored vs derived.
+                  ☐ ADR-036: hardcoded categorias com migration path.
+                  ☐ T-PRODUCTS-008 (sprint futura): tela /leads/[id] secao
+                    "Compras" listando produtos comprados (deferred desta onda).
+                  ☐ T-PRODUCTS-009: integration tests E2E
+                    (guru-purchase-promotes-lifecycle,
+                    lead-lifecycle-progression).
+
+               ====================================================================
+
 
                ====================================================================
                SPRINT 14 — ENCERRAMENTO (2026-05-08)
