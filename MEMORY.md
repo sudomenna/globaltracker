@@ -10,11 +10,11 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: Sprint 16 — Ondas 1–12 entregues + commitadas + doc-sync ok (2026-05-08).
-- **Última onda**: Onda 12 — lead-payload consent string|bool fix + visitor_id arch docs (commits `ed14fd5` + `854ecd5`, deploy edge `83afe16c`).
+- **Sprint ativo**: Sprint 17 "Lead Detail Observability" — entregue + commitado (commit `6af8f61`) + doc-sync ok (2026-05-09).
+- **Última onda**: Sprint 17 — LeadSummaryHeader + 6 abas (jornada/eventos/despachos/atribuição/consent/identidade) + `GET /v1/leads/:id/summary` + parâmetros `since`/`filters` JSON no timeline.
 - **Próxima ação**: aguardando direção do usuário. Trilhas 1 (Purchase real Guru) e 3 (survey form) seguem em aberto — ver §3.
 - **Branch**: `main`, working tree clean. `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `83afe16c`).
+- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `83afe16c` — Sprint 17 edge changes requerem redeploy para ativar `/v1/leads/:id/summary`).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0044 aplicadas.
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → CNE).
 
@@ -59,7 +59,8 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 | 13 | planned (foundation funil B + cleanups) | [`13-sprint-13-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/13-sprint-13-webhooks-hotmart-kiwify-stripe.md) |
 | 14 | completed (`f19b488`; T-14-017 adiado — ver §4) | [`14-sprint-14-fanout-google-ads-ga4.md`](docs/80-roadmap/14-sprint-14-fanout-google-ads-ga4.md) |
 | 15 | planned (webhook adapters Hotmart/Kiwify/Stripe) | [`15-sprint-15-webhooks-hotmart-kiwify-stripe.md`](docs/80-roadmap/15-sprint-15-webhooks-hotmart-kiwify-stripe.md) |
-| 16 | in progress (Ondas 1–12 entregues 2026-05-08) | a criar |
+| 16 | completed (Ondas 1–12 entregues 2026-05-08) | a criar |
+| 17 | completed (`6af8f61`; doc-sync 2026-05-09) | a criar |
 
 ---
 

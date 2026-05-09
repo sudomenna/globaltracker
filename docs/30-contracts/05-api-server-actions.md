@@ -197,6 +197,51 @@ Reveal-on-demand de email/phone para `operator` (ADR-034). Owner/admin/marketer/
 | **Response 200** | `{ lead_public_id, display_email, display_phone }` (sempre em claro) |
 | **Errors** | `400 invalid_body` (reason curto demais), `403 forbidden_role` (viewer; também grava `audit_log action='read_pii_decrypted_denied'`), `404 not_found`, `503 unavailable` |
 
+### `GET /v1/leads/:public_id/summary` (Sprint 17)
+
+Agrega estado atual do lead: stage journey, tags, attribution, consent e métricas de atividade. Consumido pelo `LeadSummaryHeader` do Control Plane.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-summary-v1` |
+| **Auth** | Bearer JWT Supabase ES256 verificado via `supabaseJwtMiddleware`; workspace-scoped (mesmo pattern de `/v1/leads`) |
+| **Cache** | `Cache-Control: private, max-age=15` |
+| **Mount order** | Montado em `apps/edge/src/index.ts` **antes** de `leadsRoute` para evitar conflito com path param `/:public_id` |
+| **Response 200** | Ver shape abaixo |
+| **Errors** | `401 unauthorized`, `404 lead_not_found`, `500 internal_error` |
+
+**Response 200:**
+
+```json
+{
+  "current_stage": { "stage": "string", "since": "ISO 8601" } | null,
+  "stages_journey": [{ "stage": "string", "at": "ISO 8601" }],
+  "tags": [{ "tag_name": "string", "set_by": "string", "set_at": "ISO 8601" }],
+  "attribution_summary": {
+    "first_touch": { "utm_source": "string?", "utm_medium": "string?", "utm_campaign": "string?", "utm_content": "string?", "utm_term": "string?" } | null,
+    "last_touch": { "..." } | null,
+    "fbclid": "string | null",
+    "gclid": "string | null"
+  },
+  "consent_current": {
+    "analytics": true,
+    "marketing": true,
+    "ad_user_data": true,
+    "ad_personalization": true,
+    "customer_match": true,
+    "updated_at": "ISO 8601"
+  } | null,
+  "metrics": {
+    "events_total": 0,
+    "dispatches_ok": 0,
+    "dispatches_failed": 0,
+    "dispatches_skipped": 0,
+    "purchase_total_brl": 0.0,
+    "last_activity_at": "ISO 8601 | null"
+  }
+}
+```
+
 ### `GET /v1/leads/:public_id/timeline`
 
 Timeline visual end-to-end. Implementa C.1 ([70-ux/06-screen-lead-timeline.md](../70-ux/06-screen-lead-timeline.md)).
@@ -205,7 +250,7 @@ Timeline visual end-to-end. Implementa C.1 ([70-ux/06-screen-lead-timeline.md](.
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-timeline-v1` |
 | **Auth** | session MARKETER+ (sanitização varia por role) |
-| **Query** | `cursor`, `limit` (default 50, max 200), `filter[type]`, `filter[status]` |
+| **Query** | `cursor`, `limit` (default 50, max 200), `since` (ISO 8601, opcional — exclui nodes anteriores à data), `filters` (JSON: `{ types?: NodeType[], statuses?: NodeStatus[] }` — **formato anterior CSV não é mais suportado**) |
 | **Response 200** | `{ nodes: [{ id, type, status, timestamp, summary, details, actions[] }], next_cursor }` |
 | **Errors** | `404 lead_not_found`, `410 lead_erased` |
 
