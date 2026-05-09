@@ -103,6 +103,7 @@ import { integrationsSendflowRoute } from './routes/integrations-sendflow.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
 import { launchesRoute } from './routes/launches.js';
 import { leadRoute } from './routes/lead.js';
+import { createLeadsSummaryRoute } from './routes/leads-summary.js';
 import { createLeadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
 import { orchestratorRoute } from './routes/orchestrator.js';
@@ -652,6 +653,15 @@ app.all('/v1/dispatch-jobs/:id/replay', async (c) => {
 });
 
 app.route('/v1/help', helpRoute);
+// Leads summary route (T-17-007) — mounted BEFORE leads-timeline so the more
+// specific /:public_id/summary path is matched ahead of any catch-all in the
+// timeline router. Both share the /v1/leads prefix and identical auth chain.
+app.route(
+  '/v1/leads',
+  createLeadsSummaryRoute({
+    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
 app.route(
   '/v1/leads',
   createLeadsTimelineRoute({

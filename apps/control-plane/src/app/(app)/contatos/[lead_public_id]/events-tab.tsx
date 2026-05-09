@@ -1,11 +1,25 @@
 'use client';
 
+/**
+ * events-tab.tsx — Sprint 17 / Onda 5 (T-17-015)
+ *
+ * Refactored from `lead-timeline-client.tsx`. The "Eventos" tab renders the
+ * full activity timeline of a lead. Fetch logic was extracted into
+ * `use-timeline.ts` so other technical tabs (Despachos, Atribuição, Consent,
+ * Identity) can reuse the same SWR-Infinite machinery.
+ *
+ * Behavioural parity with the previous component is mandatory — no UX or
+ * filter regression vs. the old `LeadTimelineClient`.
+ *
+ * BR-IDENTITY-013: only `lead_public_id` is used in URLs.
+ * BR-PRIVACY-001: payload is masked client-side for marketer role.
+ * BR-DISPATCH: re-dispatch is restricted to operator/admin.
+ */
+
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip } from '@/components/ui/tooltip';
-import { edgeFetch } from '@/lib/api-client';
-import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { cn } from '@/lib/utils';
 import {
   Activity,
@@ -20,43 +34,25 @@ import {
   RefreshCw,
   Send,
   Shield,
+  Tag,
   XCircle,
 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useState } from 'react';
-import useSWRInfinite from 'swr/infinite';
 import { RedispatchDialog } from './redispatch-dialog';
+import {
+  ALL_NODE_TYPES,
+  PERIOD_PRESETS,
+  type NodeStatus,
+  type NodeType,
+  type PeriodPreset,
+  type TimelineNode,
+  useTimeline,
+} from './use-timeline';
 import { WhyFailedSheet } from './why-failed-sheet';
 
-// BR-IDENTITY-013: browser nunca usa lead_id interno; usa lead_public_id
-
-export type NodeType =
-  | 'event_captured'
-  | 'dispatch_queued'
-  | 'dispatch_success'
-  | 'dispatch_failed'
-  | 'dispatch_skipped'
-  | 'attribution_set'
-  | 'stage_changed'
-  | 'merge'
-  | 'consent_updated';
-
-export type NodeStatus = 'ok' | 'failed' | 'skipped' | 'pending';
-
-interface TimelineNode {
-  id: string;
-  type: NodeType;
-  occurred_at: string;
-  status: NodeStatus;
-  payload: Record<string, unknown>;
-  skip_reason: string | null;
-  can_replay: boolean;
-}
-
-interface TimelineResponse {
-  nodes: TimelineNode[];
-  next_cursor: string | null;
-}
+// Re-export for the page.tsx (back-compat with the previous module).
+export type { NodeStatus, NodeType, PeriodPreset } from './use-timeline';
 
 const NODE_CONFIG: Record<
   NodeType,
@@ -110,6 +106,11 @@ const NODE_CONFIG: Record<
     Icon: Shield,
     label: 'Consentimento atualizado',
     iconColorClass: 'text-blue-600',
+  },
+  tag_added: {
+    Icon: Tag,
+    label: 'Tag aplicada',
+    iconColorClass: 'text-indigo-600',
   },
 };
 
@@ -173,27 +174,6 @@ function sanitizePayloadForMarketer(
   }
   return sanitized;
 }
-
-const NODE_TYPES: NodeType[] = [
-  'event_captured',
-  'dispatch_queued',
-  'dispatch_success',
-  'dispatch_failed',
-  'dispatch_skipped',
-  'attribution_set',
-  'stage_changed',
-  'merge',
-  'consent_updated',
-];
-
-const PERIOD_PRESETS = [
-  { label: 'Tudo', value: 'all' },
-  { label: 'Últimas 24h', value: '24h' },
-  { label: '7 dias', value: '7d' },
-  { label: '30 dias', value: '30d' },
-] as const;
-
-export type PeriodPreset = (typeof PERIOD_PRESETS)[number]['value'];
 
 interface TimelineNodeCardProps {
   node: TimelineNode;
@@ -327,37 +307,7 @@ function TimelineNodeCard({
   );
 }
 
-function buildTimelineUrl(
-  leadPublicId: string,
-  cursor: string | null,
-  typeFilter: NodeType[],
-  statusFilter: NodeStatus | 'all',
-  period: PeriodPreset,
-): string {
-  const params = new URLSearchParams();
-  params.set('limit', '50');
-  if (cursor) params.set('cursor', cursor);
-  if (typeFilter.length > 0 && typeFilter.length < NODE_TYPES.length) {
-    params.set('filters', typeFilter.join(','));
-  }
-  if (statusFilter !== 'all') params.set('status', statusFilter);
-  if (period !== 'all') {
-    const now = new Date();
-    if (period === '24h') {
-      params.set('since', new Date(now.getTime() - 86400000).toISOString());
-    } else if (period === '7d') {
-      params.set('since', new Date(now.getTime() - 7 * 86400000).toISOString());
-    } else if (period === '30d') {
-      params.set(
-        'since',
-        new Date(now.getTime() - 30 * 86400000).toISOString(),
-      );
-    }
-  }
-  return `/v1/leads/${encodeURIComponent(leadPublicId)}/timeline?${params.toString()}`;
-}
-
-interface LeadTimelineClientProps {
+interface EventsTabProps {
   leadPublicId: string;
   role: string;
   initialTypeFilter: NodeType[];
@@ -365,13 +315,13 @@ interface LeadTimelineClientProps {
   initialPeriod: PeriodPreset;
 }
 
-export function LeadTimelineClient({
+export function EventsTab({
   leadPublicId,
   role,
   initialTypeFilter,
   initialStatusFilter,
   initialPeriod,
-}: LeadTimelineClientProps) {
+}: EventsTabProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -394,7 +344,7 @@ export function LeadTimelineClient({
     ) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set('tab', 'timeline');
-      if (newType.length > 0 && newType.length < NODE_TYPES.length) {
+      if (newType.length > 0 && newType.length < ALL_NODE_TYPES.length) {
         params.set('types', newType.join(','));
       } else {
         params.delete('types');
@@ -414,42 +364,16 @@ export function LeadTimelineClient({
     [router, searchParams],
   );
 
-  const getKey = useCallback(
-    (pageIndex: number, previousData: TimelineResponse | null) => {
-      if (previousData && !previousData.next_cursor) return null;
-      const cursor =
-        pageIndex === 0 ? null : (previousData?.next_cursor ?? null);
-      return buildTimelineUrl(
-        leadPublicId,
-        cursor,
-        typeFilter,
-        statusFilter,
-        period,
-      );
-    },
-    [leadPublicId, typeFilter, statusFilter, period],
-  );
-
-  const fetcher = useCallback(
-    async (url: string): Promise<TimelineResponse> => {
-      const supabase = createSupabaseBrowser();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const token = session?.access_token ?? '';
-      const res = await edgeFetch(url, token);
-      if (!res.ok) throw new Error(`fetch ${url} failed: ${res.status}`);
-      return res.json() as Promise<TimelineResponse>;
-    },
-    [],
-  );
-
-  const { data, error, isLoading, isValidating, size, setSize, mutate } =
-    useSWRInfinite<TimelineResponse>(getKey, fetcher);
-
-  const allNodes = data?.flatMap((page) => page.nodes) ?? [];
-  const lastPage = data?.[data.length - 1];
-  const hasMore = !!lastPage?.next_cursor;
+  const {
+    error,
+    isLoading,
+    isValidating,
+    size,
+    setSize,
+    mutate,
+    allNodes,
+    hasMore,
+  } = useTimeline({ leadPublicId, typeFilter, statusFilter, period });
 
   function handleTypeToggle(type: NodeType) {
     const next = typeFilter.includes(type)
@@ -485,7 +409,7 @@ export function LeadTimelineClient({
       <div className="flex flex-wrap gap-3 items-center p-4 rounded-lg border bg-muted/30">
         {/* Type filter */}
         <div className="flex flex-wrap gap-1">
-          {NODE_TYPES.map((type) => {
+          {ALL_NODE_TYPES.map((type) => {
             const { Icon, label } = NODE_CONFIG[type];
             const active = typeFilter.includes(type);
             return (

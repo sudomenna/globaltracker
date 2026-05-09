@@ -7,14 +7,20 @@
 
 import {
   createDb,
+  dispatchAttempts,
   dispatchJobs,
   events,
   launches,
   leadAttributions,
-  leads,
+  leadConsents,
+  leadMerges,
   leadStages,
+  leadTags,
+  leads,
+  pages,
 } from '@globaltracker/db';
 import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { decryptPii, hashPii } from './pii.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
 import type { LifecycleStatus } from './lifecycle-rules.js';
@@ -23,7 +29,10 @@ import type {
   GetEventsFn,
   GetLeadAttributionsFn,
   GetLeadByPublicIdFn,
+  GetLeadConsentsFn,
+  GetLeadMergesFn,
   GetLeadStagesFn,
+  GetLeadTagsFn,
   LeadLookupResult,
 } from '../routes/leads-timeline.js';
 
@@ -177,6 +186,9 @@ export function createLeadsQueryFns(
   // -------------------------------------------------------------------------
   // getEvents
   // -------------------------------------------------------------------------
+  // T-17-001: enriched event rows — join pages.public_id (page_name surrogate;
+  // pages.title does not exist in current schema) and launches.name; expose
+  // event_source, processing_status, custom_data.
   const getEvents: GetEventsFn = async ({ leadId, workspaceId, cursor, limit }) => {
     const conditions = [
       eq(events.workspaceId, workspaceId),
@@ -192,8 +204,15 @@ export function createLeadsQueryFns(
         receivedAt: events.receivedAt,
         pageId: events.pageId,
         attribution: events.attribution,
+        eventSource: events.eventSource,
+        customData: events.customData,
+        processingStatus: events.processingStatus,
+        pageName: pages.publicId,
+        launchName: launches.name,
       })
       .from(events)
+      .leftJoin(pages, eq(pages.id, events.pageId))
+      .leftJoin(launches, eq(launches.id, events.launchId))
       .where(and(...conditions))
       .orderBy(desc(events.eventTime))
       .limit(limit);
@@ -202,6 +221,10 @@ export function createLeadsQueryFns(
   // -------------------------------------------------------------------------
   // getDispatchJobs
   // -------------------------------------------------------------------------
+  // T-17-002: enriched dispatch rows — destination_resource_id, attempt_count,
+  // replayed_from_dispatch_job_id read directly from dispatch_jobs (already
+  // tracked there). request_payload_sanitized + response_status/error_code come
+  // from the latest dispatch_attempt via correlated subquery.
   const getDispatchJobs: GetDispatchJobsFn = async ({
     leadId,
     workspaceId,
@@ -214,6 +237,15 @@ export function createLeadsQueryFns(
     ];
     if (cursor) conditions.push(lt(dispatchJobs.createdAt, cursor));
 
+    // Correlated subqueries to fetch latest attempt fields (avoids GROUP BY +
+    // window-function gymnastics; latest = max attempt_number per job).
+    const latestAttempt = sql<string>`(
+      SELECT da.id FROM dispatch_attempts da
+      WHERE da.dispatch_job_id = ${dispatchJobs.id}
+      ORDER BY da.attempt_number DESC
+      LIMIT 1
+    )`;
+
     const rows = await db
       .select({
         id: dispatchJobs.id,
@@ -223,8 +255,23 @@ export function createLeadsQueryFns(
         idempotencyKey: dispatchJobs.idempotencyKey,
         nextAttemptAt: dispatchJobs.nextAttemptAt,
         createdAt: dispatchJobs.createdAt,
-        responseStatus: sql<number | null>`null`,
-        errorCode: sql<string | null>`null`,
+        destinationResourceId: dispatchJobs.destinationResourceId,
+        attemptCount: dispatchJobs.attemptCount,
+        replayedFromDispatchJobId: dispatchJobs.replayedFromDispatchJobId,
+        responseStatus: sql<number | null>`(
+          SELECT da.response_status FROM dispatch_attempts da
+          WHERE da.id = ${latestAttempt}
+        )`,
+        errorCode: sql<string | null>`(
+          SELECT da.error_code FROM dispatch_attempts da
+          WHERE da.id = ${latestAttempt}
+        )`,
+        // BR-PRIVACY-001: payload is already sanitized at write time
+        // (dispatch_attempts.request_payload_sanitized column).
+        requestPayloadSanitized: sql<unknown>`(
+          SELECT da.request_payload_sanitized FROM dispatch_attempts da
+          WHERE da.id = ${latestAttempt}
+        )`,
       })
       .from(dispatchJobs)
       .where(and(...conditions))
@@ -237,6 +284,7 @@ export function createLeadsQueryFns(
   // -------------------------------------------------------------------------
   // getLeadAttributions
   // -------------------------------------------------------------------------
+  // T-17-003: enriched attribution rows.
   const getLeadAttributions: GetLeadAttributionsFn = async ({
     leadId,
     workspaceId,
@@ -249,6 +297,13 @@ export function createLeadsQueryFns(
         medium: leadAttributions.medium,
         campaign: leadAttributions.campaign,
         createdAt: leadAttributions.createdAt,
+        content: leadAttributions.content,
+        term: leadAttributions.term,
+        fbclid: leadAttributions.fbclid,
+        gclid: leadAttributions.gclid,
+        adId: leadAttributions.adId,
+        campaignId: leadAttributions.campaignId,
+        linkId: leadAttributions.linkId,
       })
       .from(leadAttributions)
       .where(
@@ -263,12 +318,22 @@ export function createLeadsQueryFns(
   // -------------------------------------------------------------------------
   // getLeadStages
   // -------------------------------------------------------------------------
+  // T-17-003: enriched stage rows. from_stage is computed via LAG window
+  // function ordered chronologically. funnel_role is intentionally omitted —
+  // column does not exist on lead_stages (schema gap; see T-17-003 notes).
   const getLeadStages: GetLeadStagesFn = async ({ leadId, workspaceId }) => {
     return db
       .select({
         id: leadStages.id,
         stage: leadStages.stage,
         ts: leadStages.ts,
+        sourceEventId: leadStages.sourceEventId,
+        launchId: leadStages.launchId,
+        isRecurring: leadStages.isRecurring,
+        fromStage: sql<string | null>`LAG(${leadStages.stage}) OVER (
+          PARTITION BY ${leadStages.workspaceId}, ${leadStages.leadId}, ${leadStages.launchId}
+          ORDER BY ${leadStages.ts} ASC
+        )`,
       })
       .from(leadStages)
       .where(
@@ -278,6 +343,134 @@ export function createLeadsQueryFns(
         ),
       )
       .orderBy(desc(leadStages.ts));
+  };
+
+  // T-17-004: tag_added rows from lead_tags (workspace+lead scoped).
+  const getLeadTags: GetLeadTagsFn = async ({ leadId, workspaceId }) => {
+    return db
+      .select({
+        id: leadTags.id,
+        tagName: leadTags.tagName,
+        setAt: leadTags.setAt,
+        setBy: leadTags.setBy,
+      })
+      .from(leadTags)
+      .where(
+        and(
+          eq(leadTags.workspaceId, workspaceId),
+          eq(leadTags.leadId, leadId),
+        ),
+      )
+      .orderBy(desc(leadTags.setAt));
+  };
+
+  // T-17-004: consent_updated rows. Computes the previous-row snapshot via
+  // LAG() so the route can derive purposes_diff without an extra round-trip.
+  const getLeadConsents: GetLeadConsentsFn = async ({ leadId, workspaceId }) => {
+    const rows = await db
+      .select({
+        id: leadConsents.id,
+        ts: leadConsents.ts,
+        source: leadConsents.source,
+        policyVersion: leadConsents.policyVersion,
+        consentAnalytics: leadConsents.consentAnalytics,
+        consentMarketing: leadConsents.consentMarketing,
+        consentAdUserData: leadConsents.consentAdUserData,
+        consentAdPersonalization: leadConsents.consentAdPersonalization,
+        consentCustomerMatch: leadConsents.consentCustomerMatch,
+        prevAnalytics: sql<string | null>`LAG(${leadConsents.consentAnalytics}) OVER (
+          PARTITION BY ${leadConsents.workspaceId}, ${leadConsents.leadId}
+          ORDER BY ${leadConsents.ts} ASC
+        )`,
+        prevMarketing: sql<string | null>`LAG(${leadConsents.consentMarketing}) OVER (
+          PARTITION BY ${leadConsents.workspaceId}, ${leadConsents.leadId}
+          ORDER BY ${leadConsents.ts} ASC
+        )`,
+        prevAdUserData: sql<string | null>`LAG(${leadConsents.consentAdUserData}) OVER (
+          PARTITION BY ${leadConsents.workspaceId}, ${leadConsents.leadId}
+          ORDER BY ${leadConsents.ts} ASC
+        )`,
+        prevAdPersonalization: sql<string | null>`LAG(${leadConsents.consentAdPersonalization}) OVER (
+          PARTITION BY ${leadConsents.workspaceId}, ${leadConsents.leadId}
+          ORDER BY ${leadConsents.ts} ASC
+        )`,
+        prevCustomerMatch: sql<string | null>`LAG(${leadConsents.consentCustomerMatch}) OVER (
+          PARTITION BY ${leadConsents.workspaceId}, ${leadConsents.leadId}
+          ORDER BY ${leadConsents.ts} ASC
+        )`,
+      })
+      .from(leadConsents)
+      .where(
+        and(
+          eq(leadConsents.workspaceId, workspaceId),
+          eq(leadConsents.leadId, leadId),
+        ),
+      )
+      .orderBy(desc(leadConsents.ts));
+
+    return rows.map((r) => ({
+      id: r.id,
+      ts: r.ts,
+      source: r.source,
+      policyVersion: r.policyVersion,
+      consentAnalytics: r.consentAnalytics,
+      consentMarketing: r.consentMarketing,
+      consentAdUserData: r.consentAdUserData,
+      consentAdPersonalization: r.consentAdPersonalization,
+      consentCustomerMatch: r.consentCustomerMatch,
+      prev:
+        r.prevAnalytics === null &&
+        r.prevMarketing === null &&
+        r.prevAdUserData === null &&
+        r.prevAdPersonalization === null &&
+        r.prevCustomerMatch === null
+          ? null
+          : {
+              consentAnalytics: r.prevAnalytics ?? 'unknown',
+              consentMarketing: r.prevMarketing ?? 'unknown',
+              consentAdUserData: r.prevAdUserData ?? 'unknown',
+              consentAdPersonalization: r.prevAdPersonalization ?? 'unknown',
+              consentCustomerMatch: r.prevCustomerMatch ?? 'unknown',
+            },
+    }));
+  };
+
+  // T-17-004: merge rows. Returns events where the lead was either the
+  // canonical (primary) or merged side. BR-IDENTITY-013: surface lead_public_id
+  // (= leads.id), never internal lead_id field naming on the wire.
+  const canonicalLeads = alias(leads, 'canonical_leads_for_merge');
+  const mergedLeads = alias(leads, 'merged_leads_for_merge');
+  const getLeadMerges: GetLeadMergesFn = async ({ leadId, workspaceId }) => {
+    const rows = await db
+      .select({
+        id: leadMerges.id,
+        mergedAt: leadMerges.mergedAt,
+        reason: leadMerges.reason,
+        performedBy: leadMerges.performedBy,
+        beforeSummary: leadMerges.beforeSummary,
+        afterSummary: leadMerges.afterSummary,
+        primaryLeadPublicId: canonicalLeads.id,
+        mergedLeadPublicId: mergedLeads.id,
+      })
+      .from(leadMerges)
+      .innerJoin(
+        canonicalLeads,
+        eq(canonicalLeads.id, leadMerges.canonicalLeadId),
+      )
+      .innerJoin(mergedLeads, eq(mergedLeads.id, leadMerges.mergedLeadId))
+      .where(
+        and(
+          eq(leadMerges.workspaceId, workspaceId),
+          // Show merge events on either side's timeline.
+          or(
+            eq(leadMerges.canonicalLeadId, leadId),
+            eq(leadMerges.mergedLeadId, leadId),
+          )!,
+        ),
+      )
+      .orderBy(desc(leadMerges.mergedAt));
+
+    return rows;
   };
 
   // -------------------------------------------------------------------------
@@ -403,6 +596,9 @@ export function createLeadsQueryFns(
     getDispatchJobs,
     getLeadAttributions,
     getLeadStages,
+    getLeadTags,
+    getLeadConsents,
+    getLeadMerges,
     listLeads,
   };
 }

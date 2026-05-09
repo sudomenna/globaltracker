@@ -84,13 +84,12 @@ type AppEnv = { Bindings: AppBindings; Variables: AppVariables };
 // Query parameter schema
 // ---------------------------------------------------------------------------
 
-const TimelineQuerySchema = z
-  .object({
-    cursor: z.string().optional(), // ISO timestamp — only nodes before this are returned
-    limit: z.coerce.number().min(1).max(50).default(50),
-    filters: z.string().optional(), // JSON string: { types?: string[], statuses?: string[] }
-  })
-  .strict();
+const TimelineQuerySchema = z.object({
+  cursor: z.string().optional(),
+  limit: z.coerce.number().min(1).max(50).default(50),
+  filters: z.string().optional(), // JSON string: { types?: string[], statuses?: string[] }
+  since: z.string().optional(), // ISO timestamp — exclude nodes older than this
+});
 
 // List query schema — keeps existing behaviour, adds optional lifecycle filter
 // (T-PRODUCTS-006). lifecycle_status is not PII (BR-PRIVACY-001), safe to expose.
@@ -123,7 +122,8 @@ export type TimelineNode = {
     | 'attribution_set'
     | 'stage_changed'
     | 'merge'
-    | 'consent_updated';
+    | 'consent_updated'
+    | 'tag_added';
   occurred_at: string;
   // CP client NodeStatus
   status: 'ok' | 'failed' | 'skipped' | 'pending';
@@ -154,6 +154,12 @@ type EventRow = {
   receivedAt: Date;
   pageId: string | null;
   attribution: unknown;
+  // T-17-001: enrichment fields
+  eventSource?: string | null;
+  customData?: unknown;
+  processingStatus?: string | null;
+  pageName?: string | null;
+  launchName?: string | null;
 };
 
 type DispatchJobRow = {
@@ -167,6 +173,11 @@ type DispatchJobRow = {
   // Joined from dispatch_attempts (latest attempt)
   responseStatus: number | null;
   errorCode: string | null;
+  // T-17-002: enrichment fields
+  destinationResourceId?: string | null;
+  attemptCount?: number | null;
+  requestPayloadSanitized?: unknown;
+  replayedFromDispatchJobId?: string | null;
 };
 
 type LeadAttributionRow = {
@@ -176,12 +187,67 @@ type LeadAttributionRow = {
   medium: string | null;
   campaign: string | null;
   createdAt: Date;
+  // T-17-003: enrichment fields
+  content?: string | null;
+  term?: string | null;
+  fbclid?: string | null;
+  gclid?: string | null;
+  adId?: string | null;
+  campaignId?: string | null;
+  linkId?: string | null;
 };
 
 type LeadStageRow = {
   id: string;
   stage: string;
   ts: Date;
+  // T-17-003: enrichment fields
+  fromStage?: string | null;
+  sourceEventId?: string | null;
+  launchId?: string | null;
+  isRecurring?: boolean | null;
+  // funnel_role omitted: column does not exist on lead_stages schema (T-17-003 gap)
+};
+
+// T-17-004: tag_added node source
+type LeadTagRow = {
+  id: string;
+  tagName: string;
+  setAt: Date;
+  setBy: string;
+};
+
+// T-17-004: consent_updated node source
+type LeadConsentRow = {
+  id: string;
+  ts: Date;
+  source: string;
+  policyVersion: string;
+  consentAnalytics: string;
+  consentMarketing: string;
+  consentAdUserData: string;
+  consentAdPersonalization: string;
+  consentCustomerMatch: string;
+  // optional: previous row to compute purposes_diff (when omitted, full snapshot is exposed)
+  prev?: {
+    consentAnalytics: string;
+    consentMarketing: string;
+    consentAdUserData: string;
+    consentAdPersonalization: string;
+    consentCustomerMatch: string;
+  } | null;
+};
+
+// T-17-004: merge node source
+type LeadMergeRow = {
+  id: string;
+  mergedAt: Date;
+  reason: string;
+  performedBy: string;
+  beforeSummary: unknown;
+  afterSummary: unknown;
+  primaryLeadPublicId: string;
+  mergedLeadPublicId: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -221,6 +287,22 @@ export type GetLeadStagesFn = (opts: {
   leadId: string;
   workspaceId: string;
 }) => Promise<LeadStageRow[]>;
+
+// T-17-004: new node sources
+export type GetLeadTagsFn = (opts: {
+  leadId: string;
+  workspaceId: string;
+}) => Promise<LeadTagRow[]>;
+
+export type GetLeadConsentsFn = (opts: {
+  leadId: string;
+  workspaceId: string;
+}) => Promise<LeadConsentRow[]>;
+
+export type GetLeadMergesFn = (opts: {
+  leadId: string;
+  workspaceId: string;
+}) => Promise<LeadMergeRow[]>;
 
 export type GetLeadSummaryFn = (
   publicId: string,
@@ -330,17 +412,78 @@ function sanitizePayload(
 // Node builders
 // ---------------------------------------------------------------------------
 
+// T-17-001: filter custom_data to a small UI-relevant set; omit the rest
+const CUSTOM_DATA_ALLOWED_KEYS = new Set([
+  'value',
+  'currency',
+  'product_name',
+  'order_id',
+  'transaction_id',
+]);
+
+function pickCustomData(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (CUSTOM_DATA_ALLOWED_KEYS.has(k) && v !== null && v !== undefined) {
+      out[k] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// T-17-001: subset of attribution snapshot stored on events.attribution
+const ATTRIBUTION_SNAPSHOT_KEYS = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_content',
+  'utm_term',
+  'fbclid',
+  'gclid',
+] as const;
+
+function pickAttributionSnapshot(
+  raw: unknown,
+): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const src = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let hasAny = false;
+  for (const k of ATTRIBUTION_SNAPSHOT_KEYS) {
+    const v = src[k];
+    if (v !== null && v !== undefined && v !== '') {
+      out[k] = v;
+      hasAny = true;
+    }
+  }
+  return hasAny ? out : undefined;
+}
+
 function buildEventNode(row: EventRow, role: string): TimelineNode {
   const ts = (row.eventTime ?? row.receivedAt).toISOString();
+
+  // T-17-001: enrichment fields — page_name, launch_name, event_source,
+  // processing_status, custom_data (filtered), attribution_snapshot (subset).
+  const customData = pickCustomData(row.customData);
+  const attrSnapshot = pickAttributionSnapshot(row.attribution);
 
   const basePayload: Record<string, unknown> = {
     event_name: row.eventName,
     event_time: ts,
     page_public_id: row.pageId ?? null,
+    // BR-EVENT: event_source is canonical (tracker.js | webhook:<provider>)
+    event_source: row.eventSource ?? null,
+    processing_status: row.processingStatus ?? null,
+    page_name: row.pageName ?? null,
+    launch_name: row.launchName ?? null,
+    ...(customData ? { custom_data: customData } : {}),
+    ...(attrSnapshot ? { attribution_snapshot: attrSnapshot } : {}),
   };
 
   const fullPayload: Record<string, unknown> = {
     ...basePayload,
+    // operator/admin sees the full raw attribution (not just snapshot subset)
     ...(role === 'operator' || role === 'admin'
       ? { attribution: row.attribution }
       : {}),
@@ -410,9 +553,16 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
     (row.status === 'dead_letter' || row.status === 'failed') &&
     (role === 'operator' || role === 'admin');
 
+  // T-17-002: enrichment fields — destination_resource_id, attempt_count,
+  // next_attempt_at, replayed_from_dispatch_job_id (all roles); request_payload
+  // gated for operator/admin (BR-PRIVACY-001).
   const basePayload: Record<string, unknown> = {
     destination: row.destination,
     status: row.status,
+    destination_resource_id: row.destinationResourceId ?? null,
+    attempt_count: row.attemptCount ?? 0,
+    next_attempt_at: row.nextAttemptAt ? row.nextAttemptAt.toISOString() : null,
+    replayed_from_dispatch_job_id: row.replayedFromDispatchJobId ?? null,
   };
 
   const fullPayload: Record<string, unknown> = {
@@ -422,6 +572,8 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
           response_code: row.responseStatus,
           error_code: row.errorCode,
           idempotency_key: row.idempotencyKey,
+          // BR-PRIVACY-001: request_payload only for operator/admin (not marketer)
+          request_payload: row.requestPayloadSanitized ?? null,
         }
       : {}),
   };
@@ -445,6 +597,7 @@ function buildAttributionNode(row: LeadAttributionRow): TimelineNode {
   const ts = row.createdAt.toISOString();
   const isFirstTouch = row.touchType === 'first';
 
+  // T-17-003: include touch_type, utm_content/term, click ids, ad/campaign/link ids
   return {
     id: row.id,
     type: 'attribution_set',
@@ -452,9 +605,17 @@ function buildAttributionNode(row: LeadAttributionRow): TimelineNode {
     status: 'ok',
     label: isFirstTouch ? 'First-touch atribuído' : 'Last-touch atualizado',
     payload: {
+      touch_type: row.touchType,
       utm_source: row.source,
       utm_campaign: row.campaign,
       utm_medium: row.medium,
+      utm_content: row.content ?? null,
+      utm_term: row.term ?? null,
+      fbclid: row.fbclid ?? null,
+      gclid: row.gclid ?? null,
+      ad_id: row.adId ?? null,
+      campaign_id: row.campaignId ?? null,
+      link_id: row.linkId ?? null,
     },
     skip_reason: null,
     can_replay: false,
@@ -463,13 +624,117 @@ function buildAttributionNode(row: LeadAttributionRow): TimelineNode {
 
 function buildStageNode(row: LeadStageRow): TimelineNode {
   const ts = row.ts.toISOString();
+  // T-17-003: include from_stage (LAG), source_event_id, launch_id, is_recurring.
+  // funnel_role omitted: column does not exist on lead_stages (schema gap).
   return {
     id: row.id,
     type: 'stage_changed',
     occurred_at: ts,
     status: 'ok',
     label: `Stage alterado: ${row.stage}`,
-    payload: { stage: row.stage },
+    payload: {
+      stage: row.stage,
+      from_stage: row.fromStage ?? null,
+      source_event_id: row.sourceEventId ?? null,
+      launch_id: row.launchId ?? null,
+      is_recurring: row.isRecurring ?? false,
+    },
+    skip_reason: null,
+    can_replay: false,
+  };
+}
+
+// T-17-004: tag_added node builder. INV-LEAD-TAG-002: set_by may be
+// 'system' | 'user:<uuid>' | 'integration:<name>' | 'event:<event_name>'.
+function buildTagNode(row: LeadTagRow): TimelineNode {
+  const ts = row.setAt.toISOString();
+  const sourceEventName = row.setBy.startsWith('event:')
+    ? row.setBy.slice('event:'.length)
+    : null;
+
+  return {
+    id: row.id,
+    type: 'tag_added',
+    occurred_at: ts,
+    status: 'ok',
+    label: `Tag aplicada: ${row.tagName}`,
+    payload: {
+      tag_name: row.tagName,
+      set_by: row.setBy,
+      source_event_name: sourceEventName,
+    },
+    skip_reason: null,
+    can_replay: false,
+  };
+}
+
+// T-17-004: consent_updated node builder. Computes purposes_diff between this
+// row and the previous one (when provided). When prev is null, exposes the full
+// snapshot as the diff (i.e., "first known state").
+const CONSENT_FIELDS: Array<{
+  key: 'analytics' | 'marketing' | 'ad_user_data' | 'ad_personalization' | 'customer_match';
+  col: keyof Pick<
+    LeadConsentRow,
+    | 'consentAnalytics'
+    | 'consentMarketing'
+    | 'consentAdUserData'
+    | 'consentAdPersonalization'
+    | 'consentCustomerMatch'
+  >;
+}> = [
+  { key: 'analytics', col: 'consentAnalytics' },
+  { key: 'marketing', col: 'consentMarketing' },
+  { key: 'ad_user_data', col: 'consentAdUserData' },
+  { key: 'ad_personalization', col: 'consentAdPersonalization' },
+  { key: 'customer_match', col: 'consentCustomerMatch' },
+];
+
+function buildConsentNode(row: LeadConsentRow): TimelineNode {
+  const ts = row.ts.toISOString();
+  const diff: Record<string, string> = {};
+
+  for (const f of CONSENT_FIELDS) {
+    const curr = row[f.col] as string;
+    const prev = row.prev ? (row.prev[f.col] as string) : null;
+    if (prev === null || curr !== prev) {
+      diff[f.key] = curr;
+    }
+  }
+
+  return {
+    id: row.id,
+    type: 'consent_updated',
+    occurred_at: ts,
+    status: 'ok',
+    label: 'Consentimento atualizado',
+    payload: {
+      purposes_diff: diff,
+      source: row.source,
+      policy_version: row.policyVersion,
+    },
+    skip_reason: null,
+    can_replay: false,
+  };
+}
+
+// T-17-004: merge node builder. BR-IDENTITY-013: expose lead_public_id,
+// never internal lead_id.
+function buildMergeNode(row: LeadMergeRow): TimelineNode {
+  const ts = row.mergedAt.toISOString();
+  return {
+    id: row.id,
+    type: 'merge',
+    occurred_at: ts,
+    status: 'ok',
+    label: 'Lead mesclado',
+    payload: {
+      primary_lead_public_id: row.primaryLeadPublicId,
+      merged_lead_public_id: row.mergedLeadPublicId,
+      reason: row.reason,
+      before_summary: row.beforeSummary ?? null,
+      after_summary: row.afterSummary ?? null,
+      performed_by: row.performedBy,
+    },
     skip_reason: null,
     can_replay: false,
   };
@@ -512,6 +777,10 @@ export function createLeadsTimelineRoute(opts?: {
   getDispatchJobs?: GetDispatchJobsFn;
   getLeadAttributions?: GetLeadAttributionsFn;
   getLeadStages?: GetLeadStagesFn;
+  // T-17-004: optional new node sources (graceful fallback when not wired)
+  getLeadTags?: GetLeadTagsFn;
+  getLeadConsents?: GetLeadConsentsFn;
+  getLeadMerges?: GetLeadMergesFn;
   getLeadSummary?: GetLeadSummaryFn;
   listLeads?: ListLeadsFn;
 }): Hono<AppEnv> {
@@ -534,6 +803,9 @@ export function createLeadsTimelineRoute(opts?: {
       getDispatchJobs: opts?.getDispatchJobs,
       getLeadAttributions: opts?.getLeadAttributions,
       getLeadStages: opts?.getLeadStages,
+      getLeadTags: opts?.getLeadTags,
+      getLeadConsents: opts?.getLeadConsents,
+      getLeadMerges: opts?.getLeadMerges,
       listLeads: opts?.listLeads,
     };
   }
@@ -785,7 +1057,8 @@ export function createLeadsTimelineRoute(opts?: {
       );
     }
 
-    const { cursor, limit, filters: filtersRaw } = queryParseResult.data;
+    const { cursor, limit, filters: filtersRaw, since: sinceRaw } = queryParseResult.data;
+    const sinceDate = sinceRaw ? new Date(sinceRaw) : null;
 
     // Parse optional filters JSON
     let parsedFilters: { types?: string[]; statuses?: string[] } | null = null;
@@ -864,33 +1137,53 @@ export function createLeadsTimelineRoute(opts?: {
       let dispatchRows: DispatchJobRow[] = [];
       let attributionRows: LeadAttributionRow[] = [];
       let stageRows: LeadStageRow[] = [];
+      // T-17-004: new node sources
+      let tagRows: LeadTagRow[] = [];
+      let consentRows: LeadConsentRow[] = [];
+      let mergeRows: LeadMergeRow[] = [];
 
       try {
-        [eventRows, dispatchRows, attributionRows, stageRows] =
-          await Promise.all([
-            timelineFns.getEvents
-              ? timelineFns.getEvents({
-                  leadId,
-                  workspaceId,
-                  cursor: cursorDate,
-                  limit,
-                })
-              : Promise.resolve([]),
-            timelineFns.getDispatchJobs
-              ? timelineFns.getDispatchJobs({
-                  leadId,
-                  workspaceId,
-                  cursor: cursorDate,
-                  limit,
-                })
-              : Promise.resolve([]),
-            timelineFns.getLeadAttributions
-              ? timelineFns.getLeadAttributions({ leadId, workspaceId })
-              : Promise.resolve([]),
-            timelineFns.getLeadStages
-              ? timelineFns.getLeadStages({ leadId, workspaceId })
-              : Promise.resolve([]),
-          ]);
+        [
+          eventRows,
+          dispatchRows,
+          attributionRows,
+          stageRows,
+          tagRows,
+          consentRows,
+          mergeRows,
+        ] = await Promise.all([
+          timelineFns.getEvents
+            ? timelineFns.getEvents({
+                leadId,
+                workspaceId,
+                cursor: cursorDate,
+                limit,
+              })
+            : Promise.resolve([]),
+          timelineFns.getDispatchJobs
+            ? timelineFns.getDispatchJobs({
+                leadId,
+                workspaceId,
+                cursor: cursorDate,
+                limit,
+              })
+            : Promise.resolve([]),
+          timelineFns.getLeadAttributions
+            ? timelineFns.getLeadAttributions({ leadId, workspaceId })
+            : Promise.resolve([]),
+          timelineFns.getLeadStages
+            ? timelineFns.getLeadStages({ leadId, workspaceId })
+            : Promise.resolve([]),
+          timelineFns.getLeadTags
+            ? timelineFns.getLeadTags({ leadId, workspaceId })
+            : Promise.resolve([] as LeadTagRow[]),
+          timelineFns.getLeadConsents
+            ? timelineFns.getLeadConsents({ leadId, workspaceId })
+            : Promise.resolve([] as LeadConsentRow[]),
+          timelineFns.getLeadMerges
+            ? timelineFns.getLeadMerges({ leadId, workspaceId })
+            : Promise.resolve([] as LeadMergeRow[]),
+        ]);
       } catch (err) {
         safeLog('error', {
           event: 'leads_timeline_fetch_error',
@@ -905,13 +1198,17 @@ export function createLeadsTimelineRoute(opts?: {
       // -------------------------------------------------------------------
       // 7. Build nodes from each source
       // -------------------------------------------------------------------
+      // T-17-005: merge all node sources into a single chronologically sorted timeline.
       const allNodes: TimelineNode[] = [
         ...eventRows.map((r) => buildEventNode(r, role)),
         ...dispatchRows.map((r) => buildDispatchNode(r, role)),
         ...attributionRows.map((r) => buildAttributionNode(r)),
         ...stageRows.map((r) => buildStageNode(r)),
-        // TODO T-6-010: adicionar consent nodes a partir de lead_consents
-        // TODO T-6-010: adicionar SAR/erasure nodes a partir de audit_log (Sprint 7)
+        // T-17-004: tag_added | consent_updated | merge
+        ...tagRows.map((r) => buildTagNode(r)),
+        ...consentRows.map((r) => buildConsentNode(r)),
+        ...mergeRows.map((r) => buildMergeNode(r)),
+        // TODO Sprint 7: adicionar SAR/erasure nodes a partir de audit_log
       ];
 
       // -------------------------------------------------------------------
@@ -929,6 +1226,11 @@ export function createLeadsTimelineRoute(opts?: {
             allowedStatuses.has(n.status),
           );
         }
+      }
+      if (sinceDate && !Number.isNaN(sinceDate.getTime())) {
+        filteredNodes = filteredNodes.filter(
+          (n) => new Date(n.occurred_at) >= sinceDate,
+        );
       }
 
       // -------------------------------------------------------------------

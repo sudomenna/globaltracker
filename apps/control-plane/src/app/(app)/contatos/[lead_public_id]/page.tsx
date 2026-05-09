@@ -1,20 +1,29 @@
 import { type Lifecycle, LifecycleBadge } from '@/components/lifecycle-badge';
 import { Badge } from '@/components/ui/badge';
+import { TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { edgeFetch } from '@/lib/api-client';
 import { createSupabaseServer } from '@/lib/supabase-server';
 import { Mail, Phone } from 'lucide-react';
 import { redirect } from 'next/navigation';
-import { LeadTimelineClient } from './lead-timeline-client';
+import { AttributionTab } from './attribution-tab';
+import { ConsentTab } from './consent-tab';
+import { DispatchesTab } from './dispatches-tab';
+import { EventsTab } from './events-tab';
+import { IdentityTab } from './identity-tab';
+import { JourneyTab } from './journey-tab';
 import type {
   NodeStatus,
   NodeType,
   PeriodPreset,
-} from './lead-timeline-client';
+} from './events-tab';
+import { LeadSummaryHeader } from './lead-summary-header';
+import type { LeadSummary as LeadSummaryAggregate } from './lead-summary-types';
 import { RevealPiiButton } from './reveal-pii-button';
+import { TabsWithUrlSync } from './tabs-with-url-sync';
 
 // BR-IDENTITY-013: lead_public_id é o identificador externo seguro; nunca expor lead_id interno
 
-interface LeadSummary {
+interface LeadIdentity {
   lead_public_id: string;
   display_name: string | null;
   display_email: string | null;
@@ -27,7 +36,7 @@ interface LeadSummary {
 }
 
 const STATUS_BADGE: Record<
-  LeadSummary['status'],
+  LeadIdentity['status'],
   'default' | 'success' | 'destructive' | 'warning' | 'secondary' | 'outline'
 > = {
   active: 'success',
@@ -35,7 +44,7 @@ const STATUS_BADGE: Record<
   erased: 'outline',
 };
 
-const STATUS_LABEL: Record<LeadSummary['status'], string> = {
+const STATUS_LABEL: Record<LeadIdentity['status'], string> = {
   active: 'Ativo',
   merged: 'Unificado',
   erased: 'Anonimizado',
@@ -69,6 +78,18 @@ const VALID_TYPES: NodeType[] = [
   'consent_updated',
 ];
 
+// T-17-011: deep-link de aba ativa
+const TAB_VALUES = [
+  'jornada',
+  'eventos',
+  'despachos',
+  'atribuicao',
+  'consent',
+  'identidade',
+] as const;
+type TabValue = (typeof TAB_VALUES)[number];
+const DEFAULT_TAB: TabValue = 'jornada';
+
 export default async function LeadDetailPage({
   params,
   searchParams,
@@ -93,18 +114,33 @@ export default async function LeadDetailPage({
 
   const accessToken = session?.access_token ?? '';
 
-  // Server-side initial fetch for lead summary
-  let lead: LeadSummary | null = null;
-  try {
-    const res = await edgeFetch(
-      `/v1/leads/${encodeURIComponent(lead_public_id)}`,
+  // T-17-009: fetch paralelo de identidade + summary agregado.
+  // identidade -> /v1/leads/:id (PII com masking server-side por role)
+  // summary    -> /v1/leads/:id/summary (PII-free; stages, tags, atribuição, consent, métricas)
+  const [identityResult, summaryResult] = await Promise.allSettled([
+    edgeFetch(`/v1/leads/${encodeURIComponent(lead_public_id)}`, accessToken),
+    edgeFetch(
+      `/v1/leads/${encodeURIComponent(lead_public_id)}/summary`,
       accessToken,
-    );
-    if (res.ok) {
-      lead = (await res.json()) as LeadSummary;
+    ),
+  ]);
+
+  let lead: LeadIdentity | null = null;
+  if (identityResult.status === 'fulfilled' && identityResult.value.ok) {
+    try {
+      lead = (await identityResult.value.json()) as LeadIdentity;
+    } catch {
+      lead = null;
     }
-  } catch {
-    // lead stays null; header renders with defaults
+  }
+
+  let summary: LeadSummaryAggregate | null = null;
+  if (summaryResult.status === 'fulfilled' && summaryResult.value.ok) {
+    try {
+      summary = (await summaryResult.value.json()) as LeadSummaryAggregate;
+    } catch {
+      summary = null;
+    }
   }
 
   // Parse filters from URL — applied client-side via query params for shareability
@@ -138,6 +174,13 @@ export default async function LeadDetailPage({
     ? (rawPeriod as PeriodPreset)
     : 'all';
 
+  // T-17-011: aba ativa via ?tab=... (default: jornada).
+  const rawTab = typeof sp.tab === 'string' ? sp.tab : undefined;
+  const initialTab: TabValue =
+    rawTab && (TAB_VALUES as readonly string[]).includes(rawTab)
+      ? (rawTab as TabValue)
+      : DEFAULT_TAB;
+
   const displayName = maskDisplayName(lead?.display_name ?? null, role);
   const leadStatus = lead?.status ?? 'active';
   const piiMasked = lead?.pii_masked === true;
@@ -145,9 +188,12 @@ export default async function LeadDetailPage({
   const edgeUrl =
     process.env.NEXT_PUBLIC_EDGE_WORKER_URL ?? 'http://localhost:8787';
 
+  // BR-RBAC: aba "Identidade" só renderiza para roles diferentes de marketer.
+  const showIdentityTab = role !== 'marketer';
+
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header de identificação */}
       <div className="space-y-1">
         <nav className="text-xs text-muted-foreground" aria-label="Localização">
           <span>Contatos</span>
@@ -204,14 +250,58 @@ export default async function LeadDetailPage({
         </output>
       )}
 
-      {/* Timeline */}
-      <LeadTimelineClient
-        leadPublicId={lead_public_id}
-        role={role}
-        initialTypeFilter={initialTypeFilter}
-        initialStatusFilter={initialStatusFilter}
-        initialPeriod={initialPeriod}
-      />
+      {/* T-17-010: Header agregado (PII-free). Só renderiza se summary chegou. */}
+      {summary && <LeadSummaryHeader summary={summary} role={role} />}
+
+      {/* T-17-009/011: Tabs com deep-link via ?tab= */}
+      <TabsWithUrlSync
+        defaultValue={initialTab}
+        validValues={TAB_VALUES}
+        className="w-full"
+      >
+        <TabsList>
+          <TabsTrigger value="jornada">Jornada</TabsTrigger>
+          <TabsTrigger value="eventos">Eventos</TabsTrigger>
+          <TabsTrigger value="despachos">Despachos</TabsTrigger>
+          <TabsTrigger value="atribuicao">Atribuição</TabsTrigger>
+          <TabsTrigger value="consent">Consent</TabsTrigger>
+          {showIdentityTab && (
+            <TabsTrigger value="identidade">Identidade</TabsTrigger>
+          )}
+        </TabsList>
+
+        <TabsContent value="jornada">
+          <JourneyTab leadPublicId={lead_public_id} role={role} />
+        </TabsContent>
+
+        <TabsContent value="eventos">
+          <EventsTab
+            leadPublicId={lead_public_id}
+            role={role}
+            initialTypeFilter={initialTypeFilter}
+            initialStatusFilter={initialStatusFilter}
+            initialPeriod={initialPeriod}
+          />
+        </TabsContent>
+
+        <TabsContent value="despachos">
+          <DispatchesTab leadPublicId={lead_public_id} role={role} />
+        </TabsContent>
+
+        <TabsContent value="atribuicao">
+          <AttributionTab leadPublicId={lead_public_id} />
+        </TabsContent>
+
+        <TabsContent value="consent">
+          <ConsentTab leadPublicId={lead_public_id} />
+        </TabsContent>
+
+        {showIdentityTab && (
+          <TabsContent value="identidade">
+            <IdentityTab leadPublicId={lead_public_id} role={role} />
+          </TabsContent>
+        )}
+      </TabsWithUrlSync>
     </div>
   );
 }
