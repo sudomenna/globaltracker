@@ -10,13 +10,33 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: Sprint 17 "Lead Detail Observability" — entregue + commitado (commit `6af8f61`) + doc-sync ok (2026-05-09).
-- **Última onda**: Sprint 17 — LeadSummaryHeader + 6 abas (jornada/eventos/despachos/atribuição/consent/identidade) + `GET /v1/leads/:id/summary` + parâmetros `since`/`filters` JSON no timeline.
-- **Próxima ação**: aguardando direção do usuário. Trilhas 1 (Purchase real Guru) e 3 (survey form) seguem em aberto — ver §3.
+- **Sprint ativo**: nenhum ativo. Sprint 17 entregue (2026-05-09). Próximo sprint não iniciado.
+- **Última entrega**: OnProfit webhook adapter completo + fixes fbc/fbp global + Sprint 17 observability. Ver commits abaixo.
+- **Próxima ação**: testar compra real OnProfit com snippet no checkout; verificar fbc/fbp aparecendo em Meta Events Manager. Trilha 1 (Purchase Guru) e Trilha 3 (survey) seguem em aberto.
 - **Branch**: `main`, working tree clean. `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `83afe16c` — Sprint 17 edge changes requerem redeploy para ativar `/v1/leads/:id/summary`).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0044 aplicadas.
-- **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → CNE).
+- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `1e905322` — OnProfit adapter live, fbc/fbp fixes live, Sprint 17 live).
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0045 aplicadas.
+- **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
+
+### Entregas recentes (2026-05-09)
+
+| Tema | Commit | Deploy |
+|---|---|---|
+| Sprint 17 observability (6 tabs + summary endpoint) | `6af8f61` | `83afe16c` |
+| Sprint 17 doc-sync | `ff92500` | — |
+| Journey tab grouping fix (dispatch event_id) | `0bf22f9` | — |
+| fbc/fbp global fix (tracker cookie names `_fbc`/`_fbp` + historical lookup) | `748f32e` | — |
+| fbc/fbp doc-sync | `f53e2b6` | — |
+| OnProfit adapter (types/mapper/route/processor/migration) | `59003f9` | `1e905322` |
+
+### OnProfit configuração (IMPORTANTE)
+
+- **Webhook URL**: `https://globaltracker-edge.globaltracker.workers.dev/v1/webhooks/onprofit?workspace=outsiders`
+- **ERRO RESOLVIDO**: slug era `outsiders`, não `outsiders-digital`. Testado com 202 ✓
+- **Checkout page criada**: `checkout-onprofit-workshop` (role=checkout, launch=wkshop-cs-jun26)
+- **Tracker.js snippet**: instalado no HTML slot do checkout OnProfit (data-launch-public-id=`wkshop-cs-jun26`)
+- **Pixel Web OnProfit**: OFF (usuário decidiu desativar para evitar conflito)
+- **HMAC validation**: TODO — OnProfit não publicou spec do header ainda; protegido só por slug
 
 ### Sprint 16 — ondas entregues (detalhes em `git show <commit>`)
 
@@ -171,6 +191,7 @@ Script que cria retroativamente `dispatch_jobs` para `google_ads_conversion` + `
 | Repo | `https://github.com/sudomenna/globaltracker` (privado) |
 | Branch | `main` |
 | Supabase project | `kaxcmhfaqrxwnpftkslj` (globaltracker, sa-east-1, org CNE Ltda) |
+| Workspace slug | `outsiders` (ID `74860330-a528-4951-bf49-90f0b5c72521`) — usar em `?workspace=outsiders` |
 | Cloudflare account | `118836e4d3020f5666b2b8e5ddfdb222` (cursonovaeconomia@gmail.com) |
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
 | CF KV (preview) | `59d0cf1570ca499eb4597fc5218504c2` |
