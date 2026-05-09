@@ -310,6 +310,7 @@ PARE → DOCUMENTE → ESCALE
   - `design-system` — extrai tokens de URL externa (típico fluxo: regenera `DESIGN.md` no root → atualizar [`docs/70-ux/01-design-system-tokens.md`](docs/70-ux/01-design-system-tokens.md))
 - **Subagents custom** em `.claude/agents/` (ver §2)
 - **MCP servers**: nenhum por default no projeto
+- **Playwright (MCP)**: se `mcp__playwright__browser_*` retornar `Browser is already in use for <path>`, **mate o processo dono** antes de tentar novamente — outra sessão Claude pode ter deixado o Chrome ocupando o profile. Comando: `pkill -f "user-data-dir=<path>"` (substituir `<path>` pelo diretório do erro, ex: `/Users/tiagomenna/Library/Caches/ms-playwright/mcp-chrome-1ead15c`). Depois reinvocar a ferramenta de browser. Não esperar/pedir confirmação — é fluxo operacional padrão.
 
 ---
 
