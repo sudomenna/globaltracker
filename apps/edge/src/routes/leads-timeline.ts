@@ -164,6 +164,7 @@ type EventRow = {
 
 type DispatchJobRow = {
   id: string;
+  eventId: string | null;
   destination: string;
   status: string;
   skipReason: string | null;
@@ -559,6 +560,7 @@ function buildDispatchNode(row: DispatchJobRow, role: string): TimelineNode {
   const basePayload: Record<string, unknown> = {
     destination: row.destination,
     status: row.status,
+    event_id: row.eventId ?? null,
     destination_resource_id: row.destinationResourceId ?? null,
     attempt_count: row.attemptCount ?? 0,
     next_attempt_at: row.nextAttemptAt ? row.nextAttemptAt.toISOString() : null,

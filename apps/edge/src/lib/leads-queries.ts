@@ -249,6 +249,7 @@ export function createLeadsQueryFns(
     const rows = await db
       .select({
         id: dispatchJobs.id,
+        eventId: dispatchJobs.eventId,
         destination: dispatchJobs.destination,
         status: dispatchJobs.status,
         skipReason: dispatchJobs.skipReason,
