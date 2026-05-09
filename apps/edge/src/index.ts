@@ -40,7 +40,7 @@ import {
   pageTokens,
   workspaces,
 } from '@globaltracker/db';
-import { and, desc, eq, lt, ne } from 'drizzle-orm';
+import { and, desc, eq, lt, ne, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
@@ -820,6 +820,58 @@ async function queueHandler(
 }
 
 // ---------------------------------------------------------------------------
+// Browser-signal enrichment from lead history
+// ---------------------------------------------------------------------------
+
+/**
+ * Looks up the most recent fbc/fbp captured by ANY past event of the given lead.
+ *
+ * Why: webhook-sourced events (Guru Purchase, SendFlow Contact, etc) carry no
+ * browser context — `events.user_data` is `{}`. The fbc/fbp signals were
+ * captured by tracker.js on a prior PageView/Lead/click event. Without this
+ * fallback, Meta CAPI Purchase events miss `fbc` and the Meta Diagnóstico
+ * dashboard reports "Enviar Identificação do clique da Meta" — Meta estimates
+ * +100% in additional reported conversions when fbc is present.
+ *
+ * Strategy: scan the lead's events DESC by received_at, take the freshest
+ * non-null fbc and freshest non-null fbp (independently — they may come from
+ * different events). LIMIT 10 caps the work for chatty leads; the canonical
+ * source (PageView with utm_source=meta) is almost always within the most
+ * recent few events.
+ *
+ * Performance: 1 query per dispatch. Indexed on (workspace_id, lead_id).
+ * Skipped entirely when both signals are already present in the current event.
+ */
+async function lookupHistoricalBrowserSignals(
+  db: Db,
+  workspaceId: string,
+  leadId: string,
+): Promise<{ fbc: string | null; fbp: string | null }> {
+  const rows = await db
+    .select({ userData: events.userData })
+    .from(events)
+    .where(
+      and(
+        eq(events.workspaceId, workspaceId),
+        eq(events.leadId, leadId),
+        sql`(${events.userData}->>'fbc' IS NOT NULL OR ${events.userData}->>'fbp' IS NOT NULL)`,
+      ),
+    )
+    .orderBy(desc(events.receivedAt))
+    .limit(10);
+
+  let fbc: string | null = null;
+  let fbp: string | null = null;
+  for (const row of rows) {
+    const ud = (row.userData ?? {}) as Record<string, unknown>;
+    if (!fbc && typeof ud.fbc === 'string' && ud.fbc.length > 0) fbc = ud.fbc;
+    if (!fbp && typeof ud.fbp === 'string' && ud.fbp.length > 0) fbp = ud.fbp;
+    if (fbc && fbp) break;
+  }
+  return { fbc, fbp };
+}
+
+// ---------------------------------------------------------------------------
 // Meta CAPI dispatch function factory
 // ---------------------------------------------------------------------------
 
@@ -910,10 +962,36 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       }
     }
 
+    // Enrich missing fbc/fbp from lead's event history. Webhook events (Guru
+    // Purchase, SendFlow, etc) have no browser context — fall back to signals
+    // captured by tracker.js on prior PageView/Lead events of the same lead.
+    // Skipped when both are already present (tracker events) or when no lead.
+    const rawUserData = (event.userData ?? {}) as Record<string, unknown>;
+    const hasCurrentFbc = typeof rawUserData.fbc === 'string' && rawUserData.fbc.length > 0;
+    const hasCurrentFbp = typeof rawUserData.fbp === 'string' && rawUserData.fbp.length > 0;
+    let enrichedFbc: string | null = null;
+    let enrichedFbp: string | null = null;
+    if (lead && (!hasCurrentFbc || !hasCurrentFbp)) {
+      const historical = await lookupHistoricalBrowserSignals(
+        db,
+        event.workspaceId,
+        lead.id,
+      );
+      if (!hasCurrentFbc) enrichedFbc = historical.fbc;
+      if (!hasCurrentFbp) enrichedFbp = historical.fbp;
+      if (enrichedFbc || enrichedFbp) {
+        safeLog('info', {
+          event: 'meta_capi_browser_signals_enriched',
+          dispatch_job_id: job.id,
+          enriched_fbc: !!enrichedFbc,
+          enriched_fbp: !!enrichedFbp,
+        });
+      }
+    }
+
     // Hash geo fields for Meta CAPI (SHA-256 pure, no workspace scope).
     // Normalization: city lowercase trim, state 2-letter lowercase,
     // zip digits-only, country 2-letter lowercase.
-    const rawUserData = (event.userData ?? {}) as Record<string, unknown>;
     const geoCity = typeof rawUserData.geo_city === 'string' ? rawUserData.geo_city : null;
     const geoRegionCode = typeof rawUserData.geo_region_code === 'string' ? rawUserData.geo_region_code : null;
     const geoPostalCode = typeof rawUserData.geo_postal_code === 'string' ? rawUserData.geo_postal_code : null;
@@ -936,6 +1014,8 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         visitor_id: event.visitorId,
         user_data: {
           ...(event.userData as Parameters<typeof mapEventToMetaPayload>[0]['user_data']),
+          ...(enrichedFbc ? { fbc: enrichedFbc } : {}),
+          ...(enrichedFbp ? { fbp: enrichedFbp } : {}),
           ...(ctHash ? { ct: ctHash } : {}),
           ...(stHash ? { st: stHash } : {}),
           ...(zpHash ? { zp: zpHash } : {}),

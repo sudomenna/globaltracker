@@ -24,6 +24,7 @@
 import { fetchConfig, sendEvent } from './api-client';
 import type { EventPayload } from './api-client';
 import {
+  buildFbcFromFbclid,
   capturePlatformCookies,
   ensureVisitorId,
   readLeadTokenCookie,
@@ -122,16 +123,23 @@ function buildAttributionRecord(
 }
 
 /**
- * Build user_data record for event payload from PlatformCookies.
+ * Build user_data record for event payload from PlatformCookies + attribution.
+ *
  * INV-TRACKER-005: only platform cookies — never PII in clear.
+ *
+ * `fbc` fallback: when the `_fbc` cookie is absent (page does not have the Meta
+ * Pixel SDK loaded, or visitor arrived before Pixel initialized), but `fbclid`
+ * exists in the URL, we synthesize the canonical Meta `_fbc` value
+ * (`fb.1.{ts}.{fbclid}`) so the click attribution still reaches Meta CAPI.
  */
 function buildUserDataRecord(
   cookies: PlatformCookies,
+  attribution: AttributionParams,
 ): Record<string, string | null> {
   return {
     _gcl_au: cookies._gcl_au,
     _ga: cookies._ga,
-    fbc: cookies.fbc,
+    fbc: cookies.fbc ?? buildFbcFromFbclid(attribution.fbclid),
     fbp: cookies.fbp,
   };
 }
@@ -259,7 +267,7 @@ function track(eventName: string, customData?: Record<string, unknown>): void {
       event_name: eventName,
       event_time: new Date().toISOString(),
       attribution: buildAttributionRecord(state.attributionParams),
-      user_data: buildUserDataRecord(state.platformCookies),
+      user_data: buildUserDataRecord(state.platformCookies, state.attributionParams),
       custom_data: customData ?? {},
       consent: {
         analytics: consent.analytics,

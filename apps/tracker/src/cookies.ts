@@ -6,6 +6,12 @@
  * BR-CONSENT-004: own cookies (analytics) only with consent granted.
  */
 
+/**
+ * Canonical key names returned to the backend (Meta CAPI naming convention:
+ * `fbc`/`fbp` without underscore prefix). Browser cookies, on the other hand,
+ * are named `_fbc`/`_fbp` (with underscore — set by the Meta Pixel SDK). The
+ * mapping happens inside `capturePlatformCookies`.
+ */
 export const PLATFORM_COOKIE_NAMES = ['_gcl_au', '_ga', 'fbc', 'fbp'] as const;
 export type PlatformCookieName = (typeof PLATFORM_COOKIE_NAMES)[number];
 
@@ -62,9 +68,28 @@ export function capturePlatformCookies(): Record<
   return {
     _gcl_au: readCookie('_gcl_au'),
     _ga: readCookie('_ga'),
-    fbc: readCookie('fbc'),
-    fbp: readCookie('fbp'),
+    // Meta Pixel SDK writes the cookies as `_fbc` / `_fbp` (underscore prefix);
+    // we expose them under the CAPI-canonical keys `fbc` / `fbp` to the rest of
+    // the tracker pipeline.
+    fbc: readCookie('_fbc'),
+    fbp: readCookie('_fbp'),
   };
+}
+
+/**
+ * Build a Meta `_fbc` value from a URL `fbclid`, when the cookie itself is
+ * absent. Format follows Meta spec:
+ *   `fb.{subdomain_index}.{timestamp_ms}.{fbclid}`
+ *
+ * `subdomain_index = 1` matches what the Meta Pixel SDK writes for first-party
+ * (root domain) usage. Without this fallback, leads who land on a page WITHOUT
+ * the Meta Pixel loaded never get an `_fbc` cookie set, and we lose the click
+ * attribution signal even though the `fbclid` is right there in the URL the
+ * tracker already captures.
+ */
+export function buildFbcFromFbclid(fbclid: string | null): string | null {
+  if (!fbclid || fbclid.length === 0) return null;
+  return `fb.1.${Date.now()}.${fbclid}`;
 }
 
 /**

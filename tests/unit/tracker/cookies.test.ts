@@ -73,15 +73,26 @@ describe('readCookie', () => {
 });
 
 describe('capturePlatformCookies', () => {
-  it('captures all platform cookies when present', () => {
+  it('captures all platform cookies when present (Meta Pixel writes _fbc/_fbp with underscore)', () => {
     vi.stubGlobal('document', {
-      cookie: '_gcl_au=gcl_val; _ga=ga_val; fbc=fbc_val; fbp=fbp_val',
+      cookie: '_gcl_au=gcl_val; _ga=ga_val; _fbc=fbc_val; _fbp=fbp_val',
     });
     const result = capturePlatformCookies();
     expect(result._gcl_au).toBe('gcl_val');
     expect(result._ga).toBe('ga_val');
+    // Cookie source: `_fbc` / `_fbp` (Meta SDK names). Output key: CAPI canonical.
     expect(result.fbc).toBe('fbc_val');
     expect(result.fbp).toBe('fbp_val');
+  });
+
+  it('returns null for fbc/fbp when only legacy non-prefixed cookies exist', () => {
+    // Guards against the previous bug where the tracker read `fbc`/`fbp`
+    // (without underscore), which Meta Pixel never writes — silently emitting
+    // null fbc/fbp on every event for months.
+    vi.stubGlobal('document', { cookie: 'fbc=wrong; fbp=wrong' });
+    const result = capturePlatformCookies();
+    expect(result.fbc).toBeNull();
+    expect(result.fbp).toBeNull();
   });
 
   it('returns null for absent platform cookies', () => {
