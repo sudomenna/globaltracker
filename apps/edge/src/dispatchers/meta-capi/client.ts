@@ -39,10 +39,20 @@ export interface MetaCapiResponseBody {
 /** Discriminated union for the result of a CAPI call. */
 export type MetaCapiResult =
   | { ok: true; data: MetaCapiResponseBody }
-  | { ok: false; kind: 'rate_limit' }
-  | { ok: false; kind: 'server_error'; status: number }
-  | { ok: false; kind: 'permanent_failure'; code: string }
-  | { ok: false; kind: 'skip'; reason: 'no_user_data' };
+  | { ok: false; kind: 'rate_limit'; responseBody?: unknown }
+  | { ok: false; kind: 'server_error'; status: number; responseBody?: unknown }
+  | {
+      ok: false;
+      kind: 'permanent_failure';
+      code: string;
+      responseBody?: unknown;
+    }
+  | {
+      ok: false;
+      kind: 'skip';
+      reason: 'no_user_data';
+      responseBody?: unknown;
+    };
 
 /** Error detail surfaced from Meta's JSON error object. */
 interface MetaApiError {
@@ -124,14 +134,30 @@ export async function sendToMetaCapi(
   // Non-2xx — parse error envelope where possible.
   const status = response.status;
 
+  // Try to read body once for retryable failures (5xx/429); Meta sometimes
+  // returns useful envelope even on these. Best-effort — body may be empty.
+  let retryableBody: unknown = undefined;
+  if (status === 429 || status >= 500) {
+    try {
+      retryableBody = await response.json();
+    } catch {
+      retryableBody = undefined;
+    }
+  }
+
   if (status === 429) {
     // BR-DISPATCH-003: 429 → retrying with backoff
-    return { ok: false, kind: 'rate_limit' };
+    return { ok: false, kind: 'rate_limit', responseBody: retryableBody };
   }
 
   if (status >= 500) {
     // BR-DISPATCH-003: 5xx → retrying with backoff
-    return { ok: false, kind: 'server_error', status };
+    return {
+      ok: false,
+      kind: 'server_error',
+      status,
+      responseBody: retryableBody,
+    };
   }
 
   // 4xx — attempt to parse Meta's error envelope for classification.
@@ -151,7 +177,12 @@ export async function sendToMetaCapi(
     status === 400 &&
     (errorCode === 'invalid_pixel_id' || errorCode === 190)
   ) {
-    return { ok: false, kind: 'permanent_failure', code: 'invalid_pixel_id' };
+    return {
+      ok: false,
+      kind: 'permanent_failure',
+      code: 'invalid_pixel_id',
+      responseBody: envelope,
+    };
   }
 
   // BR-DISPATCH-003: 400 missing_required_user_data → skipped
@@ -159,11 +190,21 @@ export async function sendToMetaCapi(
     status === 400 &&
     errorMessage.toLowerCase().includes('missing_required_user_data')
   ) {
-    return { ok: false, kind: 'skip', reason: 'no_user_data' };
+    return {
+      ok: false,
+      kind: 'skip',
+      reason: 'no_user_data',
+      responseBody: envelope,
+    };
   }
 
   // All other 400 / 403 / 422 → permanent failure (no retry)
-  return { ok: false, kind: 'permanent_failure', code: 'bad_request' };
+  return {
+    ok: false,
+    kind: 'permanent_failure',
+    code: 'bad_request',
+    responseBody: envelope,
+  };
 }
 
 // ---------------------------------------------------------------------------

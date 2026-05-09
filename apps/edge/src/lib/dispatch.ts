@@ -20,7 +20,32 @@
 import type { Db } from '@globaltracker/db';
 import { dispatchAttempts, dispatchJobs } from '@globaltracker/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { sanitizeDispatchPayload } from './dispatch-payload-sanitize.js';
 import { jsonb } from './jsonb-cast.js';
+
+/**
+ * Helper: prepara request/response payloads para gravação em
+ * dispatch_attempts. Aplica sanitização (IP redact) idempotente —
+ * mesmo que o dispatcher tenha esquecido de redactar, esta camada
+ * captura. Retorna sempre `{}` (não-nulo, jsonb-object) quando o
+ * dispatcher não populou — preserva contrato anterior do schema.
+ */
+function buildAttemptPayloads(
+  result: { request?: unknown; response?: unknown } | undefined,
+): {
+  request: ReturnType<typeof jsonb>;
+  response: ReturnType<typeof jsonb>;
+} {
+  const req =
+    result?.request !== undefined
+      ? (sanitizeDispatchPayload(result.request) as Record<string, unknown>)
+      : {};
+  const res =
+    result?.response !== undefined
+      ? (sanitizeDispatchPayload(result.response) as Record<string, unknown>)
+      : {};
+  return { request: jsonb(req), response: jsonb(res) };
+}
 
 // Re-export Result type for consumers
 export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
@@ -80,14 +105,35 @@ export type DispatchJobInput = {
 };
 
 /**
+ * Optional payload capture — anexado pelo dispatcher para gravar em
+ * `dispatch_attempts.{request,response}_payload_sanitized`. Quando o
+ * dispatcher não popular, gravam-se `{}` (comportamento legacy).
+ *
+ * O dispatcher é responsável por sanitizar (BR-PRIVACY-001):
+ *   - IPs em claro DEVEM ser redacted (helper `sanitizeDispatchPayload`).
+ *   - Email/phone em claro nunca devem aparecer (já são hash em todos
+ *     payloads para Meta/Google/GA4 por design das APIs).
+ *
+ * Use `unknown` para aceitar qualquer estrutura (Meta CAPI envelope,
+ * GA4 MP, Google Ads request body, etc.) — o storage em jsonb tolera.
+ */
+export type DispatchPayloadCapture = {
+  request?: unknown;
+  response?: unknown;
+};
+
+/**
  * What a dispatcher function returns after attempting an external call.
+ *
+ * Cada variant pode opcionalmente trazer `request`/`response` para
+ * observability via dispatch_attempts (T-DISPATCH-PAYLOAD-AUDIT, 2026-05-09).
  */
 export type DispatchResult =
-  | { ok: true }
-  | { ok: false; kind: 'rate_limit' }
-  | { ok: false; kind: 'server_error'; status: number }
-  | { ok: false; kind: 'permanent_failure'; code: string }
-  | { ok: false; kind: 'skip'; reason: string };
+  | ({ ok: true } & DispatchPayloadCapture)
+  | ({ ok: false; kind: 'rate_limit' } & DispatchPayloadCapture)
+  | ({ ok: false; kind: 'server_error'; status: number } & DispatchPayloadCapture)
+  | ({ ok: false; kind: 'permanent_failure'; code: string } & DispatchPayloadCapture)
+  | ({ ok: false; kind: 'skip'; reason: string } & DispatchPayloadCapture);
 
 /**
  * A dispatcher function — injected into processDispatchJob.
@@ -342,6 +388,10 @@ export async function processDispatchJob(
 
   const attemptFinishedAt = new Date();
 
+  // T-DISPATCH-PAYLOAD-AUDIT (2026-05-09): se o dispatcher anexou
+  // request/response, sanitiza+grava; senão mantém {} (legacy).
+  const payloads = buildAttemptPayloads(result);
+
   if (result.ok) {
     // --- SUCCESS path ---
     await db
@@ -360,8 +410,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'succeeded' satisfies AttemptStatus,
-        requestPayloadSanitized: jsonb({}),
-        responsePayloadSanitized: jsonb({}),
+        requestPayloadSanitized: payloads.request,
+        responsePayloadSanitized: payloads.response,
         startedAt: attemptStartedAt,
         finishedAt: attemptFinishedAt,
       })
@@ -400,8 +450,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'permanent_failure' satisfies AttemptStatus,
-        requestPayloadSanitized: jsonb({}),
-        responsePayloadSanitized: jsonb({}),
+        requestPayloadSanitized: payloads.request,
+        responsePayloadSanitized: payloads.response,
         errorCode: 'skipped',
         errorMessage: skipReason,
         startedAt: attemptStartedAt,
@@ -433,8 +483,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'permanent_failure' satisfies AttemptStatus,
-        requestPayloadSanitized: jsonb({}),
-        responsePayloadSanitized: jsonb({}),
+        requestPayloadSanitized: payloads.request,
+        responsePayloadSanitized: payloads.response,
         errorCode: result.code,
         startedAt: attemptStartedAt,
         finishedAt: attemptFinishedAt,
@@ -465,6 +515,8 @@ export async function processDispatchJob(
       errorCode: result.kind,
       startedAt: attemptStartedAt,
       finishedAt: attemptFinishedAt,
+      requestPayload: payloads.request,
+      responsePayload: payloads.response,
     });
 
     const [attempt] = await db
@@ -505,8 +557,8 @@ export async function processDispatchJob(
       dispatchJobId: jobId,
       attemptNumber: newAttemptCount,
       status: 'retryable_failure' satisfies AttemptStatus,
-      requestPayloadSanitized: jsonb({}),
-      responsePayloadSanitized: jsonb({}),
+      requestPayloadSanitized: payloads.request,
+      responsePayloadSanitized: payloads.response,
       errorCode: result.kind,
       errorMessage:
         result.kind === 'server_error' ? `HTTP ${result.status}` : result.kind,
@@ -534,6 +586,12 @@ type DeadLetterAttemptOpts = {
   errorCode?: string;
   startedAt: Date;
   finishedAt: Date;
+  /**
+   * Payloads pré-sanitizados (T-DISPATCH-PAYLOAD-AUDIT). Quando omitidos,
+   * grava `{}` para preservar comportamento legacy.
+   */
+  requestPayload?: ReturnType<typeof jsonb>;
+  responsePayload?: ReturnType<typeof jsonb>;
 };
 
 /**
@@ -572,8 +630,8 @@ export async function markDeadLetter(
       dispatchJobId: jobId,
       attemptNumber: attemptOpts.attemptNumber,
       status: 'permanent_failure' satisfies AttemptStatus,
-      requestPayloadSanitized: jsonb({}),
-      responsePayloadSanitized: jsonb({}),
+      requestPayloadSanitized: attemptOpts.requestPayload ?? jsonb({}),
+      responsePayloadSanitized: attemptOpts.responsePayload ?? jsonb({}),
       errorCode: attemptOpts.errorCode ?? 'dead_letter',
       errorMessage: reason,
       startedAt: attemptOpts.startedAt,

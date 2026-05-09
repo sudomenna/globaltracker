@@ -1196,11 +1196,20 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     );
 
     // Map MetaCapiResult → DispatchResult.
+    // T-DISPATCH-PAYLOAD-AUDIT (2026-05-09): anexa request/response para
+    // gravação em dispatch_attempts.{request,response}_payload_sanitized.
+    // Sanitização (IP redact) é aplicada em processDispatchJob como última
+    // camada (defense-in-depth) — não precisa redactar aqui.
     if (capiResult.ok) {
-      return { ok: true };
+      return { ok: true, request: payload, response: capiResult.data };
     }
-    // Non-ok results have the same shape as DispatchResult — pass through directly.
-    return capiResult;
+    // Non-ok results have the same shape as DispatchResult — pass through directly,
+    // anexando request enviado e responseBody (quando capturado pelo client).
+    const { responseBody, ...rest } = capiResult as Extract<
+      typeof capiResult,
+      { ok: false }
+    > & { responseBody?: unknown };
+    return { ...rest, request: payload, response: responseBody };
   };
 }
 

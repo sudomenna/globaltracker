@@ -199,3 +199,62 @@ Scenario: enrichment não sobrescreve sinal já presente
 ### Implicações para novos adapters
 
 Adicionando um novo webhook inbound em `apps/edge/src/routes/webhooks/<provider>.ts`: **não tente** capturar `fbc`/`fbp` do payload da plataforma upstream — eles não estão lá. Resolva o `lead_id` via aliases (email/phone/order_id) e deixe o orchestrator fazer o enrichment no dispatch. Esta BR documenta que esse comportamento é canônico e não acidental.
+
+---
+
+## BR-DISPATCH-007 — `dispatch_attempts.{request,response}_payload_sanitized` reflete o que efetivamente saiu
+
+### Status
+Stable (T-DISPATCH-PAYLOAD-AUDIT 2026-05-09).
+
+### Enunciado
+Toda função `DispatchFn` (Meta CAPI, GA4 MP, Google Ads conversion, Google Ads enhanced, audience-sync) **DEVE** anexar `request` e `response` no `DispatchResult` retornado. `processDispatchJob` aplica `sanitizeDispatchPayload` (redact `client_ip_address`/`ip`) e grava em `dispatch_attempts.request_payload_sanitized` / `response_payload_sanitized`.
+
+### Motivação
+Antes desta BR, ambas colunas gravavam `{}` literal — auditoria de "o que efetivamente saiu pra Meta" era impossível. Caso real (lead `75b3ed42` Pedro, 2026-05-09): typo de email `.con` enviado no primeiro Lead event, `email_hash_external` no DB foi sobrescrito pelo segundo submit `.com`, mas a `v_meta_capi_health` mostra `match_score=8` baseado no estado ATUAL do lead — não no payload realmente enviado. Sem `request_payload_sanitized` populado, não dá pra ver que a Meta recebeu hash de email errado.
+
+### Enforcement
+- `DispatchResult` em `apps/edge/src/lib/dispatch.ts` carrega `request?: unknown` e `response?: unknown` (todos os variants via `DispatchPayloadCapture`).
+- `processDispatchJob` aplica `sanitizeDispatchPayload` em `apps/edge/src/lib/dispatch-payload-sanitize.ts` antes do INSERT (defesa em profundidade — se o dispatcher esquecer de redactar, a camada captura).
+- Sanitização atual: redact `client_ip_address` e `ip` quando string não-vazia. Hashes (em/ph/fn/ln/ct/st/zp/country) preservados (já são SHA-256). User-Agent preservado (não PII per se, útil pra auditoria de match quality).
+- Quando o dispatcher não anexar (incremental rollout), grava `{}` legacy.
+
+### Status atual de implementação
+
+| Dispatcher | Captura `request` | Captura `response` |
+|---|:---:|:---:|
+| `meta_capi` | ✅ | ✅ (incluindo error envelope em 4xx) |
+| `ga4_mp` | ⏳ pending | ⏳ pending |
+| `google_ads_conversion` | ⏳ pending | ⏳ pending |
+| `google_ads_enhanced` | ⏳ pending | ⏳ pending |
+| `audience_sync` | ⏳ pending | ⏳ pending |
+
+Incremental — adicionar `request: payload, response: <body>` ao `return` de cada `buildXxxDispatchFn` quando tocar.
+
+### Critérios de aceite
+
+```gherkin
+Scenario: Meta CAPI Lead succeeded — request e response gravados sem PII em claro
+  Given Lead event com lead_id e fbc/fbp populados
+  And launch tem pixel_id válido + capi_token
+  When dispatcher Meta CAPI processa o job e Meta retorna 200
+  Then dispatch_attempts.status='succeeded'
+  And request_payload_sanitized.user_data.client_ip_address='[REDACTED]'
+  And request_payload_sanitized.user_data.em é hash SHA-256 (64 hex chars)
+  And request_payload_sanitized.user_data.client_user_agent é UA string em claro
+  And response_payload_sanitized contém events_received, fbtrace_id, messages
+
+Scenario: Meta CAPI 400 — error envelope gravado para auditoria
+  Given Lead event que vai falhar com 400 Bad Request
+  When dispatcher Meta CAPI processa
+  Then dispatch_attempts.status='permanent_failure'
+  And request_payload_sanitized populado (mesma sanitização)
+  And response_payload_sanitized contém envelope.error.code, envelope.error.message
+```
+
+### Citação em código
+
+```ts
+// BR-DISPATCH-007: anexar request/response ao DispatchResult — sanitize aplicado em processDispatchJob
+return { ok: true, request: payload, response: capiResult.data };
+```
