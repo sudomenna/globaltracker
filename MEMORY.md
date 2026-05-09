@@ -10,38 +10,61 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: nenhum ativo. Hotfix sprint informal "Meta CAPI EMQ Hardening" entregue 2026-05-09.
-- **Última entrega (2 fixes consecutivos 2026-05-09)**:
-  1. **Tracker race-fix** — `track()` lê `capturePlatformCookies()` fresco a cada send (era snapshot de init).
-  2. **`markSeen` best-effort** — replay-protection KV write não pode mais 500ar `/v1/events`. **Pipeline estava DEAD desde 11:00 UTC** porque KV daily quota (1.000 writes free tier) atingiu o teto e `markSeen` lançava sem catch. Sintoma: ZERO PageView/Lead/click no DB entre 10:42 e 16:58 UTC. Forms continuavam (lead_identify chegava via /v1/lead) mas tracker não. Validado pós-deploy `f97af05f`: PageView 202 OK, persistido com cookies+geo+IP+UA.
-- **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês + uso adicional, account `cursonovaeconomia@gmail.com`). Resolveu o teto diário do KV. Validado pós-upgrade: `/v1/events` 202 sem `replay_kv_write_failed` warn.
-- **Branch**: `main`, commits novos pendentes (auto_page_view migration + tracker race fix + replay-protection best-effort + doc-sync). `facebook_docs.md` untracked (referência local).
-- **Edge prod**: deploy atual `f97af05f` (replay-protection best-effort). Anterior `ba2fbe37`.
-- **CDN tracker.js**: R2 `gt-tracker-cdn` atualizado 2026-05-09 08:24 UTC com fix de race (etag `991734d4`, 9466 bytes).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0048** aplicadas (0048 = corrigir `obrigado-workshop.event_config.auto_page_view` para `false`, alinhado com migration 0039).
+- **Sprint ativo**: nenhum ativo. Sequência de hardening entregue 2026-05-09 (tracker race + KV best-effort + alias supersede + dispatch payload audit + Google Ads OAuth refactor + OnProfit launch resolver + geo enrichment).
+- **Branch**: `main`, working tree limpo (só `facebook_docs.md` untracked — não commitar). 26 commits ahead de origin (sem push automático — pedir confirmação se for pushar).
+- **Edge prod**: deploy atual **`1b45681a`** (geo enrichment via historical lookup).
+- **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas.
+- **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
+- **Match score Meta CAPI**: 7/8 → **8/8 alcançável** (validado: 15 Purchases em score 8 nos últimos 7 dias).
 
-### Entregas recentes (2026-05-09)
+### Onde começar a próxima sessão
 
-| Tema | Commit | Deploy |
-|---|---|---|
-| Sprint 17 observability (6 tabs + summary endpoint) | `6af8f61` | `83afe16c` |
-| Sprint 17 doc-sync | `ff92500` | — |
-| Journey tab grouping fix (dispatch event_id) | `0bf22f9` | — |
-| fbc/fbp global fix (tracker cookie names `_fbc`/`_fbp`) | `748f32e` | — |
-| fbc/fbp doc-sync | `f53e2b6` | — |
-| OnProfit adapter (types/mapper/route/processor/migration) | `59003f9` | `1e905322` |
-| OnProfit event_source CHECK constraint fix (migration 0046) | `46e9c2e` | — (DB only) |
-| jsonb() helper aplicado em todos writes (T-13-013-FOLLOWUP) | `22db9a9` | `ed9a490d` |
-| meta-capi: lookupHistoricalBrowserSignals com cast defensivo `(user_data #>> '{}')::jsonb` | `89b1c6d` | `10bcaaa6` |
-| meta-capi: historical lookup também enriquece IP/UA + parseUd em todos jsonb reads | `77f97c6` | `974368b9` |
-| Health view `v_meta_capi_health` (migration 0047) — score 0..8 por evento | `10277cf` | — (DB only) |
-| meta-capi: historical lookup também enriquece visitor_id (Meta external_id) | `5ed259d` | `ba2fbe37` |
-| **Migration 0048: corrigir `obrigado-workshop.auto_page_view` para `false`** (alinhado com 0039 — sobrescrita manual incorreta em sessão anterior) | (pending) | — (DB only) |
-| **Tracker race-fix: `capturePlatformCookies()` fresh em `track()`** | `6fbcf6c` | R2 `tracker.js` etag `991734d4` |
-| Doc-sync: `docs/20-domain/13-mod-tracker.md §7.7` documenta fresh-read em send-time | `6fbcf6c` | — |
-| CLAUDE.md §9: regra operacional Playwright — matar processo dono em conflito | `2974bd5` | — |
-| **`markSeen` best-effort (catch KV throw)** + test cobre KV exceeded | (pending) | edge `f97af05f` |
+**Pendências críticas**: TODAS resolvidas. Nada bloqueando. Pipeline 100% operacional.
+
+**Recomendação minha pra atacar primeiro** (em ordem de valor/risco):
+
+1. **Doc-sync pendentes** (low risk, low effort, high coverage) — 8 itens marcados `[SYNC-PENDING]` em §3 abaixo. Atualizar:
+   - `CONTRACT-api-events-v1` (events.user_data jsonb shape, consent string|bool)
+   - `CONTRACT-api-config-v1` (event_config.auto_page_view)
+   - `BR-IDENTITY-005` (cookie `__ftk` SameSite=None Secure, sem HttpOnly)
+   - `CORS público` em arch doc
+   - `TEMPLATE-paid-workshop-v3-event-config-purge`
+   - `CP-DOUBLE-STRINGIFY-event-config` (T-13-013)
+   - `PHONE-normalizer-9-prefix-BR`
+   - `ERASURE-GEO-FIELDS-AND-VISITOR-ID` (BR-PRIVACY-005 escopo expandido)
+
+2. **Investigar 67 tests integration/e2e falhando** (médio risco, descoberto nesta sessão) — confirmados pré-existentes (rodaram em main sem minhas mudanças e falharam igual). Possíveis regressões acumuladas. Listar com `pnpm vitest run 2>&1 | grep "❯.*failed"` — começar pelos guru-launch-resolver (5 failed), processor-creates-dispatch-jobs (4 failed), flow-08-merge-leads (10 failed).
+
+3. **MISSING-UNIT-TESTS-SESSION-2026-05-07** (low risk, hardening) — 6 specs faltando, listadas em §3. Trabalho repetitivo mas valor de regression coverage.
+
+4. **Otimizações KV** (low priority após Workers Paid) — config cache em memory por instance, skip markSeen quando idempotency primary já marcou duplicate.
+
+**NÃO atacar sem decisão de produto**: itens UI no Control Plane (CP-SNIPPET-GENERATOR, CP-MISSING-AUTO-PAGE-VIEW-TOGGLE).
+**NÃO atacar sem dependência externa**: ONPROFIT-HMAC-VALIDATION-TODO (depende OnProfit publicar spec).
+
+### Entregas recentes (2026-05-09) — sessão completa
+
+| # | Tema | Commit | Deploy/Migration |
+|---|---|---|---|
+| 1 | Sprint 17 observability + doc-sync (anteriores) | `6af8f61` `ff92500` `0bf22f9` | `83afe16c` |
+| 2 | Pacote Meta CAPI hardening (jsonb, fbc/fbp, historical lookup IP/UA/visitor_id) | `748f32e` `22db9a9` `89b1c6d` `77f97c6` `5ed259d` | `ed9a490d` `10bcaaa6` `974368b9` `ba2fbe37` |
+| 3 | Health view `v_meta_capi_health` | `10277cf` | migration 0047 |
+| 4 | OnProfit adapter inicial | `59003f9` `46e9c2e` | `1e905322` |
+| 5 | **Migration 0048**: `obrigado-workshop.auto_page_view = false` | `a48f985` | DB only |
+| 6 | **Tracker race-fix**: `capturePlatformCookies()` fresh em `track()` | `6fbcf6c` | R2 etag `991734d4` |
+| 7 | CLAUDE.md §9: regra Playwright (matar processo dono) | `2974bd5` | — |
+| 8 | **`markSeen` best-effort** (KV quota não 500a mais `/v1/events`) | `85777ec` | edge `f97af05f` |
+| 9 | **Workers Paid ativo** ($5/mês, KV quota mensal) | (account-level) | — |
+| 10 | **ADR-040** + BR-EVENT-004 refino + AGENTS rule 16 | `173dfb8` | — |
+| 11 | **Migration 0049**: supersede 6 aliases órfãos `.con` (anti cross-contamination) | `3a7b6fd` | DB only |
+| 12 | **Resolver supersede em re-submit** + 2 tests + BR-IDENTITY-001 update | `c89ccb4` | edge (incluso em deploys posteriores) |
+| 13 | **Dispatch payload audit Meta CAPI** (request + response sanitized, IP redacted) + BR-DISPATCH-007 | `e12528b` | edge `35a93927` |
+| 14 | + Captura request em GA4/Google Ads conv/enhanced + ADR-041 | `a51442b` | edge `1b2e2d74` |
+| 15 | **T-14-009-FOLLOWUP**: Google Ads Conv aceita `accessToken` direto (paridade Enhanced) | `bea8042` | edge `db4c5464` |
+| 16 | **OnProfit launch resolver** + lead_stages + tag_rules (paridade Guru) | `5668c67` | edge `d6ce4274` |
+| 17 | **GEO-CITY-ENRICHMENT-GAP**: geo histórico Meta CAPI + view 0050 | `9a00f46` | edge `1b45681a` + migration 0050 |
 
 ### Replays executados (2026-05-09 ~07:00–07:11 UTC)
 
