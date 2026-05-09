@@ -681,6 +681,66 @@ describe('sendConversionUpload', () => {
 });
 
 // ---------------------------------------------------------------------------
+// T-14-009-FOLLOWUP — accessToken direto (sem refresh interno)
+// ---------------------------------------------------------------------------
+
+describe('sendConversionUpload — accessToken direto (T-14-009-FOLLOWUP)', () => {
+  const payload = mapEventToConversionUpload(makeEvent(), makeLaunchConfig());
+
+  it('quando accessToken é fornecido, NÃO chama refreshAccessToken (sem fetch ao oauth2 endpoint)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [{ conversionAction: CONVERSION_ACTION }] }),
+    });
+    const result = await sendConversionUpload(
+      payload,
+      {
+        accessToken: 'pre-resolved-token-XYZ',
+        developerToken: 'dev-001',
+        customerId: CUSTOMER_ID,
+      },
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(result.ok).toBe(true);
+    // Apenas 1 fetch — direto pro Google Ads, sem oauth2 refresh.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headers = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer pre-resolved-token-XYZ');
+  });
+
+  it('quando NEM accessToken NEM oauth fornecidos, retorna permanent_failure no_credentials', async () => {
+    const fetchMock = vi.fn();
+    const result = await sendConversionUpload(
+      payload,
+      {
+        developerToken: 'dev-001',
+        customerId: CUSTOMER_ID,
+      },
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe('permanent_failure');
+    if (result.kind !== 'permanent_failure') return;
+    expect(result.code).toBe('no_credentials');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('backward-compat: oauth-only ainda funciona (refresh interno)', async () => {
+    const fetchMock = mockFetchChain(OAUTH_SUCCESS, 200, {
+      results: [{ conversionAction: CONVERSION_ACTION }],
+    });
+    const result = await sendConversionUpload(
+      payload,
+      makeGoogleAdsConfig(),
+      fetchMock,
+    );
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T-4-005 — classifyGoogleAdsError
 // ---------------------------------------------------------------------------
 

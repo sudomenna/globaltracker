@@ -159,7 +159,7 @@ Tracking: criar issue futura quando o assunto voltar.
 
 - **T-13-013-FOLLOWUP** — RESOLVIDO (commit `22db9a9`, deploy `ed9a490d`, 2026-05-09). Helper `jsonb()` aplicado em ~58 writes em 12 arquivos do edge worker (4 raw-events-processors + dispatch.ts + index.ts + 6 webhook adapters). Adicionado `tests/helpers/jsonb-unwrap.ts` para mocks de teste extraírem JS value do SQL fragment. Pendente: backfill de rows antigas (events.user_data/custom_data/attribution/consent_snapshot ainda com jsonb_typeof='string' nas linhas pré-deploy — não bloqueia, queries SQL ad-hoc precisam usar `(col #>> '{}')::jsonb` pra essas).
 
-- **T-14-009-FOLLOWUP** — Refatorar [`apps/edge/src/dispatchers/google-ads-conversion/client.ts`](apps/edge/src/dispatchers/google-ads-conversion/client.ts) para aceitar `accessToken?` direto (alternativa ao tuple `oauth: OAuthConfig` que faz refresh interno). Hoje gera +200ms latency e `invalid_grant` cai em `server_error` em vez de `oauth_token_revoked`. `buildEnhancedConversionDispatchFn` já usa o padrão correto. Estimativa ~30min.
+- ~~**T-14-009-FOLLOWUP**~~ — RESOLVIDO 2026-05-09 (deploy `db4c5464`). `GoogleAdsConfig` aceita `accessToken?` direto; `buildGoogleAdsConversionDispatchFn` agora usa `getGoogleAdsAccessToken` (mesmo helper do Enhanced) — paridade entre os dois dispatchers Google Ads. `invalid_grant` agora classifica como `oauth_token_revoked` (skip permanente actionable) em vez de `server_error` (retry inútil). Backward-compat preservado: client ainda aceita `oauth?` legacy. 3 testes novos (50 total).
 
 ### Doc-sync pendentes (`SYNC-PENDING`)
 

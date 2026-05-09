@@ -17,10 +17,24 @@ import { type OAuthConfig, refreshAccessToken } from './oauth.js';
 // Types
 // ---------------------------------------------------------------------------
 
-/** Credentials and account settings for a Google Ads API call. */
+/**
+ * Credentials and account settings for a Google Ads API call.
+ *
+ * Token resolution: prefere `accessToken` direto (caller já refreshou via
+ * `getGoogleAdsAccessToken`); senão fallback para `oauth.refresh` interno
+ * (backward-compat, padrão antigo). T-14-009: caller deve usar accessToken
+ * direto — `oauth` interno mascara `invalid_grant` como `server_error`
+ * (retryable) em vez de `oauth_token_revoked` (skip permanente actionable).
+ */
 export interface GoogleAdsConfig {
-  /** OAuth credentials for token refresh. */
-  oauth: OAuthConfig;
+  /** Short-lived access token (preferido). T-14-009. */
+  accessToken?: string;
+  /**
+   * OAuth credentials para refresh interno (legacy fallback).
+   * Use `accessToken` direto sempre que possível para classificação
+   * correta de erros e -200ms de latência.
+   */
+  oauth?: OAuthConfig;
   /** Google Ads Developer Token (header: developer-token). */
   developerToken: string;
   /** Google Ads Customer ID (without dashes, e.g. "1234567890"). */
@@ -88,14 +102,30 @@ export async function sendConversionUpload(
   config: GoogleAdsConfig,
   fetchFn: typeof fetch = fetch,
 ): Promise<GoogleAdsResult> {
-  // Refresh OAuth access token (stateless — no cache in CF Workers).
+  // T-14-009: prefere accessToken direto (caller refresha via
+  // getGoogleAdsAccessToken — classifica invalid_grant como
+  // oauth_token_revoked corretamente). Fallback ao refresh interno
+  // mantém backward-compat para callers antigos.
   let accessToken: string;
-  try {
-    accessToken = await refreshAccessToken(config.oauth, fetchFn);
-  } catch (oauthError) {
-    // OAuth failure — treat as server error so caller may retry.
-    // BR-DISPATCH-003: transient auth errors → retrying
-    return { ok: false, kind: 'server_error', status: 0 };
+  if (config.accessToken) {
+    accessToken = config.accessToken;
+  } else if (config.oauth) {
+    try {
+      accessToken = await refreshAccessToken(config.oauth, fetchFn);
+    } catch (oauthError) {
+      // OAuth failure — treat as server error so caller may retry.
+      // BR-DISPATCH-003: transient auth errors → retrying.
+      // (Caller que usa accessToken direto NÃO atinge este path —
+      // recomenda-se migrar para getGoogleAdsAccessToken upstream.)
+      return { ok: false, kind: 'server_error', status: 0 };
+    }
+  } else {
+    // Sem credencial — config inválida.
+    return {
+      ok: false,
+      kind: 'permanent_failure',
+      code: 'no_credentials',
+    };
   }
 
   const url = `${GOOGLE_ADS_BASE_URL}/${GOOGLE_ADS_API_VERSION}/customers/${encodeURIComponent(config.customerId)}:uploadClickConversions`;

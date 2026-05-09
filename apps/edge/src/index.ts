@@ -65,7 +65,6 @@ import {
   sendEnhancedConversion,
 } from './dispatchers/google-enhanced-conversions/index.js';
 import { getGoogleAdsAccessToken } from './lib/google-ads-oauth.js';
-import { resolveGoogleAdsCredentials } from './lib/google-ads-config.js';
 import {
   checkEligibility,
   mapEventToMetaPayload,
@@ -1491,28 +1490,25 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
  *
  * The returned function:
  *   1. Loads the event from DB.
- *   2. Resolves per-workspace Google Ads credentials (refresh_token decrypted +
- *      developer_token + customer_id) via resolveGoogleAdsCredentials.
+ *   2. Resolves per-workspace Google Ads access_token via getGoogleAdsAccessToken
+ *      (T-14-009-FOLLOWUP, 2026-05-09): cached + invalid_grant aware. Substitui
+ *      o caminho legado via resolveGoogleAdsCredentials + refresh interno do
+ *      client.ts — agora classifica oauth_token_revoked corretamente (skip
+ *      permanente actionable) em vez de server_error (retry inútil).
  *   3. Builds a virtual launchConfig using job.destinationAccountId (customer_id)
  *      + job.destinationResourceId (conversion_action_id) — workspace-level
  *      mapping resolved at enqueue time (T-14-008).
  *   4. Checks eligibility (consent, click_id, conversion_action, customer_id).
  *   5. Maps to ConversionUploadPayload via mapEventToConversionUpload.
- *   6. Calls sendConversionUpload — the client refreshes access_token internally
- *      using the per-workspace refresh_token resolved in step 2.
+ *   6. Calls sendConversionUpload com `accessToken` direto (sem refresh interno).
  *
  * T-14-009 (Sprint 14, Onda 3) — migrated from env-var-based credentials
  *   (GOOGLE_ADS_CLIENT_ID/SECRET/REFRESH_TOKEN/DEVELOPER_TOKEN/CUSTOMER_ID) to
  *   per-workspace credentials persisted via OAuth flow (T-14-005).
- *
- * Trade-off [SYNC-PENDING — refactor sendConversionUpload to accept accessToken
- * directly]: the client at dispatchers/google-ads-conversion/client.ts still
- * requires `oauth: OAuthConfig` and refreshes internally. We feed it the
- * per-workspace OAuth tuple resolved here. The cache + invalid_grant detection
- * provided by getGoogleAdsAccessToken is therefore not used on this path —
- * a refresh failure surfaces as `server_error` (retry) instead of marking
- * `oauth_token_state='expired'`. Acceptable for now; revisit when client.ts
- * gains an `accessToken` injection mode.
+ * T-14-009-FOLLOWUP (2026-05-09) — token resolution via getGoogleAdsAccessToken
+ *   para paridade com buildEnhancedConversionDispatchFn. Reduz ~200ms de latência
+ *   por dispatch (cache de access_token entre invocações da mesma instância)
+ *   e habilita classificação correta de invalid_grant.
  *
  * BR-DISPATCH-002: processDispatchJob already holds the atomic lock before calling this.
  * BR-DISPATCH-004: checkEligibility provides mandatory skip_reason on ineligible.
@@ -1537,19 +1533,24 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       return { ok: false, kind: 'skip', reason: 'test_mode' };
     }
 
-    // 2. Resolve per-workspace Google Ads credentials.
-    // T-14-003/005: workspace_integrations.google_ads_refresh_token_enc +
-    //   workspaces.config.integrations.google_ads + workspaces.google_ads_developer_token.
-    // BR-PRIVACY-001: refreshToken/developerToken returned only for in-memory use here.
-    const credentials = await resolveGoogleAdsCredentials({
+    // 2. Resolve per-workspace Google Ads access_token (cached + invalid_grant aware).
+    // T-14-009-FOLLOWUP (2026-05-09): mesmo helper usado por
+    // buildEnhancedConversionDispatchFn — invalid_grant marca
+    // workspace.oauth_token_state='expired' e retorna oauth_token_revoked
+    // (skip permanente actionable) em vez de mascarar como server_error.
+    const tokenResult = await getGoogleAdsAccessToken({
       db,
       workspaceId: event.workspaceId,
       masterKeyRegistry: { 1: env.PII_MASTER_KEY_V1 ?? '' },
       envDeveloperToken: env.GOOGLE_ADS_DEVELOPER_TOKEN ?? null,
+      oauthClientId: env.GOOGLE_OAUTH_CLIENT_ID ?? env.GOOGLE_ADS_CLIENT_ID,
+      oauthClientSecret:
+        env.GOOGLE_OAUTH_CLIENT_SECRET ?? env.GOOGLE_ADS_CLIENT_SECRET,
+      fetchFn: fetch,
     });
 
-    if (!credentials.ok) {
-      switch (credentials.error.code) {
+    if (!tokenResult.ok) {
+      switch (tokenResult.error.code) {
         case 'not_configured':
           // BR-DISPATCH-004: skip_reason mandatory.
           return {
@@ -1558,16 +1559,16 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
             reason: 'integration_not_configured',
           };
         case 'invalid_state':
-          // OAuth flow not finished or token expired (state != 'connected').
+          // OAuth flow not finished (state != 'connected').
           return { ok: false, kind: 'skip', reason: 'oauth_pending' };
+        case 'oauth_token_revoked':
+          // T-14-009-FOLLOWUP: skip permanente — UI mostra "Reconectar Google Ads".
+          return { ok: false, kind: 'skip', reason: 'oauth_token_revoked' };
+        case 'oauth_refresh_failed':
         case 'decryption_failed':
         case 'db_error':
-          // Transient — retry later (could be transient KMS/DB hiccup).
-          return {
-            ok: false,
-            kind: 'server_error',
-            status: 0,
-          };
+          // Transient — retry later (KMS/DB/Google hiccup).
+          return { ok: false, kind: 'server_error', status: 0 };
       }
     }
 
@@ -1587,7 +1588,8 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
     } = {
       tracking: {
         google: {
-          ads_customer_id: job.destinationAccountId ?? credentials.value.customerId,
+          ads_customer_id:
+            job.destinationAccountId ?? tokenResult.value.customerId,
           conversion_actions: job.destinationResourceId
             ? { [event.eventName]: job.destinationResourceId }
             : {},
@@ -1633,23 +1635,15 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       virtualLaunchConfig,
     );
 
-    // 6. Send — sendConversionUpload refreshes access_token internally using
-    //    the per-workspace refresh_token. BR-PRIVACY-001: no logging of tokens.
-    const oauthConfig = {
-      clientId:
-        env.GOOGLE_OAUTH_CLIENT_ID ?? env.GOOGLE_ADS_CLIENT_ID,
-      clientSecret:
-        env.GOOGLE_OAUTH_CLIENT_SECRET ?? env.GOOGLE_ADS_CLIENT_SECRET,
-      refreshToken: credentials.value.refreshToken,
-    };
-
+    // 6. Send com accessToken direto (T-14-009-FOLLOWUP).
+    // BR-PRIVACY-001: no logging of tokens.
     const gadsResult = await sendConversionUpload(
       payload,
       {
-        oauth: oauthConfig,
-        developerToken: credentials.value.developerToken,
-        customerId: credentials.value.customerId,
-        managerCustomerId: credentials.value.loginCustomerId,
+        accessToken: tokenResult.value.accessToken,
+        developerToken: tokenResult.value.developerToken,
+        customerId: tokenResult.value.customerId,
+        managerCustomerId: tokenResult.value.loginCustomerId,
       },
       fetch,
     );
