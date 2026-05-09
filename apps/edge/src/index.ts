@@ -1470,10 +1470,15 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
       fetch,
     );
 
+    // T-DISPATCH-PAYLOAD-AUDIT: anexa request para gravação em
+    // dispatch_attempts.request_payload_sanitized (BR-DISPATCH-007).
+    // GA4 MP retorna 204 No Content em sucesso → response fica vazio
+    // (campo cliente não exposto pelo client). Em failure, GA4 não traz
+    // body útil — error_code já vai em dispatch_attempts.error_code.
     if (ga4Result.ok) {
-      return { ok: true };
+      return { ok: true, request: payload };
     }
-    return ga4Result;
+    return { ...ga4Result, request: payload };
   };
 }
 
@@ -1649,10 +1654,15 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       fetch,
     );
 
+    // T-DISPATCH-PAYLOAD-AUDIT: anexa request para gravação em
+    // dispatch_attempts.request_payload_sanitized (BR-DISPATCH-007).
+    // Google Ads response em sucesso é parseado pelo client mas não
+    // exposto na assinatura atual — incremental: passar response body
+    // requer estender GoogleAdsResult (similar ao MetaCapiResult).
     if (gadsResult.ok) {
-      return { ok: true };
+      return { ok: true, request: payload };
     }
-    return gadsResult;
+    return { ...gadsResult, request: payload };
   };
 }
 
@@ -1832,10 +1842,12 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       fetch,
     );
 
+    // T-DISPATCH-PAYLOAD-AUDIT: anexa request para gravação em
+    // dispatch_attempts.request_payload_sanitized (BR-DISPATCH-007).
     if (enhancedResult.ok) {
-      return { ok: true };
+      return { ok: true, request: payload };
     }
-    return enhancedResult;
+    return { ...enhancedResult, request: payload };
   };
 }
 

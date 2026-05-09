@@ -205,7 +205,7 @@ Adicionando um novo webhook inbound em `apps/edge/src/routes/webhooks/<provider>
 ## BR-DISPATCH-007 — `dispatch_attempts.{request,response}_payload_sanitized` reflete o que efetivamente saiu
 
 ### Status
-Stable (T-DISPATCH-PAYLOAD-AUDIT 2026-05-09).
+Stable (ADR-041, 2026-05-09).
 
 ### Enunciado
 Toda função `DispatchFn` (Meta CAPI, GA4 MP, Google Ads conversion, Google Ads enhanced, audience-sync) **DEVE** anexar `request` e `response` no `DispatchResult` retornado. `processDispatchJob` aplica `sanitizeDispatchPayload` (redact `client_ip_address`/`ip`) e grava em `dispatch_attempts.request_payload_sanitized` / `response_payload_sanitized`.
@@ -223,13 +223,13 @@ Antes desta BR, ambas colunas gravavam `{}` literal — auditoria de "o que efet
 
 | Dispatcher | Captura `request` | Captura `response` |
 |---|:---:|:---:|
-| `meta_capi` | ✅ | ✅ (incluindo error envelope em 4xx) |
-| `ga4_mp` | ⏳ pending | ⏳ pending |
-| `google_ads_conversion` | ⏳ pending | ⏳ pending |
-| `google_ads_enhanced` | ⏳ pending | ⏳ pending |
-| `audience_sync` | ⏳ pending | ⏳ pending |
+| `meta_capi` | ✅ | ✅ (success + error envelope em 4xx + best-effort em 5xx/429) |
+| `ga4_mp` | ✅ | n/a (GA4 retorna 204 No Content; client não expõe body) |
+| `google_ads_conversion` | ✅ | ⏳ requer extender `GoogleAdsResult` com `responseBody?` |
+| `google_ads_enhanced` | ✅ | ⏳ requer extender `EnhancedConversionResult` com `responseBody?` |
+| `audience_sync` | n/a — pipeline separado (`audience_sync_jobs` ≠ `dispatch_jobs`) | n/a |
 
-Incremental — adicionar `request: payload, response: <body>` ao `return` de cada `buildXxxDispatchFn` quando tocar.
+Incremental — para extender response de Google Ads conv/enhanced, seguir padrão Meta CAPI: estender o tipo `*Result` do client, capturar body em failure paths, propagar via `responseBody?` que o `buildXxxDispatchFn` desempacota.
 
 ### Critérios de aceite
 

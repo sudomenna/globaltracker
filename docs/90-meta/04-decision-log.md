@@ -1303,6 +1303,46 @@ MOD-EVENT (replay-protection), MOD-DISPATCH (idempotency), MOD-WORKSPACE (config
 
 ---
 
+## ADR-041 — `dispatch_attempts.{request,response}_payload_sanitized` carrega payload real (2026-05-09)
+
+### Status
+aceito.
+
+### Contexto
+2026-05-09, investigação do lead `75b3ed42` (Pedro): typo `.con` foi enviado pra Meta CAPI no primeiro Lead event, mas a `v_meta_capi_health` mostra `match_score=8` baseado no estado ATUAL do `lead.email_hash_external` — que foi sobrescrito pelo segundo submit corrigindo pra `.com`. **Sem visibilidade do payload realmente enviado, não há como auditar match quality histórico nem investigar regressão de EMQ ad-hoc.** As colunas `dispatch_attempts.request_payload_sanitized` e `response_payload_sanitized` (criadas nas migrations originais para esse propósito) gravavam `{}` literal em todos os 6 call sites de `apps/edge/src/lib/dispatch.ts` desde o início.
+
+### Decisão
+**Toda função `DispatchFn` anexa `request` (e idealmente `response`) ao `DispatchResult` retornado.** `processDispatchJob` aplica sanitização (redact `client_ip_address`/`ip`) e grava nos `dispatch_attempts`.
+
+Convenção:
+1. `DispatchResult` carrega `request?: unknown` e `response?: unknown` opcionais (`DispatchPayloadCapture` aplicado a todos variants).
+2. Cada `buildXxxDispatchFn` em `apps/edge/src/index.ts` retorna `{ ok: true, request: payload, response: <body> }` no caminho de sucesso e `{ ...result, request: payload, response: <body> }` no caminho de falha.
+3. `processDispatchJob` chama `sanitizeDispatchPayload` em [`apps/edge/src/lib/dispatch-payload-sanitize.ts`](../../apps/edge/src/lib/dispatch-payload-sanitize.ts) antes do INSERT — defesa em profundidade caso o dispatcher esqueça.
+4. **PII redact obrigatório:** `client_ip_address`/`ip` em string não-vazia → `'[REDACTED]'`. Hashes (`em`/`ph`/`fn`/`ln`/`ct`/`st`/`zp`/`country`) preservados (já são SHA-256 — não-PII por design CAPI/Conversions). User-Agent preservado (não identifica unicamente per se; útil para auditoria de match quality).
+5. Quando o dispatcher não anexar (rollout incremental), grava `{}` legacy.
+
+### Alternativas consideradas
+
+- **Salvar payload em claro (sem redact)** — simpler implementation, mas viola BR-PRIVACY-001 e LGPD Art. 46 (dados pessoais devem ser protegidos por medida técnica adequada). IP é PII pseudonimizada e duplicar exposição em outra coluna é mais surface area sem ganho real (debug não precisa de IP literal — basta saber se estava presente).
+- **Enviar payload ao request_log de outra natureza** (ex.: KV ou bucket R2) — mais estado distribuído, complica erasure (LGPD direito ao esquecimento exige varrer toda fonte de dados pessoais). Coluna jsonb na mesma row de `dispatch_attempts` é alinhada com escopo de erasure.
+- **Capturar via fetch interceptor / middleware no client HTTP** — quebra assertividade do "que foi enviado depois do mapper" (interceptor pega body raw, não a estrutura intermediária do dispatcher). Padrão escolhido (anexar no `DispatchResult`) pega a estrutura JS antes da serialização.
+- **Truncar payloads grandes** — cogitado mas não necessário no MVP: payloads CAPI/GA4/Google Ads são <5KB, KB único de overhead por attempt. Reavaliar se aparecerem dispatchers com payloads grandes (ex.: bulk customer match com 10k+ records).
+
+### Consequências
+
+- (+) Auditoria real do que saiu pra Meta/Google/GA4 — match score regressions investigáveis.
+- (+) Captura de error envelopes (Meta 4xx) habilita análise de causa-raiz sem precisar de tail real-time.
+- (+) Padrão consistente entre dispatchers — onboarding novo dev lê 1 ADR + 1 BR e replica.
+- (+) Defesa em profundidade: mesmo dispatcher esquecendo de redactar, sanitize layer captura.
+- (–) +1KB de storage médio por attempt (ainda dentro de margem de Postgres jsonb).
+- (–) Adoção incremental: atualmente só Meta CAPI tem response capture completa; GA4/Google Ads têm só request. Tabela de status em BR-DISPATCH-007.
+- (–) Padrão obriga disciplina: code review precisa rejeitar `return { ok: true }` sem `request`.
+
+### Impacta
+MOD-DISPATCH (orchestrator), BR-DISPATCH-007 (nova), [`apps/edge/src/lib/dispatch.ts`](../../apps/edge/src/lib/dispatch.ts) (`DispatchResult` shape mudou — variants ganham `request?`/`response?`), [`apps/edge/src/lib/dispatch-payload-sanitize.ts`](../../apps/edge/src/lib/dispatch-payload-sanitize.ts) (novo helper), [`apps/edge/src/dispatchers/meta-capi/client.ts`](../../apps/edge/src/dispatchers/meta-capi/client.ts) (`MetaCapiResult` ganha `responseBody?` em failure variants), [`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (4 dispatchers tocados: meta_capi, ga4_mp, google_ads_conversion, google_ads_enhanced).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
