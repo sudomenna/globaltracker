@@ -21,11 +21,26 @@ binding = "QUEUE_DISPATCH"
 queue = "gt-events"
 max_batch_size = 100
 max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "gt-events-dlq"
+
+[[queues.consumers]]
+queue = "gt-events-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 1
 
 [[queues.consumers]]
 queue = "gt-dispatch"
 max_batch_size = 10
 max_batch_timeout = 5
+
+[triggers]
+crons = [
+  "*/10 * * * *",   # raw_events outbox poller — re-queues events stuck in pending
+  "30 17 * * *",    # cost ingestor
+  "0 1 * * *",      # audience sync
+]
 
 [vars]
 ENVIRONMENT = "development"

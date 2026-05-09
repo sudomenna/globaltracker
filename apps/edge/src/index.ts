@@ -38,6 +38,7 @@ import {
   leads,
   pages,
   pageTokens,
+  rawEvents,
   workspaces,
 } from '@globaltracker/db';
 import { and, desc, eq, lt, ne, sql } from 'drizzle-orm';
@@ -717,6 +718,42 @@ async function queueHandler(
   env: Bindings,
 ): Promise<void> {
   const db = createDb(env.DATABASE_URL ?? env.HYPERDRIVE.connectionString);
+
+  // gt-events-dlq: messages that exhausted max_retries on gt-events.
+  // Mark the raw_event as 'failed' with the retry count so it surfaces in
+  // observability and stops being re-queued by the outbox poller cron.
+  if (batch.queue === 'gt-events-dlq') {
+    for (const message of batch.messages) {
+      const body = message.body as EventsQueueMessage;
+      const rawEventId = body.raw_event_id;
+      try {
+        if (rawEventId) {
+          await db
+            .update(rawEvents)
+            .set({
+              processingStatus: 'failed',
+              processedAt: new Date(),
+              processingError: `dlq: max_retries exhausted on gt-events (attempts=${message.attempts ?? 'unknown'})`,
+            })
+            .where(eq(rawEvents.id, rawEventId));
+        }
+        safeLog('error', {
+          event: 'dlq_event_marked_failed',
+          raw_event_id: rawEventId,
+          attempts: message.attempts,
+        });
+        message.ack();
+      } catch (err) {
+        safeLog('error', {
+          event: 'dlq_handler_error',
+          raw_event_id: rawEventId,
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+        message.ack();
+      }
+    }
+    return;
+  }
 
   for (const message of batch.messages) {
     const body = message.body;
@@ -1985,6 +2022,80 @@ async function scheduledHandler(
   // ---------------------------------------------------------------------------
   if (cron === '0 1 * * *') {
     await runAudienceSync({}, db);
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // */10 * * * * — outbox poller: re-queues raw_events stuck in pending
+  //
+  // Covers two failure modes:
+  //   a) QUEUE_EVENTS.send() threw at ingestion time (message never enqueued)
+  //   b) processRawEvent failed and queue exhausted its retries (message dropped)
+  //
+  // Window: events pending between 10 min and 24 h. Beyond 24 h the event is
+  // considered permanently broken — it surfaces in the stuck_pending_events log
+  // for manual investigation instead of being retried indefinitely.
+  // ---------------------------------------------------------------------------
+  if (cron === '*/10 * * * *') {
+    const stuck = await db
+      .select({
+        id: rawEvents.id,
+        workspaceId: rawEvents.workspaceId,
+        pageId: rawEvents.pageId,
+        receivedAt: rawEvents.receivedAt,
+      })
+      .from(rawEvents)
+      .where(
+        and(
+          eq(rawEvents.processingStatus, 'pending'),
+          lt(rawEvents.receivedAt, sql`now() - interval '10 minutes'`),
+          lt(sql`now() - interval '24 hours'`, rawEvents.receivedAt),
+        ),
+      )
+      .limit(500);
+
+    let requeued = 0;
+    let failed = 0;
+    for (const ev of stuck) {
+      try {
+        await env.QUEUE_EVENTS.send({
+          raw_event_id: ev.id,
+          workspace_id: ev.workspaceId,
+          page_id: ev.pageId,
+          received_at: ev.receivedAt.toISOString(),
+        });
+        requeued++;
+      } catch {
+        failed++;
+      }
+    }
+
+    safeLog('info', {
+      event: 'outbox_poll_completed',
+      stuck_total: stuck.length,
+      requeued,
+      enqueue_failed: failed,
+    });
+
+    const permanentlyStuck = await db
+      .select({ id: rawEvents.id, receivedAt: rawEvents.receivedAt })
+      .from(rawEvents)
+      .where(
+        and(
+          eq(rawEvents.processingStatus, 'pending'),
+          lt(rawEvents.receivedAt, sql`now() - interval '24 hours'`),
+        ),
+      )
+      .limit(50);
+
+    if (permanentlyStuck.length > 0) {
+      safeLog('warn', {
+        event: 'stuck_pending_events',
+        count: permanentlyStuck.length,
+        oldest_received_at: permanentlyStuck[0]?.receivedAt,
+      });
+    }
+
     return;
   }
 

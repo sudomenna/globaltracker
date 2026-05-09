@@ -643,6 +643,8 @@ export function createEventsRoute(
         event: 'queue_events_enqueue_failed',
         request_id: requestId,
         workspace_id: workspaceId,
+        raw_event_id: rawEventId,
+        event_name: payload.event_name,
         error_type: err instanceof Error ? err.constructor.name : 'unknown',
       });
     }

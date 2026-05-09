@@ -9,7 +9,8 @@
     "typecheck": "pnpm -r run --if-present typecheck",
     "lint": "biome check .",
     "test": "vitest run",
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "deploy:edge": "set -a && . ./.env.local && set +a && cd apps/edge && npx wrangler@4 deploy"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
