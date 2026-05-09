@@ -20,8 +20,8 @@ Dispatch out de eventos de tracking (PageView, Lead, Purchase, custom) para Meta
 | `events.visitor_id` | `user_data.external_id` | Cookie `__fvid` (UUID v4 anônimo). Enviado em **plano** — não SHA-256. Meta hashea internamente. Mapeia direto de `events.visitor_id`. Permite Custom Audience de visitantes anônimos e cross-reference IP+UA → login Facebook do mesmo device (ADR-031, Sprint 16). |
 | `events.user_data.client_ip_address` | `user_data.client_ip_address` | Não hashar. Persistido em `events.userData` JSONB pela rota `/v1/events` (ADR-031). Required para website events |
 | `events.user_data.client_user_agent` | `user_data.client_user_agent` | Não hashar. Persistido idem. Required |
-| `events.user_data.fbc` | `user_data.fbc` | Não hashar |
-| `events.user_data.fbp` | `user_data.fbp` | Não hashar |
+| `events.user_data.fbc` | `user_data.fbc` | Não hashar. Origem dual: (a) cookie `_fbc` lido pelo tracker.js (Pixel SDK escreve com underscore — ver [`docs/20-domain/13-mod-tracker.md`](../20-domain/13-mod-tracker.md) §7.6), (b) fallback sintetizado pelo tracker via `buildFbcFromFbclid(fbclid)` quando o cookie está ausente, (c) enriquecimento server-side via `lookupHistoricalBrowserSignals` para eventos sem browser context (webhooks) — ver "Enriquecimento server-side" abaixo. |
+| `events.user_data.fbp` | `user_data.fbp` | Não hashar. Origem dual: (a) cookie `_fbp` lido pelo tracker.js, (b) enriquecimento server-side a partir do histórico de eventos do mesmo lead — ver "Enriquecimento server-side" abaixo. |
 | `events.user_data.geo_city` | `user_data.ct` | SHA-256 puro (`hashPiiExternal`) com normalização `lowercase().trim()`. Hash em `buildMetaCapiDispatchFn` antes do mapper puro (ADR-033, Sprint 16). Origem: `request.cf.city` (browser) ou `payload.contact.address.city` (Guru). |
 | `events.user_data.geo_region_code` | `user_data.st` | SHA-256 puro com `lowercase()` (regionCode 2-letter). Idem origem. |
 | `events.user_data.geo_postal_code` | `user_data.zp` | SHA-256 puro com `replace(/\D/g, '')` (dígitos only). Idem origem. |
@@ -40,6 +40,25 @@ Fluxo end-to-end:
 3. `apps/edge/src/dispatchers/meta-capi/mapper.ts` lê `event.visitor_id` e atribui a `userData.external_id` em plano (ADR-031). Meta hashea internamente.
 
 Quem inspecionar `events.user_data` no DB **não vai encontrar** o visitor_id ali — `UserDataSchema` só aceita `_ga`, `_gcl_au`, `fbc`, `fbp`, `client_ip_address`, `client_user_agent` (mais geo computed pelo edge); qualquer outro campo é stripado por INV-EVENT-004. Para auditar `external_id` use `SELECT visitor_id FROM events`. Detalhes de storage em [`docs/20-domain/04-mod-identity.md`](../20-domain/04-mod-identity.md) §7 ("Storage de `visitor_id`").
+
+### Enriquecimento server-side de `fbc` / `fbp` (webhooks → herdam do histórico do lead)
+
+**Problema.** Eventos vindos de webhooks (Guru Purchase, SendFlow Contact, Stripe, Hotmart, Kiwify, etc.) chegam com `events.user_data = {}` porque o request server-side não tem browser context: nenhum cookie `_fbc`/`_fbp`, nenhuma URL com `?fbclid=`. Sem fallback, o evento Purchase — que carrega o sinal monetário mais valioso — vai para o Meta CAPI sem `fbc`, e a atribuição do clique se perde.
+
+**Solução.** O dispatcher `meta_capi` (orchestrator em `apps/edge/src/index.ts`, função `buildMetaCapiDispatchFn`) faz, **antes** de chamar `mapEventToMetaPayload`:
+
+1. Verifica se o evento corrente já tem `fbc` e `fbp` em `event.user_data`.
+2. Se algum dos dois está faltando **e** o evento tem `lead_id` resolvido, chama `lookupHistoricalBrowserSignals(db, workspace_id, lead_id)`:
+   - `SELECT events.user_data FROM events WHERE workspace_id = $1 AND lead_id = $2 AND (user_data->>'fbc' IS NOT NULL OR user_data->>'fbp' IS NOT NULL) ORDER BY received_at DESC LIMIT 10`.
+   - Para cada linha (mais recente → mais antiga), pega o primeiro `fbc` não-null e o primeiro `fbp` não-null **independentemente** (podem vir de eventos diferentes).
+3. Mescla os valores enriquecidos em `user_data` antes do mapper. Cookie real do evento corrente sempre vence sobre o histórico — só preenche o que está faltando.
+4. Quando enriquece, loga `event: 'meta_capi_browser_signals_enriched'` com flags booleanas `enriched_fbc` / `enriched_fbp` (sem leak do valor — apenas a presença).
+
+**Performance.** 1 SELECT por dispatch, indexado em `(workspace_id, lead_id)`. Skipado integralmente quando o evento já tem ambos os sinais (todos os eventos vindos do tracker.js) ou quando o lead não foi resolvido. `LIMIT 10` cobre a janela típica — o evento canônico (PageView com `utm_source=meta`) costuma estar entre os 2-3 mais recentes.
+
+**Implicação para novos webhook adapters.** Quem está adicionando uma nova plataforma de webhook em `apps/edge/src/routes/webhooks/<provider>.ts` **não precisa** se preocupar em capturar `fbc`/`fbp` no payload da plataforma — basta resolver o lead via aliases (email/phone/order_id), e o orchestrator faz o enrichment automaticamente no momento do dispatch. Ver BR-DISPATCH-006.
+
+**Implicação para análises de match quality.** O sucesso do enrichment depende de o lead ter passado por **algum** evento do tracker.js antes do webhook (PageView na LP, Lead no form, etc.). Lead que entra direto via webhook (ex: importação manual, lead que veio de fora do funil) não tem histórico para herdar — esses casos seguirão sem `fbc` e o Meta vai flaggar normalmente.
 
 ## Idempotência
 

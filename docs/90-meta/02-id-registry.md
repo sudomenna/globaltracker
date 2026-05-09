@@ -66,7 +66,7 @@ Definidas em `50-business-rules/` (Fase 5).
 | BR-PRIVACY | ~5 | planned |
 | BR-CONSENT | ~4 | planned |
 | BR-EVENT | ~6 | planned |
-| BR-DISPATCH | ~5 | planned |
+| BR-DISPATCH | 6 (001–006) | active |
 | BR-ATTRIBUTION | ~3 | planned |
 | BR-AUDIENCE | ~4 | planned |
 | BR-COST | ~3 | planned |

@@ -83,6 +83,29 @@
 - **INV-DISPATCH-006 — Eventos sem consent exigido pelo destino geram job `skipped` com `skip_reason='consent_denied'`, não `failed`.** BR-CONSENT-* + BR-DISPATCH-*. Testável.
 - **INV-DISPATCH-007 — Backoff respeita jitter aleatório de ±20% sobre `2^attempt_count` segundos.** Testável (mock random).
 - **INV-DISPATCH-008 — Lock atômico antes de processar — duas mensagens da queue para o mesmo job não geram dois requests à plataforma.** Cloudflare Queues at-least-once + lock por `dispatch_job.status='processing'`. Testável.
+- **INV-DISPATCH-009 — Dispatchers que aceitam sinais de browser (Meta CAPI) enriquecem `fbc`/`fbp` faltantes a partir do histórico do lead antes de mapear o payload.** BR-DISPATCH-006. Implementado em `lookupHistoricalBrowserSignals(db, workspace_id, lead_id)` chamado por `buildMetaCapiDispatchFn`. Cookie real do evento corrente sempre vence sobre o herdado. Testável.
+
+### Fluxo de dispatch — passo de enrichment server-side
+
+Para destinos que aceitam sinais de browser do Meta (atualmente: `meta_capi`), o pipeline executa **antes** de chamar o mapper do destino:
+
+```
+[lock atômico pending→processing]
+  → [eligibility check]
+  → [enrichment de user_data a partir do histórico do lead]   ← BR-DISPATCH-006
+      • só roda se evento corrente está sem fbc OU sem fbp
+      • só roda se há lead_id resolvido
+      • SELECT events.user_data WHERE workspace_id=$1 AND lead_id=$2
+        AND (user_data->>'fbc' IS NOT NULL OR user_data->>'fbp' IS NOT NULL)
+        ORDER BY received_at DESC LIMIT 10
+      • mescla fbc/fbp herdados em user_data (nunca sobrescreve presentes)
+      • loga 'meta_capi_browser_signals_enriched' com flags booleanas
+  → [mapper puro do destino: mapEventToMetaPayload(...)]
+  → [client HTTP: sendToMetaCapi(...)]
+  → [registra DispatchAttempt + transição de status]
+```
+
+Detalhes do enrichment e implicações para novos webhook adapters em [`docs/40-integrations/01-meta-capi.md`](../40-integrations/01-meta-capi.md) "Enriquecimento server-side de fbc/fbp".
 
 ## 8. BRs relacionadas
 
@@ -107,6 +130,7 @@ Todas as funções recebem `db: Db` como último parâmetro (injeção de depend
 - `createSkippedJob(input: DispatchJobInput, skipReason: string, db: Db): Promise<Result<DispatchJob, {code: 'empty_skip_reason'} | {code: 'conflict_existing'}>>` — cria job diretamente em estado `skipped`; valida `skipReason` não-vazio (INV-DISPATCH-004).
 - `computeIdempotencyKey(params: IdempotencyKeyParams): Promise<string>` — função pura; SHA-256 dos 5 campos canônicos (INV-DISPATCH-002).
 - `computeBackoff(attempt: number, random?: () => number): number` — função pura; retorna delay em ms com ±20% jitter (INV-DISPATCH-007).
+- `lookupHistoricalBrowserSignals(db: Db, workspaceId: string, leadId: string): Promise<{ fbc: string | null, fbp: string | null }>` — em `apps/edge/src/index.ts`; busca o `fbc` mais recente e o `fbp` mais recente nos últimos 10 eventos do lead (workspace-scoped, ORDER BY received_at DESC). Usado pelo dispatcher Meta CAPI para implementar BR-DISPATCH-006 / INV-DISPATCH-009.
 
 ## 11. Eventos de timeline emitidos
 
@@ -124,6 +148,7 @@ Todas as funções recebem `db: Db` como último parâmetro (injeção de depend
 - `apps/edge/src/lib/dispatch.ts` (orquestração comum)
 - `apps/edge/src/lib/idempotency.ts`
 - `apps/edge/src/dispatchers/index.ts` (registry de dispatchers)
+- `apps/edge/src/index.ts` (orchestrator: `buildMetaCapiDispatchFn`, `lookupHistoricalBrowserSignals` — INV-DISPATCH-009 / BR-DISPATCH-006)
 - `tests/unit/dispatch/**`
 - `tests/integration/dispatch/**`
 

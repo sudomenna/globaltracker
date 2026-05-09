@@ -13,7 +13,7 @@
 - Inicialização: lê data attrs (`data-site-token`, `data-launch-public-id`, `data-page-public-id`); busca `/v1/config`; captura UTMs/click IDs/cookies de plataforma.
 - API pública: `Funil.track()`, `Funil.identify()`, `Funil.decorate()`, `Funil.page()`, `Funil.logout()`.
 - Cookies próprios: `__fvid` (anônimo, Fase 3), `__ftk` (lead_token, Fase 2).
-- Captura de cookies de plataforma: `_gcl_au`, `_ga`, `fbc`, `fbp`.
+- Captura de cookies de plataforma: `_gcl_au`, `_ga`, `_fbc`, `_fbp` (ver §7.6 para o mapeamento de chaves canônicas).
 - Pixel policy enforcement (`server_only` / `browser_and_server_managed` / `coexist_with_existing_pixel`).
 - Gestão de attribution params em `localStorage` para replay em `/v1/lead`.
 
@@ -31,7 +31,7 @@
 - `__fvid` (cookie)
 - `__ftk` (cookie, lead_token)
 - `attributionParams` (localStorage — utm_*, gclid, fbclid, etc.)
-- `platformCookies` (in-memory após captura — `_gcl_au`, `_ga`, `fbc`, `fbp`)
+- `platformCookies` (in-memory após captura — `_gcl_au`, `_ga`, `fbc`, `fbp` — ver §7.6 para o mapeamento de chaves do browser)
 - `consent` (in-memory após captura)
 
 ## 4. Relações (lógicas)
@@ -163,6 +163,33 @@ Os 3 scripts no head devem carregar **nesta ordem**:
 
 Se o site usa cache plugin (WP Rocket, LiteSpeed, etc.), os 3 scripts (mais o cookie `gtag` inline) devem ser excluídos das listas de minify, defer e delay. Ver [`docs/70-ux/13-tutorial-instalacao-tracking.md`](../70-ux/13-tutorial-instalacao-tracking.md) §7.
 
+## 7.6 Captura de cookies Meta (`_fbc` / `_fbp`) e fallback via `fbclid`
+
+### Nomes de cookie no browser vs. chaves canônicas no payload
+
+A Meta Pixel SDK escreve os cookies no browser com prefixo underscore:
+
+- Cookie no browser: `_fbc` (click ID) e `_fbp` (browser ID).
+- Chave canônica no payload `/v1/events` (CAPI naming): `fbc` e `fbp` (sem underscore).
+
+`capturePlatformCookies` em `apps/tracker/src/cookies.ts` faz a tradução: lê `document.cookie._fbc` / `document.cookie._fbp` e expõe ao restante do tracker sob as chaves `fbc` / `fbp`. **Não inverter** essa convenção — a constante `PLATFORM_COOKIE_NAMES` (= `['_gcl_au', '_ga', 'fbc', 'fbp']`) descreve as chaves de saída, não os nomes lidos no `document.cookie`.
+
+> Bug histórico (commit `748f32e`): durante meses o tracker leu `readCookie('fbc')` / `readCookie('fbp')` (sem underscore) e encontrou sempre `null`, mesmo com Pixel ativo na página. 0 de 713 eventos do workspace alvo carregavam fbc/fbp. Match quality despencou e o Diagnóstico da Meta passou a flaggar "Enviar Identificação do clique da Meta". Qualquer mudança nessa função deve preservar `readCookie('_fbc')` / `readCookie('_fbp')`.
+
+### Fallback `buildFbcFromFbclid()` — sintetiza `_fbc` quando o Pixel não está carregado
+
+Cenário comum: lead chega via Meta Ads em LP que **não** tem o Meta Pixel SDK instalado (ou que bloqueou o Pixel por consent / cache plugin). A URL traz `?fbclid=…`, mas o cookie `_fbc` nunca é escrito porque ninguém o escreveu — e sem `_fbc` o sinal de clique se perde antes de chegar ao backend.
+
+`buildFbcFromFbclid(fbclid)` em `cookies.ts` sintetiza o valor canônico do `_fbc`:
+
+```
+fb.{subdomain_index}.{timestamp_ms}.{fbclid}
+```
+
+com `subdomain_index = 1` (mesmo valor que o Pixel SDK escreve em uso first-party / domínio raiz). O tracker (`apps/tracker/src/index.ts`, função `buildUserDataRecord(cookies, attribution)`) aplica o fallback **apenas** quando `cookies.fbc` é `null`; cookie real do Pixel sempre vence sobre o sintetizado.
+
+A síntese acontece **no client**, não no server — o `timestamp_ms` reflete o momento em que o lead carregou a página, não o momento em que o backend processou o evento (esse seria errado para a janela de atribuição da Meta).
+
 ## 8. BRs relacionadas
 
 - `BR-TRACKER-001` — Funil.identify exige lead_token, não lead_id em claro.
@@ -211,7 +238,7 @@ Se o site usa cache plugin (WP Rocket, LiteSpeed, etc.), os 3 scripts (mais o co
 
 ## 14. Test harness
 
-- `tests/unit/tracker/cookies.test.ts` — INV-TRACKER-003, INV-TRACKER-004.
+- `tests/unit/tracker/cookies.test.ts` — INV-TRACKER-003, INV-TRACKER-004, mapeamento `_fbc`/`_fbp` → `fbc`/`fbp` e fallback `buildFbcFromFbclid` (§7.6).
 - `tests/unit/tracker/decorate.test.ts` — propagação de UTMs + lead_public_id em links.
 - `tests/unit/tracker/pixel-coexist.test.ts` — INV-TRACKER-006 (eventID compartilhado).
 - `tests/integration/tracker/identify-only-token.test.ts` — INV-TRACKER-008.
