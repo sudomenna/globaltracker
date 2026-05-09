@@ -92,6 +92,39 @@ if (!workspace) return c.json({ error: 'unauthorized' }, 400);
 }
 ```
 
+### Confiabilidade de timestamps — payload moderno (`dates`)
+
+Webhooks recentes do Guru aninham timestamps em um sub-objeto `dates`:
+
+```json
+"dates": {
+  "created_at":   "2026-05-09T17:59:21Z",
+  "ordered_at":   "2026-05-09T20:58:17Z",
+  "confirmed_at": null,
+  "canceled_at":  "2026-05-09T21:26:55Z",
+  "updated_at":   "2026-05-09T18:26:55Z",
+  ...
+}
+```
+
+**Quirk crítico (descoberto 2026-05-09)**: o Guru envia parte dos campos em horário de Brasília (UTC-3) **mas com sufixo `Z` falso**, fingindo UTC. Outros campos chegam em UTC real. Cadeia de confiabilidade observada:
+
+| Campo | Timezone real | Status |
+|---|---|---|
+| `confirmed_at` (top-level e `dates.*`) | UTC ✓ | Confiável quando presente (transação aprovada) |
+| `dates.ordered_at` | UTC ✓ | Confiável; presente desde a criação do pedido |
+| `dates.canceled_at` | UTC ✓ | Confiável quando presente |
+| `created_at` (top-level e `dates.*`) | BRT com Z falso ❌ | **Não usar como autoridade** — defasado em 3h |
+| `dates.updated_at` | BRT com Z falso ❌ | Não usar como autoridade |
+
+**Cadeia de fallback canônica** para derivar `event_time` (implementada em `apps/edge/src/lib/guru-raw-events-processor.ts`):
+
+```
+confirmed_at → ordered_at → created_at (last resort)
+```
+
+`created_at` permanece como último fallback para fixtures legadas e payloads que não tragam `ordered_at`, mas em produção raramente é usado para eventos válidos.
+
 ## Estrutura do payload — `webhook_type: "subscription"`
 
 ```json
