@@ -870,7 +870,17 @@ async function lookupHistoricalBrowserSignals(
   db: Db,
   workspaceId: string,
   leadId: string,
-): Promise<{ fbc: string | null; fbp: string | null }> {
+): Promise<{
+  fbc: string | null;
+  fbp: string | null;
+  ip: string | null;
+  ua: string | null;
+}> {
+  // Webhook Purchases (Guru/OnProfit/Hotmart/etc) não carregam fbc/fbp/IP/UA
+  // no payload. Buscamos esses sinais nos events anteriores do mesmo lead
+  // (PageView/Lead/click_*) capturados pelo tracker.js. Isso eleva muito o
+  // EMQ do Meta CAPI: sem esses sinais, advanced match cai pra 5/10.
+  //
   // T-13-013: rows pré-deploy ed9a490d têm user_data armazenado como
   // jsonb-string (jsonb_typeof='string') por causa do bug do driver Hyperdrive.
   // O filtro `user_data->>'fbc'` direto NÃO matcha nessas rows porque o operador
@@ -884,7 +894,12 @@ async function lookupHistoricalBrowserSignals(
       and(
         eq(events.workspaceId, workspaceId),
         eq(events.leadId, leadId),
-        sql`((${events.userData} #>> '{}')::jsonb->>'fbc' IS NOT NULL OR (${events.userData} #>> '{}')::jsonb->>'fbp' IS NOT NULL)`,
+        sql`(
+          (${events.userData} #>> '{}')::jsonb->>'fbc' IS NOT NULL OR
+          (${events.userData} #>> '{}')::jsonb->>'fbp' IS NOT NULL OR
+          (${events.userData} #>> '{}')::jsonb->>'client_ip_address' IS NOT NULL OR
+          (${events.userData} #>> '{}')::jsonb->>'client_user_agent' IS NOT NULL
+        )`,
       ),
     )
     .orderBy(desc(events.receivedAt))
@@ -892,6 +907,8 @@ async function lookupHistoricalBrowserSignals(
 
   let fbc: string | null = null;
   let fbp: string | null = null;
+  let ip: string | null = null;
+  let ua: string | null = null;
   for (const row of rows) {
     // T-13-013: row.userData pode chegar como string (rows pré-deploy) ou
     // object (rows pós-jsonb-fix). Parse defensivo aceita os dois.
@@ -907,9 +924,23 @@ async function lookupHistoricalBrowserSignals(
     }
     if (!fbc && typeof ud.fbc === 'string' && ud.fbc.length > 0) fbc = ud.fbc;
     if (!fbp && typeof ud.fbp === 'string' && ud.fbp.length > 0) fbp = ud.fbp;
-    if (fbc && fbp) break;
+    if (
+      !ip &&
+      typeof ud.client_ip_address === 'string' &&
+      ud.client_ip_address.length > 0
+    ) {
+      ip = ud.client_ip_address;
+    }
+    if (
+      !ua &&
+      typeof ud.client_user_agent === 'string' &&
+      ud.client_user_agent.length > 0
+    ) {
+      ua = ud.client_user_agent;
+    }
+    if (fbc && fbp && ip && ua) break;
   }
-  return { fbc, fbp };
+  return { fbc, fbp, ip, ua };
 }
 
 // ---------------------------------------------------------------------------
@@ -967,14 +998,31 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       launchConfig = (launch?.config as typeof launchConfig) ?? null;
     }
 
+    // T-13-013: rows pré-deploy ed9a490d têm event.userData / event.consentSnapshot
+    // como string (jsonb-string bug). Parse defensivo aceita string OU object.
+    const parseUd = (raw: unknown): Record<string, unknown> => {
+      if (raw == null) return {};
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      }
+      if (typeof raw === 'object') return raw as Record<string, unknown>;
+      return {};
+    };
+    const parsedConsent = parseUd(event.consentSnapshot);
+    const parsedUserData = parseUd(event.userData);
+
     // 4. Check eligibility — pure function, no I/O.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
     const eligibility = checkEligibility(
       {
-        consent_snapshot: event.consentSnapshot as Parameters<
+        consent_snapshot: parsedConsent as Parameters<
           typeof checkEligibility
         >[0]['consent_snapshot'],
-        user_data: event.userData as Parameters<
+        user_data: parsedUserData as Parameters<
           typeof checkEligibility
         >[0]['user_data'],
         // BR-CONSENT-003: visitor_id (cookie __fvid) conta como sinal
@@ -1003,16 +1051,23 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       }
     }
 
-    // Enrich missing fbc/fbp from lead's event history. Webhook events (Guru
-    // Purchase, SendFlow, etc) have no browser context — fall back to signals
-    // captured by tracker.js on prior PageView/Lead events of the same lead.
-    // Skipped when both are already present (tracker events) or when no lead.
-    const rawUserData = (event.userData ?? {}) as Record<string, unknown>;
+    // Enrich missing fbc/fbp/ip/ua from lead's event history. Webhook events
+    // (Guru Purchase, SendFlow, etc) have no browser context — fall back to
+    // signals captured by tracker.js on prior PageView/Lead events of the same
+    // lead. Skipped when all are already present (tracker events) or no lead.
+    const rawUserData = parsedUserData;
     const hasCurrentFbc = typeof rawUserData.fbc === 'string' && rawUserData.fbc.length > 0;
     const hasCurrentFbp = typeof rawUserData.fbp === 'string' && rawUserData.fbp.length > 0;
+    const hasCurrentIp = typeof rawUserData.client_ip_address === 'string' && rawUserData.client_ip_address.length > 0;
+    const hasCurrentUa = typeof rawUserData.client_user_agent === 'string' && rawUserData.client_user_agent.length > 0;
     let enrichedFbc: string | null = null;
     let enrichedFbp: string | null = null;
-    if (lead && (!hasCurrentFbc || !hasCurrentFbp)) {
+    let enrichedIp: string | null = null;
+    let enrichedUa: string | null = null;
+    if (
+      lead &&
+      (!hasCurrentFbc || !hasCurrentFbp || !hasCurrentIp || !hasCurrentUa)
+    ) {
       const historical = await lookupHistoricalBrowserSignals(
         db,
         event.workspaceId,
@@ -1020,12 +1075,16 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       );
       if (!hasCurrentFbc) enrichedFbc = historical.fbc;
       if (!hasCurrentFbp) enrichedFbp = historical.fbp;
-      if (enrichedFbc || enrichedFbp) {
+      if (!hasCurrentIp) enrichedIp = historical.ip;
+      if (!hasCurrentUa) enrichedUa = historical.ua;
+      if (enrichedFbc || enrichedFbp || enrichedIp || enrichedUa) {
         safeLog('info', {
           event: 'meta_capi_browser_signals_enriched',
           dispatch_job_id: job.id,
           enriched_fbc: !!enrichedFbc,
           enriched_fbp: !!enrichedFbp,
+          enriched_ip: !!enrichedIp,
+          enriched_ua: !!enrichedUa,
         });
       }
     }
@@ -1054,15 +1113,17 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         // BR-CONSENT-003: visitor_id mapeia para Meta external_id (PLANO).
         visitor_id: event.visitorId,
         user_data: {
-          ...(event.userData as Parameters<typeof mapEventToMetaPayload>[0]['user_data']),
+          ...(rawUserData as Parameters<typeof mapEventToMetaPayload>[0]['user_data']),
           ...(enrichedFbc ? { fbc: enrichedFbc } : {}),
           ...(enrichedFbp ? { fbp: enrichedFbp } : {}),
+          ...(enrichedIp ? { client_ip_address: enrichedIp } : {}),
+          ...(enrichedUa ? { client_user_agent: enrichedUa } : {}),
           ...(ctHash ? { ct: ctHash } : {}),
           ...(stHash ? { st: stHash } : {}),
           ...(zpHash ? { zp: zpHash } : {}),
           ...(countryHash ? { country: countryHash } : {}),
         },
-        custom_data: event.customData as Parameters<
+        custom_data: parseUd(event.customData) as Parameters<
           typeof mapEventToMetaPayload
         >[0]['custom_data'],
       },
