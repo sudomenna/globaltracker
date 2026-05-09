@@ -38,6 +38,7 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { mapHotmartToInternal } from '../../integrations/hotmart/mapper.js';
 import type { HotmartWebhookPayload } from '../../integrations/hotmart/types.js';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -263,8 +264,8 @@ export function createHotmartWebhookRoute(db?: Db): Hono<AppEnv> {
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -305,8 +306,8 @@ export function createHotmartWebhookRoute(db?: Db): Hono<AppEnv> {
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: enrichedPayload,
-            headersSanitized: {},
+            payload: jsonb(enrichedPayload),
+            headersSanitized: jsonb({}),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

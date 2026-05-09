@@ -29,6 +29,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { processGuruRawEvent } from '../../../apps/edge/src/lib/guru-raw-events-processor.js';
+import { unwrapJsonb } from '../../helpers/jsonb-unwrap.js';
 
 // ---------------------------------------------------------------------------
 // Mock setup
@@ -793,7 +794,8 @@ describe('processGuruRawEvent', () => {
       const eventsInsert = inserts.find((i) => i.values.consentSnapshot !== undefined);
 
       if (eventsInsert) {
-        const consent = eventsInsert.values.consentSnapshot as Record<string, unknown>;
+        // T-13-013: jsonb() helper wraps writes as SQL fragments — unwrap for asserts
+        const consent = unwrapJsonb(eventsInsert.values.consentSnapshot) as Record<string, unknown>;
         expect(consent.analytics).toBe('granted');
         expect(consent.marketing).toBe('granted');
         expect(consent.ad_user_data).toBe('granted');

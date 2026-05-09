@@ -32,6 +32,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
+import { jsonb } from './jsonb-cast.js';
 import { normalizePhone, resolveLeadByAliases } from './lead-resolver.js';
 import { applyTagRules } from './lead-tags.js';
 import { promoteLeadLifecycle } from './lifecycle-promoter.js';
@@ -640,14 +641,14 @@ export async function processOnprofitRawEvent(
         schemaVersion: 1,
         eventTime,
         receivedAt: rawEvent.receivedAt,
-        attribution: {
+        attribution: jsonb({
           utm_source: payload.utm_source ?? null,
           utm_campaign: payload.utm_campaign ?? null,
           utm_medium: payload.utm_medium ?? null,
           utm_content: payload.utm_content ?? null,
           utm_term: payload.utm_term ?? null,
-        },
-        userData: {
+        }),
+        userData: jsonb({
           // Meta cookies — copied from payload when present. THIS IS THE
           // PRIMARY VALUE-ADD vs Guru: Guru does not carry these, so OnProfit
           // orders attributed via Meta ads get dramatically better match
@@ -668,8 +669,8 @@ export async function processOnprofitRawEvent(
           ...(payload.customer_address?.country
             ? { geo_country: payload.customer_address.country }
             : {}),
-        },
-        customData: {
+        }),
+        customData: jsonb({
           // BR-EVENT-002: amount in currency UNIT (BRL), NOT centavos.
           // OnProfit native units are centavos — we divide by 100 above.
           amount: amountUnit,
@@ -684,17 +685,17 @@ export async function processOnprofitRawEvent(
           sck: payload.sck ?? null,
           // OnProfit native status preserved for downstream segmentation.
           onprofit_status: payload.status,
-        },
+        }),
         // Buyer who completed checkout → implicit consent granted.
         // INV-EVENT-006: consent_snapshot populated on every event.
-        consentSnapshot: {
+        consentSnapshot: jsonb({
           analytics: 'granted',
           marketing: 'granted',
           ad_user_data: 'granted',
           ad_personalization: 'granted',
           customer_match: 'granted',
-        },
-        requestContext: {},
+        }),
+        requestContext: jsonb({}),
         processingStatus: 'accepted',
         isTest: false,
       })

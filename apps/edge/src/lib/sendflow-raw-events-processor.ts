@@ -22,6 +22,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
+import { jsonb } from './jsonb-cast.js';
 import { applyTagRules } from './lead-tags.js';
 import {
   type ProcessingError,
@@ -290,22 +291,22 @@ export async function processSendflowRawEvent(
         schemaVersion: 1,
         eventTime,
         receivedAt: rawEvent.receivedAt,
-        attribution: {},
-        userData: {},
-        customData: {
+        attribution: jsonb({}),
+        userData: jsonb({}),
+        customData: jsonb({
           // campaign_id → group_id: GA4 mapper reads cd.group_id for join_group params.
           group_id: campaignId,
           campaign_id: campaignId,
           wpp_campaign_role: payload.wpp_campaign_role ?? null,
-        },
-        consentSnapshot: {
+        }),
+        consentSnapshot: jsonb({
           analytics: 'granted',
           marketing: 'granted',
           ad_user_data: 'granted',
           ad_personalization: 'granted',
           customer_match: 'granted',
-        },
-        requestContext: {},
+        }),
+        requestContext: jsonb({}),
         processingStatus: 'accepted',
         isTest: false,
       })

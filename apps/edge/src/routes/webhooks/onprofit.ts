@@ -36,6 +36,7 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { mapOnProfitToInternal } from '../../integrations/onprofit/mapper.js';
 import type { OnProfitWebhookPayload } from '../../integrations/onprofit/types.js';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -185,8 +186,8 @@ export function createOnprofitWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -225,8 +226,8 @@ export function createOnprofitWebhookRoute(
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: enrichedPayload,
-            headersSanitized: {},
+            payload: jsonb(enrichedPayload),
+            headersSanitized: jsonb({}),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

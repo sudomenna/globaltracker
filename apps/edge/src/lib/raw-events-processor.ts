@@ -35,6 +35,7 @@ import { safeLog } from '../middleware/sanitize-logs.js';
 import { type AttributionParams, recordTouches } from './attribution.js';
 import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
 import type { KvStore } from './idempotency.js';
+import { jsonb } from './jsonb-cast.js';
 import { resolveLeadByAliases } from './lead-resolver.js';
 import { applyTagRules } from './lead-tags.js';
 import { promoteLeadLifecycle } from './lifecycle-promoter.js';
@@ -698,11 +699,11 @@ export async function processRawEvent(
         schemaVersion: 1, // fixed for Sprint 2
         eventTime: new Date(payload.event_time),
         receivedAt: rawEvent.receivedAt,
-        attribution: payload.attribution as Record<string, unknown>,
-        userData: safeUserData,
-        customData: payload.custom_data as Record<string, unknown>,
-        consentSnapshot: consentSnapshot as Record<string, unknown>,
-        requestContext: payload.request_context as Record<string, unknown>,
+        attribution: jsonb(payload.attribution),
+        userData: jsonb(safeUserData),
+        customData: jsonb(payload.custom_data),
+        consentSnapshot: jsonb(consentSnapshot),
+        requestContext: jsonb(payload.request_context ?? {}),
         isTest: payload.is_test,
         processingStatus: 'accepted',
       })

@@ -77,6 +77,7 @@ import {
   processDispatchJob,
 } from './lib/dispatch.js';
 import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
+import { jsonb } from './lib/jsonb-cast.js';
 import { processOnprofitRawEvent } from './lib/onprofit-raw-events-processor.js';
 import { processSendflowRawEvent } from './lib/sendflow-raw-events-processor.js';
 import { hashPiiExternal } from './lib/pii.js';
@@ -602,7 +603,7 @@ function buildDispatchReplayRoute(db: Db) {
         destinationAccountId: params.destination_account_id,
         destinationResourceId: params.destination_resource_id,
         destinationSubresource: params.destination_subresource,
-        payload: params.payload,
+        payload: jsonb(params.payload),
         maxAttempts: params.max_attempts,
         idempotencyKey: params.idempotency_key,
         replayedFromDispatchJobId: params.replayed_from_dispatch_job_id,
@@ -643,8 +644,8 @@ function buildDispatchReplayRoute(db: Db) {
       action: entry.action,
       entityType: entry.entity_type,
       entityId: entry.entity_id,
-      after: entry.metadata,
-      requestContext: { request_id: entry.request_id },
+      after: jsonb(entry.metadata),
+      requestContext: jsonb({ request_id: entry.request_id }),
     });
   };
 

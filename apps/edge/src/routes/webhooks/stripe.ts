@@ -39,6 +39,7 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { mapStripeToInternal } from '../../integrations/stripe/mapper.js';
 import type { StripeEvent } from '../../integrations/stripe/types.js';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -297,8 +298,8 @@ export function createStripeWebhookRoute(db?: Db): Hono<AppEnv> {
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: { stripe_event_id: event.id, stripe_event_type: event.type },
-            headersSanitized: {},
+            payload: jsonb({ stripe_event_id: event.id, stripe_event_type: event.type }),
+            headersSanitized: jsonb({}),
             processingStatus: 'discarded',
             processingError: `subscription events deferred to Phase 3+: ${event.type}`,
           });
@@ -333,8 +334,8 @@ export function createStripeWebhookRoute(db?: Db): Hono<AppEnv> {
           await db.insert(rawEvents).values({
             workspaceId,
             // BR-PRIVACY-001: store only non-PII identifiers, not full payload
-            payload: { stripe_event_id: event.id, stripe_event_type: event.type },
-            headersSanitized: {},
+            payload: jsonb({ stripe_event_id: event.id, stripe_event_type: event.type }),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -388,8 +389,8 @@ export function createStripeWebhookRoute(db?: Db): Hono<AppEnv> {
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: storedPayload,
-            headersSanitized: {},
+            payload: jsonb(storedPayload),
+            headersSanitized: jsonb({}),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

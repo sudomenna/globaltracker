@@ -28,6 +28,7 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import { type DispatchJobInput, createDispatchJobs } from './dispatch.js';
+import { jsonb } from './jsonb-cast.js';
 import { normalizePhone, resolveLeadByAliases } from './lead-resolver.js';
 import { applyTagRules } from './lead-tags.js';
 import { promoteLeadLifecycle } from './lifecycle-promoter.js';
@@ -686,7 +687,7 @@ export async function processGuruRawEvent(
         .update(events)
         .set({
           eventTime,
-          customData: newCustomData as Record<string, unknown>,
+          customData: jsonb(newCustomData),
         })
         .where(eq(events.id, existingEvent[0].id));
 
@@ -735,14 +736,14 @@ export async function processGuruRawEvent(
         schemaVersion: 1,
         eventTime,
         receivedAt: rawEvent.receivedAt,
-        attribution: {
+        attribution: jsonb({
           utm_source: payload.source?.utm_source ?? null,
           utm_campaign: payload.source?.utm_campaign ?? null,
           utm_medium: payload.source?.utm_medium ?? null,
           utm_content: payload.source?.utm_content ?? null,
           utm_term: payload.source?.utm_term ?? null,
-        },
-        userData: {
+        }),
+        userData: jsonb({
           // Geo do comprador extraído de contact.address (dados de cobrança — mais
           // precisos que geolocalização por IP). Campos raw; cada dispatcher
           // aplica normalização/hash conforme sua spec (Meta: SHA-256; Google: plain).
@@ -758,8 +759,8 @@ export async function processGuruRawEvent(
           ...(payload.contact?.address?.country
             ? { geo_country: payload.contact.address.country }
             : {}),
-        },
-        customData: {
+        }),
+        customData: jsonb({
           funnel_role: payload.funnel_role ?? null,
           // BR-EVENT-002: amount em unidade de moeda (BRL), NÃO em centavos.
           // Guru envia payment.total já em BRL — confirmado em 70+ webhooks reais.
@@ -774,17 +775,17 @@ export async function processGuruRawEvent(
           // com `dates.updated_at` mais recente possam atualizar via
           // update-if-newer (lógica no bloco existingEvent acima).
           dates: payload.dates ?? null,
-        },
+        }),
         // Buyer who completed checkout → implicit consent granted
         // INV-EVENT-006: consent_snapshot populated on every event
-        consentSnapshot: {
+        consentSnapshot: jsonb({
           analytics: 'granted',
           marketing: 'granted',
           ad_user_data: 'granted',
           ad_personalization: 'granted',
           customer_match: 'granted',
-        },
-        requestContext: {},
+        }),
+        requestContext: jsonb({}),
         processingStatus: 'accepted',
         isTest: false,
       })

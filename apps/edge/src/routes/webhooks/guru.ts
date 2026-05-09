@@ -47,6 +47,7 @@ import type {
   GuruTransactionPayload,
 } from '../../integrations/guru/types.js';
 import { resolveLaunchForGuruEvent } from '../../lib/guru-launch-resolver.js';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -266,8 +267,8 @@ export function createGuruWebhookRoute(
           await db.insert(rawEvents).values({
             workspaceId,
             // BR-PRIVACY-001: store sanitized payload without api_token
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'discarded',
             processingError: 'eticket: not processed in Phase 3',
           });
@@ -311,8 +312,8 @@ export function createGuruWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `unknown webhook_type: ${webhookType}`,
           });
@@ -356,8 +357,8 @@ export function createGuruWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -455,8 +456,8 @@ export function createGuruWebhookRoute(
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: enrichedPayload,
-            headersSanitized: {},
+            payload: jsonb(enrichedPayload),
+            headersSanitized: jsonb({}),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

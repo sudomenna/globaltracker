@@ -76,6 +76,7 @@ import {
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import {
   normalizePhone,
   resolveLeadByAliases,
@@ -236,8 +237,8 @@ export function createSendflowWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: { _provider: 'sendflow', _validation_error: true, raw },
-            headersSanitized: {},
+            payload: jsonb({ _provider: 'sendflow', _validation_error: true, raw }),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: 'sendflow_payload_validation_failed',
           });
@@ -300,8 +301,8 @@ export function createSendflowWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: { _provider: 'sendflow', ...payload },
-            headersSanitized: {},
+            payload: jsonb({ _provider: 'sendflow', ...payload }),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `unknown_campaign:${payload.data.campaignId}`,
           });
@@ -361,8 +362,8 @@ export function createSendflowWebhookRoute(
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: { _provider: 'sendflow', ...payload },
-            headersSanitized: {},
+            payload: jsonb({ _provider: 'sendflow', ...payload }),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: 'phone_normalize_failed',
           });
@@ -481,10 +482,10 @@ export function createSendflowWebhookRoute(
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: enrichedPayload,
-            headersSanitized: {
+            payload: jsonb(enrichedPayload),
+            headersSanitized: jsonb({
               'user-agent': c.req.header('user-agent') ?? '',
-            },
+            }),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

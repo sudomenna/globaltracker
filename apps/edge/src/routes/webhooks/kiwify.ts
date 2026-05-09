@@ -36,6 +36,7 @@ import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { mapKiwifyToInternal } from '../../integrations/kiwify/mapper.js';
 import type { KiwifyWebhookPayload } from '../../integrations/kiwify/types.js';
+import { jsonb } from '../../lib/jsonb-cast.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -309,8 +310,8 @@ export function createKiwifyWebhookRoute(db?: Db): Hono<AppEnv> {
         try {
           await db.insert(rawEvents).values({
             workspaceId,
-            payload: sanitizePayloadForStorage(body),
-            headersSanitized: {},
+            payload: jsonb(sanitizePayloadForStorage(body)),
+            headersSanitized: jsonb({}),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -351,8 +352,8 @@ export function createKiwifyWebhookRoute(db?: Db): Hono<AppEnv> {
           .insert(rawEvents)
           .values({
             workspaceId,
-            payload: enrichedPayload,
-            headersSanitized: {},
+            payload: jsonb(enrichedPayload),
+            headersSanitized: jsonb({}),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });

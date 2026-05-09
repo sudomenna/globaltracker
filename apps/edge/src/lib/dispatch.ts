@@ -20,6 +20,7 @@
 import type { Db } from '@globaltracker/db';
 import { dispatchAttempts, dispatchJobs } from '@globaltracker/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { jsonb } from './jsonb-cast.js';
 
 // Re-export Result type for consumers
 export type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
@@ -255,7 +256,7 @@ export async function createDispatchJobs(
         destinationSubresource: input.destination_subresource ?? null,
         idempotencyKey,
         status: 'pending' as DispatchStatus,
-        payload: input.payload ?? {},
+        payload: jsonb(input.payload ?? {}),
         eligibilityReason: input.eligibility_reason ?? null,
         maxAttempts: input.max_attempts ?? 5,
         attemptCount: 0,
@@ -359,8 +360,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'succeeded' satisfies AttemptStatus,
-        requestPayloadSanitized: {},
-        responsePayloadSanitized: {},
+        requestPayloadSanitized: jsonb({}),
+        responsePayloadSanitized: jsonb({}),
         startedAt: attemptStartedAt,
         finishedAt: attemptFinishedAt,
       })
@@ -399,8 +400,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'permanent_failure' satisfies AttemptStatus,
-        requestPayloadSanitized: {},
-        responsePayloadSanitized: {},
+        requestPayloadSanitized: jsonb({}),
+        responsePayloadSanitized: jsonb({}),
         errorCode: 'skipped',
         errorMessage: skipReason,
         startedAt: attemptStartedAt,
@@ -432,8 +433,8 @@ export async function processDispatchJob(
         dispatchJobId: jobId,
         attemptNumber,
         status: 'permanent_failure' satisfies AttemptStatus,
-        requestPayloadSanitized: {},
-        responsePayloadSanitized: {},
+        requestPayloadSanitized: jsonb({}),
+        responsePayloadSanitized: jsonb({}),
         errorCode: result.code,
         startedAt: attemptStartedAt,
         finishedAt: attemptFinishedAt,
@@ -504,8 +505,8 @@ export async function processDispatchJob(
       dispatchJobId: jobId,
       attemptNumber: newAttemptCount,
       status: 'retryable_failure' satisfies AttemptStatus,
-      requestPayloadSanitized: {},
-      responsePayloadSanitized: {},
+      requestPayloadSanitized: jsonb({}),
+      responsePayloadSanitized: jsonb({}),
       errorCode: result.kind,
       errorMessage:
         result.kind === 'server_error' ? `HTTP ${result.status}` : result.kind,
@@ -571,8 +572,8 @@ export async function markDeadLetter(
       dispatchJobId: jobId,
       attemptNumber: attemptOpts.attemptNumber,
       status: 'permanent_failure' satisfies AttemptStatus,
-      requestPayloadSanitized: {},
-      responsePayloadSanitized: {},
+      requestPayloadSanitized: jsonb({}),
+      responsePayloadSanitized: jsonb({}),
       errorCode: attemptOpts.errorCode ?? 'dead_letter',
       errorMessage: reason,
       startedAt: attemptOpts.startedAt,
@@ -591,8 +592,8 @@ export async function markDeadLetter(
         dispatchJobId: jobId,
         attemptNumber: job.attemptCount + 1,
         status: 'permanent_failure' satisfies AttemptStatus,
-        requestPayloadSanitized: {},
-        responsePayloadSanitized: {},
+        requestPayloadSanitized: jsonb({}),
+        responsePayloadSanitized: jsonb({}),
         errorCode: 'dead_letter',
         errorMessage: reason,
         startedAt: now,

@@ -32,6 +32,7 @@
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGuruWebhookRoute } from '../../apps/edge/src/routes/webhooks/guru.js';
+import { unwrapJsonb } from '../helpers/jsonb-unwrap.js';
 import guruEticketIgnored from '../fixtures/guru/eticket-ignored.json';
 import guruSubscriptionActive from '../fixtures/guru/subscription-active.json';
 import guruTransactionApproved from '../fixtures/guru/transaction-approved.json';
@@ -130,9 +131,12 @@ function createGuruMockDb(opts: {
         const row: RawEventRow = {
           id,
           workspaceId: values.workspaceId as string,
-          payload: (values.payload as Record<string, unknown>) ?? {},
+          // T-13-013: jsonb() helper wraps writes as SQL fragments — unwrap for asserts
+          payload:
+            (unwrapJsonb(values.payload) as Record<string, unknown>) ?? {},
           headersSanitized:
-            (values.headersSanitized as Record<string, unknown>) ?? {},
+            (unwrapJsonb(values.headersSanitized) as Record<string, unknown>) ??
+            {},
           processingStatus: (values.processingStatus as string) ?? 'pending',
           processingError: (values.processingError as string | null) ?? null,
         };
