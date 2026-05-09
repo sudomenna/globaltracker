@@ -96,6 +96,43 @@ Hard delete sempre via job de retenção, nunca via UPDATE/DELETE manual em prod
    ```
 4. **Não armazenar PII em jsonb** sem encrypt/hash.
 
+### Writes via Hyperdrive — helper `jsonb()` obrigatório (T-13-013-FOLLOWUP, 2026-05-09)
+
+O driver `pg-cloudflare-workers` por trás do binding `HYPERDRIVE` serializa parâmetros de bind como **text com aspas** e, ao gravar em coluna `jsonb`, Postgres aceita a string sem cast implícito. O resultado é uma row com `jsonb_typeof(col)='string'` em vez de `'object'` — operadores `->`/`->>` retornam `NULL` silenciosamente em queries SQL ad-hoc, e Drizzle só recompõe o objeto via `JSON.parse` na leitura. Sintoma observado: filtros tipo `WHERE user_data->>'fbc' IS NOT NULL` falsamente retornavam zero linhas em prod.
+
+**Regra:** todo `db.insert(<table>).values({ <jsonb_col>: ... })` em código que rode no edge worker (`apps/edge/`) **deve** envolver o valor com o helper `jsonb()` em `apps/edge/src/lib/jsonb-cast.ts`:
+
+```ts
+import { jsonb } from '../lib/jsonb-cast.js';
+
+await db.insert(events).values({
+  // ...
+  user_data: jsonb(userData),     // ✓ dollar-quoted + ::jsonb cast
+  custom_data: jsonb(customData), // ✓
+  attribution: jsonb(attr),       // ✓
+});
+```
+
+O helper retorna um SQL fragment `$gtjsonb$<json>$gtjsonb$::jsonb` que força o cast text→jsonb antes do bind, garantindo `jsonb_typeof='object'`. Aplicado em ~58 writes em 12 arquivos do edge worker (4 raw-events-processors + `dispatch.ts` + `index.ts` + 6 webhook adapters) no commit `22db9a9` (deploy `ed9a490d`).
+
+**Reads — parse defensivo.** Rows pré-deploy `ed9a490d` (todos `events`, `raw_events`, `dispatch_jobs` anteriores a 2026-05-09 ~05:00 UTC) ainda estão como jsonb-string. Queries que cruzam o boundary precisam de cast defensivo idempotente:
+
+```sql
+-- ad-hoc / view / migration
+WHERE (user_data #>> '{}')::jsonb->>'fbc' IS NOT NULL
+
+-- TypeScript que lê via Drizzle e pode receber string ou object
+const ud = typeof row.userData === 'string'
+  ? JSON.parse(row.userData) as Record<string, unknown>
+  : (row.userData ?? {}) as Record<string, unknown>;
+```
+
+Helper `parseUd` em `apps/edge/src/index.ts` faz esse parse defensivo nos call sites do dispatcher Meta CAPI. View `v_meta_capi_health` (migration `0047`) usa o mesmo padrão `(col #>> '{}')::jsonb` em todas as referências a `events.user_data`.
+
+**Tests.** `tests/helpers/jsonb-unwrap.ts` extrai o JS value original do SQL fragment dollar-quoted para que mocks de driver verifiquem o conteúdo lógico das writes sem depender do wire format.
+
+**Backfill (futuro).** Rows legadas seguem funcionais via parse defensivo — backfill em massa (`UPDATE <table> SET <col> = (<col> #>> '{}')::jsonb WHERE jsonb_typeof(<col>)='string'`) não é urgente. Tracking em `MEMORY.md §3 / JSONB-LEGACY-ROWS-BACKFILL`.
+
 ## Audit log integration
 
 Toda mutação em entidades sensíveis (`pages.event_config`, `audiences.query_definition`, `page_tokens`, `lead_consents`, etc.) **deve** ser acompanhada de `recordAuditEntry()` chamado pelo service layer.

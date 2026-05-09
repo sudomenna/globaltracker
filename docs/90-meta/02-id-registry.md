@@ -174,6 +174,8 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-035 | `lifecycle_status` armazenado em `leads` (vs derivado em query) — Sprint 16 | aceito |
 | ADR-036 | Categorias de produto hardcoded no MVP, com `lifecycleForCategory(workspaceId, category)` pronto para futura tabela `lifecycle_rules` (FUTURE-001) — Sprint 16 | aceito |
 | ADR-037 | `launch_products` (relação tipada) substitui `workspaces.config.integrations.guru.product_launch_map`; `guru-launch-resolver` Strategy 0 + Strategy 1 fallback durante migração — Sprint 16 | aceito |
+| ADR-038 | Helper `jsonb()` obrigatório em writes via Hyperdrive (workaround driver `pg-cloudflare-workers`) — Sprint 17 hardening (2026-05-09) | aceito |
+| ADR-039 | `lookupHistoricalBrowserSignals` sem filtro temporal — eleva EMQ Meta CAPI sem decay em replays — Sprint 17 hardening (2026-05-09) | aceito |
 
 ## OQ-*
 
@@ -192,7 +194,10 @@ Em `90-meta/03-open-questions-log.md`.
 | OQ-009 | aberta | pode esperar |
 | OQ-010 | aberta | pode esperar |
 | OQ-011 | **fechada** (Sprint 3) | bloqueante (resolvida) |
-| OQ-012 | aberta | pode esperar (antes Sprint 6) |
+| OQ-012 | **fechada → ADR-032** (Sprint 16) | pode esperar (resolvida) |
+| OQ-013 | **fechada → ADR-025** (Sprint 8) | pode esperar (resolvida) |
+| OQ-014 | aberta — HMAC OnProfit pendente (terceiro não publicou spec) | pode esperar |
+| OQ-015 | aberta — race condition `_fbp` cookie tracker.js (mitigado por ADR-039) | pode esperar |
 
 ## INV-* (Invariantes — registro vivo)
 
@@ -219,3 +224,6 @@ Definidas nos arquivos de sprint em `80-roadmap/` (Fase 7 da geração de docs).
 | T-RECOVERY-001 | Sprint 14 | `40-integrations/13-digitalmanager-guru-webhook.md` (abandoned → InitiateCheckout) |
 | T-RECOVERY-004 | Sprint 14 | `30-contracts/05-api-server-actions.md` (GET /v1/launches/:id/recovery) |
 | T-CONTACTS-LASTSEEN-002 | Sprint 16 | `BR-IDENTITY-008`, `INV-IDENTITY-LASTSEEN-MONOTONIC`, `30-contracts/07-module-interfaces.md` (resolveLeadByAliases options.eventTime) |
+| T-13-013-FOLLOWUP | Sprint 17 hardening (2026-05-09) | `30-contracts/02-db-schema-conventions.md` (jsonb writes via helper), `BR-EVENT-005` (storage type), `ADR-038` |
+| T-ONPROFIT-001 | Sprint 17 hardening (2026-05-09) | `40-integrations/14-onprofit-webhook.md` (novo arquivo), migrations `0045`/`0046`, `EventSource` enum (constraint DB) |
+| T-EMQ-HARDENING-001 | Sprint 17 hardening (2026-05-09) | `40-integrations/01-meta-capi.md` (enrichment fbc/fbp/IP/UA/visitor_id), `10-architecture/07-observability.md` (view `v_meta_capi_health`), migration `0047`, `BR-PRIVACY-005` (erasure scope), `ADR-039` |

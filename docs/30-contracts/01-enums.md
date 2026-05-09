@@ -140,9 +140,12 @@ export const EventSource = [
   'tracker',
   'webhook:hotmart', 'webhook:kiwify', 'webhook:stripe',
   'webhook:webinarjam', 'webhook:typeform', 'webhook:tally',
+  'webhook:guru', 'webhook:sendflow', 'webhook:onprofit',
   'redirector', 'system', 'admin',
 ] as const;
 ```
+
+> **Constraint DB ↔ enum TS — drift conhecido (2026-05-09).** A constraint Postgres `chk_events_event_source` (definida em `0030_add_guru_event_source.sql`, `0040_add_sendflow_event_source.sql`, `0046_add_onprofit_event_source.sql`) já admite `webhook:guru`, `webhook:sendflow` e `webhook:onprofit`. O array TS em `packages/shared/src/contracts/enums.ts` ainda não inclui esses três valores — os processors de cada provider gravam direto em `events.event_source` via Drizzle e o CHECK do DB é a fonte de verdade hoje. Próximo edit em `enums.ts` deve ressincronizar a lista TS com a constraint para evitar dúvida de tipagem em consumidores novos.
 
 ### `EventProcessingStatus`
 ```ts

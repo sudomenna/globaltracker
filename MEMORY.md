@@ -10,12 +10,12 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: nenhum ativo. Sprint 17 entregue (2026-05-09). Próximo sprint não iniciado.
-- **Última entrega**: OnProfit webhook adapter completo + fixes fbc/fbp global + Sprint 17 observability. Ver commits abaixo.
-- **Próxima ação**: testar compra real OnProfit com snippet no checkout; verificar fbc/fbp aparecendo em Meta Events Manager. Trilha 1 (Purchase Guru) e Trilha 3 (survey) seguem em aberto.
+- **Sprint ativo**: nenhum ativo. Hotfix sprint informal "Meta CAPI EMQ Hardening" entregue 2026-05-09.
+- **Última entrega**: pipeline Meta CAPI hardening completo — jsonb cast fix + historical browser signals enrichment (fbc/fbp/IP/UA/visitor_id) + observability view + replay das 7 compras anteriores de anúncios.
+- **Próxima ação**: usuário deve atualizar snippets Meta Pixel nas LPs WordPress (`wk-societarios-1` + `wk-obg`) com `fbq('consent', 'grant')` + `fbq('track', 'PageView')` síncronos. Verificar EMQ no Meta Events Manager em 24h. Trilha 1 (Purchase Guru E2E) e Trilha 3 (survey) seguem em aberto.
 - **Branch**: `main`, working tree clean. `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ed9a490d` — jsonb cast fix, OnProfit adapter live, fbc/fbp fixes live, Sprint 17 live).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0045 aplicadas.
+- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ba2fbe37` — visitor_id enrichment, IP/UA enrichment, fbc/fbp lookup defensivo, jsonb cast fix, OnProfit live, Sprint 17 live).
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0047 aplicadas.
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
 
 ### Entregas recentes (2026-05-09)
@@ -25,11 +25,31 @@
 | Sprint 17 observability (6 tabs + summary endpoint) | `6af8f61` | `83afe16c` |
 | Sprint 17 doc-sync | `ff92500` | — |
 | Journey tab grouping fix (dispatch event_id) | `0bf22f9` | — |
-| fbc/fbp global fix (tracker cookie names `_fbc`/`_fbp` + historical lookup) | `748f32e` | — |
+| fbc/fbp global fix (tracker cookie names `_fbc`/`_fbp`) | `748f32e` | — |
 | fbc/fbp doc-sync | `f53e2b6` | — |
 | OnProfit adapter (types/mapper/route/processor/migration) | `59003f9` | `1e905322` |
 | OnProfit event_source CHECK constraint fix (migration 0046) | `46e9c2e` | — (DB only) |
 | jsonb() helper aplicado em todos writes (T-13-013-FOLLOWUP) | `22db9a9` | `ed9a490d` |
+| meta-capi: lookupHistoricalBrowserSignals com cast defensivo `(user_data #>> '{}')::jsonb` | `89b1c6d` | `10bcaaa6` |
+| meta-capi: historical lookup também enriquece IP/UA + parseUd em todos jsonb reads | `77f97c6` | `974368b9` |
+| Health view `v_meta_capi_health` (migration 0047) — score 0..8 por evento | `10277cf` | — (DB only) |
+| meta-capi: historical lookup também enriquece visitor_id (Meta external_id) | `5ed259d` | `ba2fbe37` |
+
+### Replays executados (2026-05-09 ~07:00–07:11 UTC)
+
+7 dispatch_jobs de Meta CAPI (Purchase events com `utm_source=meta`) replayados via `POST /v1/dispatch-jobs/:id/replay` após deploy `ba2fbe37`. Todos succeeded. Match score subiu de 4-5/8 (original) para **7/8** (após enrichment com fbc/fbp/IP/UA/visitor_id históricos do mesmo lead). Falta apenas `geo_city` (não vem dos contact.address de algumas Guru transactions).
+
+### Observabilidade — health check ad-hoc
+
+```sql
+SELECT received_at, match_score, eff_fbc, eff_fbp, eff_ip, eff_ua,
+       eff_external_id, lead_em, lead_ph, amount, product_name, utm_source
+  FROM v_meta_capi_health
+ WHERE event_name='Purchase' AND received_at > now()-interval '24 hours'
+ ORDER BY received_at DESC;
+```
+
+A view tem semântica "sem filtro temporal" — reflete o que o dispatcher REAL faz (lookup pega os 10 mais recentes do lead, mesmo posteriores ao evento, alinhado com `apps/edge/src/index.ts:lookupHistoricalBrowserSignals`).
 
 ### OnProfit configuração (IMPORTANTE)
 
@@ -88,6 +108,13 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 
 ## §3 Pendências abertas
 
+### Pendências críticas — Meta CAPI EMQ Hardening (2026-05-09)
+
+- **PIXEL-SNIPPET-LP-FIX (USUÁRIO)** — As 2 LPs WordPress (`wk-societarios-1` LP de captação + `wk-obg` LP obrigado) têm o snippet do Meta Pixel **incompleto**: faltam `fbq('consent', 'grant')` + `fbq('track', 'PageView')` SÍNCRONOS após `fbq('init', '149334790553204')`. Sem isso, o cookie `_fbp` só é setado depois que `fbevents.js` async termina, gerando race condition vs `tracker.js` (também async). Validado em prod 2026-05-09: lead `d3359f5f` mostrou que `_fbp` apareceu só 3 minutos após o PageView. **Ação**: usuário precisa atualizar HTML/CSS/JS dos templates Elementor das 2 pages.
+- **DISPATCH-ATTEMPTS-PAYLOAD-EMPTY** — `dispatch_attempts.request_payload_sanitized` e `response_payload_sanitized` ainda gravam `{}` literal em todos os call sites de `apps/edge/src/lib/dispatch.ts` (linhas 363/364, 403/404, 436/437, 508/509, 575/576, 595/596). O usuário pediu observabilidade do que efetivamente sai pra Meta — hoje só temos a presença/ausência via `v_meta_capi_health`. Próxima iteração: estender `DispatchResult` com `request`/`response` opcional, popular nos dispatchers, e gravar (com IP redacted) nos attempts.
+- **GEO-CITY-ENRICHMENT-GAP** — Purchase events de Guru sem `contact.address` ficam sem `geo_city` (último sinal faltante pra match score 8/8). Considerar enrichment de geo a partir do IP histórico via Cloudflare CF-IPCity / `cf_ray` no momento do dispatch (precisa lookup adicional). Ou via geolocation do IP enrichado. Não bloqueia (7/8 já é alto), mas fecha o último gap.
+- **JSONB-LEGACY-ROWS-BACKFILL** — Rows pré-deploy `ed9a490d` (todas events/raw_events/dispatch_jobs anteriores a 2026-05-09 ~05:00) têm `jsonb_typeof='string'` em colunas jsonb. Funciona via Drizzle (parse na leitura), mas queries SQL ad-hoc precisam de `(col #>> '{}')::jsonb` defensivo. Backfill seria UPDATE em massa para re-cast: `UPDATE events SET user_data = (user_data #>> '{}')::jsonb WHERE jsonb_typeof(user_data)='string'`. Não urgente — mitigado via `lookupHistoricalBrowserSignals` defensivo e view `v_meta_capi_health`.
+
 ### Bloqueios e TODOs de código
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07** — TODO Sprint 16. 6 specs faltando:
@@ -105,7 +132,11 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
   - `buildDetectionScript` (L131): `consent.{analytics,marketing}: false` — deveria ser `'granted'` em todas finalidades.
   - **Plano**: (1) `buildHeadSnippet` v2 emite GA4 → Pixel → tracker (skip blocos não configurados), comentário com exclusões WP Rocket; (2) substituir `buildBodySnippet` por `buildFooterSnippet(role)` específico por `pages.role` (sales/thankyou/webinar); (3) corrigir consent + adicionar `fbq` calls com `eventID`; (4) tests cobrindo head sem GA4, head sem Meta, snippet por role.
 
-- **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE** — Tela de Configuração de eventos da page no CP não expõe toggle `auto_page_view` que vive em `pages.event_config.auto_page_view`. Hoje só via SQL direto.
+- **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE** — Tela de Configuração de eventos da page no CP não expõe toggle `auto_page_view` que vive em `pages.event_config.auto_page_view`. Hoje só via SQL direto. Aplicado em 2026-05-09: `auto_page_view: true` em `obrigado-workshop` e `checkout-onprofit-workshop`.
+
+- **ONPROFIT-HMAC-VALIDATION-TODO** — `apps/edge/src/routes/webhooks/onprofit.ts:96-100` loga warn `onprofit_webhook_hmac_validation_todo` em todo request porque o spec do header HMAC do OnProfit não foi publicado. Hoje protegido apenas por `?workspace=<slug>` no query string. Atualizar quando OnProfit publicar a assinatura.
+
+- **ONPROFIT-LAUNCH-RESOLVER-TODO** — Processor `apps/edge/src/lib/onprofit-raw-events-processor.ts` ainda não resolve `launch_id` para Purchase events. Resultado: `lead_stages` row não emitida pra OnProfit Purchases. Guru já tem `guru-launch-resolver.ts` (Strategy 0/1/2). Replicar mesmo padrão para OnProfit usando `customer.lead_public_id` + product mapping.
 
 - **T-13-013-FOLLOWUP** — RESOLVIDO (commit `22db9a9`, deploy `ed9a490d`, 2026-05-09). Helper `jsonb()` aplicado em ~58 writes em 12 arquivos do edge worker (4 raw-events-processors + dispatch.ts + index.ts + 6 webhook adapters). Adicionado `tests/helpers/jsonb-unwrap.ts` para mocks de teste extraírem JS value do SQL fragment. Pendente: backfill de rows antigas (events.user_data/custom_data/attribution/consent_snapshot ainda com jsonb_typeof='string' nas linhas pré-deploy — não bloqueia, queries SQL ad-hoc precisam usar `(col #>> '{}')::jsonb` pra essas).
 
@@ -113,7 +144,7 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 
 ### Doc-sync pendentes (`SYNC-PENDING`)
 
-- **ERASURE-GEO-FIELDS** (Sprint 16, ADR-033) — `apps/edge/src/lib/erasure.ts` (`eraseLead`) precisa zerar `events.user_data.{geo_city, geo_region_code, geo_postal_code, geo_country}` junto com `client_ip_address`/`client_user_agent`. Geo via IP é dado pessoal sob LGPD. Doc afetada: `docs/50-business-rules/BR-PRIVACY.md` BR-PRIVACY-005. ETA: próxima sprint que toque erasure.
+- **ERASURE-GEO-FIELDS-AND-VISITOR-ID** (Sprint 16, ADR-033 + Sprint 17 hardening, ADR-039) — `apps/edge/src/lib/erasure.ts` (`eraseLead`) precisa zerar em **TODOS** os events do lead (não apenas no atual): `events.user_data.{geo_city, geo_region_code, geo_postal_code, geo_country, fbc, fbp, client_ip_address, client_user_agent}` + `events.visitor_id` (coluna dedicada, ADR-031). Geo via IP é dado pessoal sob LGPD. `visitor_id` é propagado via `lookupHistoricalBrowserSignals` (ADR-039) e precisa ser anonimizado para impedir re-enrichment em replays pós-erasure. Doc atualizada 2026-05-09 em `docs/50-business-rules/BR-PRIVACY.md` BR-PRIVACY-005 com escopo expandido (ainda marcada `[SYNC-PENDING]` até código mudar). ETA: próxima sprint que toque erasure.
 - **CONTRACT-api-events-v1** — `event-payload.ts` aceita `user_data`, `attribution.nullish()`, consent string-or-bool. Atualizar `docs/30-contracts/05-api-server-actions.md`.
 - **CONTRACT-api-config-v1** — Response inclui `event_config.auto_page_view`. Atualizar doc.
 - **BR-IDENTITY-005** — Cookie `__ftk` mudou de `HttpOnly; SameSite=Lax` para `SameSite=None; Secure` sem HttpOnly (tracker lê via JS para propagar identidade cross-page). Atualizar BR + ADR.
@@ -121,7 +152,7 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 - **TEMPLATE-paid-workshop-v3-event-config-purge** — Migration 0034 manteve `Purchase` e `Contact` em `event_config.canonical` da page `obrigado-workshop`, mas pela arquitetura v3 ambos são server-side (Purchase via webhook Guru, Contact via webhook SendFlow). Próxima migration deve deixar canonical=`[PageView]`, custom=`[click_wpp_join, survey_responded]`. Aplicado runtime em `wkshop-cs-jun26` via UI do CP; template global ainda divergente. Verificar se o mesmo cabe em outras pages.
 - **CP-DOUBLE-STRINGIFY-event-config** (T-13-013) — Save handler do CP grava `event_config` como string JSON dentro do JSONB (double-encoded). UPDATE manual já aplicado em `wkshop-cs-jun26`. Encontrar e corrigir o save handler que está rodando `JSON.stringify` antes do Drizzle.
 - **PHONE-normalizer-9-prefix-BR** — `normalizePhone` em `apps/edge/src/lib/lead-resolver.ts:67` não reconcilia mobiles BR sem o "9" extra. Sistemas legados (SendFlow) enviam phone sem o 9 → `phone_hash` divergente. Tracking T-13-014. Após implementação atualizar `BR-IDENTITY-002` + nova `INV-IDENTITY-008` (mobile canônico = 13 dígitos `+55DD9XXXXXXXX`).
-- **RAW_EVENTS-jsonb-string** — TODOS os raw_events (todos adapters) gravados com `jsonb_typeof(payload)='string'`. Drizzle/driver pg-cloudflare-workers serializa como string sem cast `::jsonb`. Não é regressão (sempre foi assim) e consumers usam `(payload #>> '{}')`, mas queries ad-hoc tipo `payload->>'_provider'='sendflow'` falham silenciosamente. Fix em todos call sites de `db.insert(rawEvents)` é o T-13-013-FOLLOWUP acima.
+- ~~**RAW_EVENTS-jsonb-string**~~ — RESOLVIDO via T-13-013-FOLLOWUP (commit `22db9a9`, deploy `ed9a490d`, 2026-05-09). Helper `jsonb()` agora aplicado em todos call sites do edge. Doc-sync 2026-05-09: padrão documentado em `docs/30-contracts/02-db-schema-conventions.md` + ADR-038 + `BR-EVENT-005` reforçada. Pendência residual: backfill em massa de rows pré-deploy `ed9a490d` (jsonb-string legadas) — não urgente, mitigado via parse defensivo em reads. Tracking em `JSONB-LEGACY-ROWS-BACKFILL` acima.
 
 ### Pendências residuais — Sprint 16 Onda 8 (Products)
 

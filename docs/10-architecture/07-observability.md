@@ -119,6 +119,47 @@ Detalhe em FLOW-06.
 - **Retention purge** — count purgado por categoria.
 - **Consent rates** — granted/denied/unknown por finalidade.
 
+## Saúde do Meta CAPI — view `v_meta_capi_health` (migration 0047)
+
+View permanente para auditar EMQ (Event Match Quality) por evento Purchase/Lead/InitiateCheckout/Contact/CompleteRegistration sem decifrar PII. Cada linha projeta:
+
+- **Sinais no próprio evento** (`ev_*`): `ev_fbc`, `ev_fbp`, `ev_ip`, `ev_ua`, `ev_geo` — booleans `IS NOT NULL` em `events.user_data`.
+- **Sinais via lead** (`lead_*`): `lead_em`, `lead_ph`, `lead_fn`, `lead_ln` — booleans em `leads.{email_hash_external, phone_hash_external, fn_hash, ln_hash}`.
+- **External ID**: `has_external_id` (= `events.visitor_id IS NOT NULL`).
+- **Sinais via histórico** (`hist_*`): `hist_fbc`, `hist_fbp`, `hist_ip`, `hist_ua` — `EXISTS` de prior event do mesmo `lead_id` com cada sinal não-null.
+- **Effective** (`eff_*`): `eff_fbc = ev_fbc OR hist_fbc`, etc. — projeta o que o dispatcher real efetivamente envia (espelhando `lookupHistoricalBrowserSignals` em `apps/edge/src/index.ts`).
+- **Score 0..8**: soma de `eff_fbc + eff_fbp + eff_ip + eff_ua + lead_em + lead_ph + ev_geo + has_external_id`. 8 = advanced match top-tier.
+
+### Sem filtro temporal — por design
+
+A subquery `historical` faz `EXISTS` sem restrição `received_at < p.received_at`. Isso é **intencional** e alinha com o comportamento real do dispatcher: cookies `_fbc`/`_fbp` têm refresh cycle longo, e o `lookupHistoricalBrowserSignals` pega os 10 events mais recentes do lead independentemente da ordem cronológica vs o evento sendo dispatchado. Justificativa completa em [`docs/40-integrations/01-meta-capi.md`](../40-integrations/01-meta-capi.md#sem-filtro-temporal--por-design).
+
+### Tolerância a rows legadas (T-13-013-FOLLOWUP)
+
+Toda referência a `events.user_data` na view usa `(user_data #>> '{}')::jsonb` — re-cast idempotente que aceita tanto rows novas (jsonb-object) quanto rows pré-deploy `ed9a490d` (jsonb-string, legado do bug Hyperdrive driver). Sem isso, `user_data->>'fbc'` em row legada retornaria NULL silenciosamente e o score viria zerado falsamente.
+
+### Uso típico
+
+```sql
+SELECT received_at, match_score, eff_fbc, eff_fbp, eff_ip, eff_ua,
+       has_external_id, lead_em, lead_ph, ev_geo, amount, utm_source
+  FROM v_meta_capi_health
+ WHERE workspace_id = '74860330-a528-4951-bf49-90f0b5c72521'
+   AND event_name = 'Purchase'
+   AND received_at > now() - interval '24 hours'
+ ORDER BY received_at DESC;
+```
+
+Validação de baseline pós-deploy `ba2fbe37` (2026-05-09): match_score subiu de 4-5/8 para **7/8** consistente em replays de 7 Purchases Guru anteriores. Gap remanescente é `ev_geo` quando `contact.address` da transação Guru vem vazio.
+
+### Não é métrica em tempo real
+
+A view recomputa em cada SELECT. Não há materialização nem rollup — chamar via Metabase ad-hoc ou cron diário, não em endpoint hot path.
+
+## Doc-sync pending — métrica `dispatch_attempts.{request,response}_payload_sanitized`
+
+Hoje todos os call sites em `apps/edge/src/lib/dispatch.ts` gravam `{}` literal nessas colunas. Para fechar o gap "o que efetivamente saiu pra Meta?" sem confiar apenas em `v_meta_capi_health`, próxima iteração deve estender `DispatchResult` com `request`/`response` opcionais e popular nos dispatchers (com IP redacted via `sanitizeDispatchPayload`). Tracking em `MEMORY.md §3 / DISPATCH-ATTEMPTS-PAYLOAD-EMPTY`.
+
 ## Tracing (opcional Fase 4+)
 
 OpenTelemetry instrumentation se complexidade justificar. Pontos de instrumentação:

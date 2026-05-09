@@ -1173,6 +1173,89 @@ MOD-PRODUCT, MOD-LAUNCH, MOD-FUNNEL (`guru-launch-resolver.ts`), CONTRACT-api-la
 
 ---
 
+## ADR-038 — Helper `jsonb()` obrigatório em writes via Hyperdrive (Sprint 17, hardening 2026-05-09)
+
+### Status
+aceito.
+
+### Contexto
+Bug latente desde Sprint 1 e reportado em prod 2026-05-08 ao investigar EMQ Meta CAPI baixo: queries `WHERE user_data->>'fbc' IS NOT NULL` retornavam zero linhas mesmo com dados visíveis no Drizzle. Diagnóstico: o driver `pg-cloudflare-workers` por trás do binding `HYPERDRIVE` envia parâmetros de bind como text-com-aspas; sem cast explícito, Postgres aceita o valor em coluna `jsonb` como `jsonb_typeof='string'` (uma string JSON-encoded em vez de um objeto). Operadores `->`/`->>` sobre jsonb-string retornam NULL silenciosamente. Drizzle só recompõe o objeto via `JSON.parse` ao ler, mascarando o problema na camada TS.
+
+### Decisão
+Helper `jsonb(value)` em `apps/edge/src/lib/jsonb-cast.ts` que envolve o valor em SQL fragment dollar-quoted `$gtjsonb$<json>$gtjsonb$::jsonb` via `sql.raw`, forçando o cast text→jsonb antes do bind. **Todo write em coluna jsonb pelo edge worker** (`apps/edge/`) deve usar o helper:
+
+```ts
+await db.insert(events).values({
+  user_data: jsonb(userData),     // ✓ cast forçado
+  custom_data: jsonb(customData),
+});
+```
+
+Aplicado em ~58 writes em 12 arquivos: 4 raw-events-processors (`raw-events-processor.ts`, `guru-raw-events-processor.ts`, `sendflow-raw-events-processor.ts`, `onprofit-raw-events-processor.ts`), `dispatch.ts`, `index.ts`, e 6 webhook adapters (`guru.ts`, `hotmart.ts`, `kiwify.ts`, `stripe.ts`, `sendflow.ts`, `onprofit.ts`). Commit `22db9a9` (deploy `ed9a490d`).
+
+Reads precisam de parse defensivo `(col #>> '{}')::jsonb` (SQL) ou check `typeof row.col === 'string'` (TS) para tolerar rows legadas pré-deploy `ed9a490d`. View `v_meta_capi_health` (migration `0047`) exemplifica o padrão SQL.
+
+### Alternativas consideradas
+- **Drizzle config patch / fork** — cirurgia frágil, perde upstream updates.
+- **Backfill em massa de rows legadas + assumir driver fix futuro** — não resolve o bug, apenas remenda dados.
+- **Trocar driver para `postgres-js` direto** — perde Hyperdrive pool gerenciado; latência piora.
+- **Criar Postgres trigger `BEFORE INSERT` que re-parse jsonb-string** — overhead em todo INSERT, esconde origem do bug.
+
+### Consequências
+- (+) Storage type correto desde write — queries SQL ad-hoc, indexes GIN expressional, e migrations funcionam sem cast defensivo nas escritas novas.
+- (+) Padrão único e testável — helper `tests/helpers/jsonb-unwrap.ts` extrai JS value do SQL fragment para mocks de driver.
+- (–) Code review exige verificar uso do helper em todo novo write — auditor precisa grep `db.insert.*jsonb_col_name` sem `jsonb(`.
+- (–) Rows legadas (pré-deploy `ed9a490d`) seguem como jsonb-string — backfill em massa fica como tracking pending (`MEMORY.md §3 / JSONB-LEGACY-ROWS-BACKFILL`).
+
+### Impacta
+MOD-EVENT (`events.user_data/custom_data/attribution/consent_snapshot`), MOD-DISPATCH (`dispatch_jobs.payload_template`, `dispatch_attempts.request/response_payload_sanitized`), MOD-WORKSPACE (`workspaces.config`), todos os webhook adapters em MOD-EVENT.
+
+---
+
+## ADR-039 — `lookupHistoricalBrowserSignals` sem filtro temporal (Sprint 17, hardening 2026-05-09)
+
+### Status
+aceito.
+
+### Contexto
+Sprint 17 introduziu `lookupHistoricalBrowserSignals(db, workspace_id, lead_id)` em `apps/edge/src/index.ts` para enriquecer eventos de webhook (Guru/OnProfit/Hotmart/SendFlow) com `fbc`/`fbp`/`client_ip_address`/`client_user_agent`/`visitor_id` capturados em events anteriores do tracker.js — sem isso, Purchase events (o sinal monetário mais valioso) chegavam ao Meta CAPI com EMQ degradado (match score 4-5/8). Decisão de design: a query deve ou não filtrar `received_at < event_corrente.received_at`?
+
+### Decisão
+**Sem filtro temporal.** A query pega os 10 events mais recentes do lead independentemente da ordem cronológica vs o evento sendo dispatchado:
+
+```sql
+SELECT events.user_data, events.visitor_id
+  FROM events
+ WHERE workspace_id = $1
+   AND lead_id = $2
+   AND (visitor_id IS NOT NULL
+        OR (user_data #>> '{}')::jsonb->>'fbc' IS NOT NULL
+        OR (user_data #>> '{}')::jsonb->>'fbp' IS NOT NULL
+        OR (user_data #>> '{}')::jsonb->>'client_ip_address' IS NOT NULL
+        OR (user_data #>> '{}')::jsonb->>'client_user_agent' IS NOT NULL)
+ ORDER BY received_at DESC
+ LIMIT 10;
+```
+
+### Alternativas consideradas
+- **Filtro `received_at < $event.received_at`** — semanticamente correto se assumirmos "passado causa presente", mas defeita o caso real:
+  - Webhook Purchase chega antes do PageView "obrigado" no DB (race comum entre callback assíncrono Guru e redirect do checkout).
+  - Replay de dispatch executado horas/dias depois do evento original cortaria todo o histórico acumulado entre original e replay.
+  - Cookies `_fbc`/`_fbp` Meta têm refresh cycle de 90 dias — o valor mais fresco é mais útil que o valor mais antigo, mesmo que tecnicamente "futuro" relativo ao Purchase.
+- **Filtro com janela tolerante** (ex.: `received_at < $event.received_at + INTERVAL '1 hour'`) — adiciona magic number, ainda corta replays e não traz benefício de qualidade demonstrável.
+
+### Consequências
+- (+) Match score sobe consistente de 4-5/8 para 7/8 em replays — validado em 7 Purchases Guru pós-deploy `ba2fbe37`.
+- (+) Replays de dispatch_jobs continuam efetivos em janelas longas — não há "decay" do enrichment.
+- (+) View `v_meta_capi_health` espelha exatamente o que o dispatcher real faz — observabilidade fiel.
+- (–) **Trade-off de attribution**: lead que tenha passado por dois `fbclid` distintos em momentos diferentes (clicou num ad em janeiro, outro em maio, comprou em maio) terá o `fbc` mais recente atribuído ao Purchase. Aceitável para o caso de uso típico (workshop curto, ciclo 7-14 dias).
+- (–) **Implicação para erasure**: enrichment server-side significa que IP/UA/`visitor_id` capturados em qualquer event do lead podem ser propagados para outros events no dispatch. `eraseLead` deve zerar esses campos em **todos** os events do lead, não só o atual (BR-PRIVACY-005 atualizada).
+
+### Impacta
+MOD-DISPATCH (orchestrator Meta CAPI), MOD-EVENT (storage de browser signals), MOD-IDENTITY (`erasure.ts` precisa de scope expandido), CONTRACT-api-events-v1 (não muda, mas comportamento downstream sim), BR-PRIVACY-005, view `v_meta_capi_health` (migration `0047`).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

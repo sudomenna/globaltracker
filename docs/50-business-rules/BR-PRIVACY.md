@@ -149,9 +149,11 @@ Scenario: lazy re-encryption
 ### Status: Stable (ADR-014, RF-029, atualizado por ADR-031, ADR-033)
 
 ### Enunciado
-`eraseLead(lead_id)` **DEVE**: zerar `leads.email_enc/phone_enc/name_enc/email_hash/phone_hash`, `leads.status='erased'`, remover `lead_aliases` correspondentes, anonimizar campos PII em `events.user_data` — incluindo `em`, `ph`, `external_id_hash`, **`client_ip_address` e `client_user_agent`** (BR-PRIVACY-001) — mas preservar event count/timing para agregados, zerar `events.request_context.ip_hash/ua_hash`, anonimizar `lead_attribution` (preserva campos não-identificadores). Job é idempotente.
+`eraseLead(lead_id)` **DEVE**: zerar `leads.email_enc/phone_enc/name_enc/email_hash/phone_hash`, `leads.status='erased'`, remover `lead_aliases` correspondentes, anonimizar campos PII em `events.user_data` em **todos os events do lead** — incluindo `em`, `ph`, `external_id_hash`, **`client_ip_address` e `client_user_agent`** (BR-PRIVACY-001) — mas preservar event count/timing para agregados, zerar `events.request_context.ip_hash/ua_hash`, anonimizar `lead_attribution` (preserva campos não-identificadores). Job é idempotente.
 
-> **[SYNC-PENDING]** ADR-033 (Sprint 16) introduziu `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country` em `events.user_data`. Geo via IP é dado pessoal (LGPD art. 5º, IV) e **deve** ser zerado junto com `client_ip_address`/`client_user_agent` na próxima revisão de `apps/edge/src/lib/erasure.ts`. Tracking em `MEMORY.md §2`.
+**Importante (Sprint 16, hardening 2026-05-09).** Como o dispatcher Meta CAPI faz enrichment server-side via `lookupHistoricalBrowserSignals` (ver [`40-integrations/01-meta-capi.md`](../40-integrations/01-meta-capi.md#enriquecimento-server-side-de-fbc--fbp--ip--ua--visitor_id-webhooks--herdam-do-histórico-do-lead)), IP/UA/`fbc`/`fbp`/`visitor_id` capturados em qualquer event do lead podem ser propagados para outros events no momento do dispatch. Erasure precisa zerar esses campos em **todos** os events do lead (`UPDATE events SET user_data = user_data - 'client_ip_address' - 'client_user_agent' - 'fbc' - 'fbp' - 'em' - 'ph' - 'external_id_hash' - 'geo_city' - 'geo_region_code' - 'geo_postal_code' - 'geo_country', visitor_id = NULL WHERE lead_id = $1`), não apenas no event mais recente. Caso contrário, replays de dispatch_jobs pós-erasure podem reenriquecer e reenviar dados pessoais para Meta.
+
+> **[SYNC-PENDING]** ADR-033 (Sprint 16) introduziu `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country` em `events.user_data`. Geo via IP é dado pessoal (LGPD art. 5º, IV) e **deve** ser zerado junto com `client_ip_address`/`client_user_agent` na próxima revisão de `apps/edge/src/lib/erasure.ts`. Tracking em `MEMORY.md §3 / ERASURE-GEO-FIELDS`. **Adicionado 2026-05-09:** `visitor_id` (coluna dedicada em `events`, ADR-031) também precisa ser zerado em massa — o lookup histórico promove `visitor_id` de qualquer event do lead para `external_id` Meta no dispatch.
 
 ### Enforcement
 - Endpoint `DELETE /v1/admin/leads/:lead_id` enqueue job.
@@ -165,7 +167,8 @@ Scenario: SAR completa em < 60s para lead com 100k events
   When DELETE /v1/admin/leads/:L como privacy
   Then job termina em < 60s
   And leads.status='erased', email_enc IS NULL
-  And events.user_data não contém em/ph/external_id_hash/client_ip_address/client_user_agent
+  And events.user_data dos 100k events de L não contém em/ph/external_id_hash/client_ip_address/client_user_agent/fbc/fbp
+  And events.visitor_id IS NULL para todos os events de L
   # SYNC-PENDING: também não deve conter geo_city/geo_region_code/geo_postal_code/geo_country (ADR-033)
   And lead_attribution.fbclid/gclid preservados; identificadores zerados
   And lead_aliases para L removidos

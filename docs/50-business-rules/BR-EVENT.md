@@ -133,13 +133,17 @@ Scenario: replay aceito após 7d
 
 ## BR-EVENT-005 — `events.user_data` aceita apenas chaves canônicas (sem PII em claro)
 
-### Status: Stable (BR-PRIVACY-001 reforço)
+### Status: Stable (BR-PRIVACY-001 reforço; jsonb storage type clarification 2026-05-09)
 
 ### Enunciado
-`user_data` jsonb aceita apenas: `em` (email_hash), `ph` (phone_hash), `external_id_hash`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `session_id_ga4`. Chaves desconhecidas ou PII em claro são rejeitadas.
+`user_data` jsonb aceita apenas: `em` (email_hash), `ph` (phone_hash), `external_id_hash`, `fbc`, `fbp`, `_gcl_au`, `client_id_ga4`, `session_id_ga4`, `client_ip_address`, `client_user_agent`, `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country`. Chaves desconhecidas ou PII em claro (`email`, `phone`, `name`, `ip`) são rejeitadas.
+
+**Storage type — jsonb-object obrigatório.** Writes em `events.user_data` (e em qualquer coluna jsonb tocada pelo edge worker) **devem** usar o helper `jsonb()` em `apps/edge/src/lib/jsonb-cast.ts` para garantir `jsonb_typeof='object'`. Sem o helper, o driver Hyperdrive serializa o valor como text-com-aspas e Postgres aceita como jsonb-string — operadores `->`/`->>` falham silenciosamente em queries SQL ad-hoc. Detalhe completo em [`30-contracts/02-db-schema-conventions.md`](../30-contracts/02-db-schema-conventions.md#writes-via-hyperdrive--helper-jsonb-obrigatório-t-13-013-followup-2026-05-09). Aplicado em todos os 4 raw-events-processors + `dispatch.ts` + `index.ts` desde commit `22db9a9` (deploy `ed9a490d`, 2026-05-09).
 
 ### Enforcement
-- Zod schema `UserDataSchema.strict()` rejeita keys desconhecidas e PII keys (`email`, `phone`, `name`, `ip`).
+- Zod schema `UserDataSchema.strict()` em `apps/edge/src/lib/raw-events-processor.ts` rejeita keys desconhecidas e PII keys (`email`, `phone`, `name`, `ip`).
+- Helper `jsonb()` em todos os call sites de `db.insert(events).values({ user_data: ... })` garante storage type correto.
+- Reads precisam de parse defensivo (`(user_data #>> '{}')::jsonb` em SQL ou `typeof row.userData === 'string' ? JSON.parse(...) : row.userData` em TS) para tolerar rows pré-deploy `ed9a490d`.
 
 ### Gherkin
 ```gherkin

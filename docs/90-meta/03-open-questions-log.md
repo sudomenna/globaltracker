@@ -170,6 +170,37 @@ Perguntas abertas extraídas de `planejamento.md` v3.0 e da conversa de revisão
 
 ---
 
+## OQ-014 — HMAC validation pendente para webhook OnProfit
+
+- **Origem:** entrega do adapter OnProfit no Sprint 17 (commit `59003f9`, deploy `1e905322`, 2026-05-09).
+- **Contexto:** `apps/edge/src/routes/webhooks/onprofit.ts` foi entregue em produção sem validação HMAC do header de assinatura porque OnProfit ainda não publicou a spec do header. Hoje o webhook está protegido apenas por:
+  1. Conhecimento do **slug do workspace** no query string (`?workspace=outsiders`).
+  2. Restrição da OnProfit (no painel deles) sobre qual conta posta para qual URL.
+  Handler loga `event: 'onprofit_webhook_hmac_validation_todo'` em todo request como reminder operacional.
+- **Pergunta:** quando OnProfit publicar a spec, qual padrão adotar?
+  - Alternativa A: espelhar `timingSafeTokenEqual` usado em `apps/edge/src/routes/webhooks/hotmart.ts` (HMAC-SHA256 com shared secret armazenado em `workspace_integrations`).
+  - Alternativa B: validação por API token fixo no body (padrão Guru — `payload.api_token` lookup contra `workspace_integrations.guru_api_token`). Aplicável apenas se OnProfit colocar o secret no body em vez de header.
+- **Impacto se decidir errado:** janela de exposição enquanto o spec não chega; um terceiro com conhecimento do slug pode injetar Purchases falsos, inflando ROAS dashboards e poluindo `lead_stages`. Mitigação atual: slug é privado e a URL não é divulgada publicamente.
+- **Status:** aberta. Bloqueada por terceiro (OnProfit).
+- **Classificação:** pode esperar — não bloqueia sprint atual, mas precisa fechar antes de promover OnProfit como integração suportada para outros workspaces. Tracking em `MEMORY.md §3 / ONPROFIT-HMAC-VALIDATION-TODO`.
+
+---
+
+## OQ-015 — Race condition `_fbp` cookie no tracker.js
+
+- **Origem:** validação prod 2026-05-09 do hardening EMQ Meta CAPI.
+- **Contexto:** Lead `d3359f5f` (LP `wk-societarios-1`) mostrou que o cookie `_fbp` apareceu **3 minutos depois** do PageView que tracker.js disparou. Causa: snippets WordPress das LPs (`wk-societarios-1` LP de captação + `wk-obg` LP obrigado) estão **incompletos** — não chamam `fbq('consent', 'grant')` + `fbq('track', 'PageView')` síncronos imediatamente após `fbq('init', '149334790553204')`. Sem isso, o cookie `_fbp` só é setado depois que `fbevents.js` async termina, gerando race condition vs `tracker.js` (também async). Hoje mitigado parcialmente pelo enrichment histórico server-side (ADR-039), mas o evento `Lead` server-side perde o `fbp` real do session inicial.
+- **Pergunta:** qual é a estratégia robusta?
+  - Alternativa A (curto prazo): operador atualiza o snippet das 2 LPs WP para chamar `fbq` síncrono. Pendência humana — `MEMORY.md §3 / PIXEL-SNIPPET-LP-FIX`.
+  - Alternativa B (médio prazo): `tracker.js` faz retry/aguarda janela curta de 500ms-1s antes de enviar `Lead`/`PageView`, dando tempo do `_fbp` aparecer. Risco: aumenta latência percebida de captura; pode atrasar redirect pós-form.
+  - Alternativa C: `tracker.js` mintera `_fbp` próprio (formato `fb.1.<timestamp>.<random>`) quando o cookie não estiver presente após X ms. Risco: duplicidade — se Pixel terminar de inicializar depois e setar o cookie real, teremos `_fbp` divergente entre browser e server.
+  - Alternativa D: tracker observa `document.cookie` em loop curto (até 2s) e re-envia o evento server-side com `fbp` populado. Custo: 1 extra request por evento.
+- **Impacto:** sem fix, eventos Lead capturados na primeira sessão chegam sem `fbp`, dependendo do enrichment histórico que só funciona se o lead voltar. Match score Lead fica em ~6/8 em vez de 7/8.
+- **Status:** aberta. Mitigação Alternativa A em curso (operador). Decisão sobre B/C/D fica para próxima iteração do tracker se Alternativa A não bastar.
+- **Classificação:** pode esperar — Alternativa A resolve sem mudança de código.
+
+---
+
 ## Política de promoção OQ → ADR
 
 OQ vira ADR quando:
