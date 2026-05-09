@@ -350,7 +350,7 @@ describe('TC-02-02: lead já existe — upsert idempotente', () => {
     expect(result.value.merge_executed).toBe(false);
   });
 
-  it('segundo processRawEvent com mesmo email usa lead_id original e não chama recordTouches', async () => {
+  it('segundo processRawEvent com mesmo email usa lead_id original e chama recordTouches quando há attribution', async () => {
     const rawRow = makeRawEventRow({ event_id: 'evt-flow02-002' });
 
     // Resolver devolve lead existente (was_created=false, merge_executed=false)
@@ -376,8 +376,17 @@ describe('TC-02-02: lead já existe — upsert idempotente', () => {
       expect.objectContaining({ leadId: LEAD_ID_A }),
     );
 
-    // recordTouches NÃO deve ser chamado (was_created=false, merge_executed=false)
-    expect(recordTouches).not.toHaveBeenCalled();
+    // recordTouches DEVE ser chamado mesmo com was_created=false quando há attribution —
+    // BR-ATTRIBUTION-002: last-touch atualizado em cada evento de identificação com dados de attribution.
+    // first-touch é protegido por ON CONFLICT DO NOTHING e não será sobrescrito.
+    expect(recordTouches).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lead_id: LEAD_ID_A,
+        launch_id: LAUNCH_ID,
+        attribution: expect.objectContaining({ utm_source: 'meta', fbclid: 'ABC123' }),
+      }),
+      expect.anything(),
+    );
   });
 });
 

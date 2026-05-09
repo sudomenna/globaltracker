@@ -601,17 +601,23 @@ export async function processRawEvent(
     // BR-IDENTITY-003: use canonical lead_id (merge may have been executed)
     resolvedLeadId = resolveResult.value.lead_id;
 
-    // Record attribution touches when lead was created or merged (new association)
-    if (
-      (resolveResult.value.was_created || resolveResult.value.merge_executed) &&
-      payload.launch_id
-    ) {
+    // Record attribution touches on every identify event that carries attribution data.
+    // BR-ATTRIBUTION-001: first-touch is protected by ON CONFLICT DO NOTHING — won't overwrite.
+    // BR-ATTRIBUTION-002: last-touch updated on every call — correct for returning leads with new UTMs.
+    // Previously gated on was_created || merge_executed, which caused lead_attributions to stay
+    // empty for existing leads even when they arrived with full UTM + fbclid data.
+    const attrPayload = payload.attribution as AttributionParams | undefined;
+    const hasAttribution = Boolean(
+      attrPayload?.utm_source || attrPayload?.fbclid || attrPayload?.gclid ||
+      attrPayload?.gbraid || attrPayload?.wbraid,
+    );
+    if (payload.launch_id && hasAttribution) {
       const touchResult = await recordTouches(
         {
           lead_id: resolvedLeadId,
           launch_id: payload.launch_id,
           workspace_id: rawEvent.workspaceId,
-          attribution: payload.attribution as AttributionParams,
+          attribution: attrPayload as AttributionParams,
           event_time: new Date(payload.event_time),
         },
         db,

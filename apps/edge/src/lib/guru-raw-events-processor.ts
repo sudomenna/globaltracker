@@ -402,9 +402,14 @@ export async function processGuruRawEvent(
   // (see Step 5). received_at is a final fallback so we still beat NOW() when
   // the payload lacks any timestamp.
   const guruEventTimeForLead = (() => {
+    // Guru timestamp reliability order (most to least reliable):
+    // - confirmed_at: real UTC, present only on approved transactions
+    // - ordered_at:   real UTC, present from the moment the order is placed
+    // - created_at:   BRL time mislabeled as UTC (Guru bug) — last resort
     const raw =
       payload.dates?.confirmed_at ??
       payload.confirmed_at ??
+      payload.dates?.ordered_at ??
       payload.dates?.created_at ??
       payload.created_at;
     if (raw) {
@@ -611,10 +616,15 @@ export async function processGuruRawEvent(
 
   // T-13-010: confirmed_at fica em `payload.dates.confirmed_at` no Guru moderno.
   // Mantemos fallback pro top-level (legacy/test fixtures) e pro created_at.
+  // Guru timestamp reliability order (most to least reliable):
+  // - confirmed_at: real UTC, present only on approved transactions
+  // - ordered_at:   real UTC, present from the moment the order is placed
+  // - created_at:   BRL time mislabeled as UTC (Guru bug) — last resort
   const eventTime = (() => {
     const raw =
       payload.dates?.confirmed_at ??
       payload.confirmed_at ??
+      payload.dates?.ordered_at ??
       payload.dates?.created_at ??
       payload.created_at;
     if (raw) {
