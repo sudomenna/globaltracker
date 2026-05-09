@@ -875,6 +875,7 @@ async function lookupHistoricalBrowserSignals(
   fbp: string | null;
   ip: string | null;
   ua: string | null;
+  visitor_id: string | null;
 }> {
   // Webhook Purchases (Guru/OnProfit/Hotmart/etc) não carregam fbc/fbp/IP/UA
   // no payload. Buscamos esses sinais nos events anteriores do mesmo lead
@@ -888,13 +889,17 @@ async function lookupHistoricalBrowserSignals(
   // re-parseia a string como objeto antes do ->>. Funciona para rows novas
   // (jsonb-object) e legadas (jsonb-string) — idempotente.
   const rows = await db
-    .select({ userData: events.userData })
+    .select({
+      userData: events.userData,
+      visitorId: events.visitorId,
+    })
     .from(events)
     .where(
       and(
         eq(events.workspaceId, workspaceId),
         eq(events.leadId, leadId),
         sql`(
+          ${events.visitorId} IS NOT NULL OR
           (${events.userData} #>> '{}')::jsonb->>'fbc' IS NOT NULL OR
           (${events.userData} #>> '{}')::jsonb->>'fbp' IS NOT NULL OR
           (${events.userData} #>> '{}')::jsonb->>'client_ip_address' IS NOT NULL OR
@@ -909,7 +914,15 @@ async function lookupHistoricalBrowserSignals(
   let fbp: string | null = null;
   let ip: string | null = null;
   let ua: string | null = null;
+  let visitor_id: string | null = null;
   for (const row of rows) {
+    if (
+      !visitor_id &&
+      typeof row.visitorId === 'string' &&
+      row.visitorId.length > 0
+    ) {
+      visitor_id = row.visitorId;
+    }
     // T-13-013: row.userData pode chegar como string (rows pré-deploy) ou
     // object (rows pós-jsonb-fix). Parse defensivo aceita os dois.
     let ud: Record<string, unknown>;
@@ -938,9 +951,9 @@ async function lookupHistoricalBrowserSignals(
     ) {
       ua = ud.client_user_agent;
     }
-    if (fbc && fbp && ip && ua) break;
+    if (fbc && fbp && ip && ua && visitor_id) break;
   }
-  return { fbc, fbp, ip, ua };
+  return { fbc, fbp, ip, ua, visitor_id };
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,22 +1064,32 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       }
     }
 
-    // Enrich missing fbc/fbp/ip/ua from lead's event history. Webhook events
-    // (Guru Purchase, SendFlow, etc) have no browser context — fall back to
-    // signals captured by tracker.js on prior PageView/Lead events of the same
-    // lead. Skipped when all are already present (tracker events) or no lead.
+    // Enrich missing fbc/fbp/ip/ua/visitor_id from lead's event history.
+    // Webhook events (Guru Purchase, SendFlow, etc) have no browser context —
+    // fall back to signals captured by tracker.js on prior PageView/Lead
+    // events of the same lead. visitor_id (cookie __fvid) maps to Meta
+    // external_id e é sinal P1 de match — sem ele Purchases server-side
+    // perdem dedup com browser. Caveat: se o usuário comprou em outro device
+    // que o da LP, visitor_id histórico será de outro browser; ainda assim
+    // Meta usa como sinal (melhor que null).
     const rawUserData = parsedUserData;
     const hasCurrentFbc = typeof rawUserData.fbc === 'string' && rawUserData.fbc.length > 0;
     const hasCurrentFbp = typeof rawUserData.fbp === 'string' && rawUserData.fbp.length > 0;
     const hasCurrentIp = typeof rawUserData.client_ip_address === 'string' && rawUserData.client_ip_address.length > 0;
     const hasCurrentUa = typeof rawUserData.client_user_agent === 'string' && rawUserData.client_user_agent.length > 0;
+    const hasCurrentVisitorId = typeof event.visitorId === 'string' && event.visitorId.length > 0;
     let enrichedFbc: string | null = null;
     let enrichedFbp: string | null = null;
     let enrichedIp: string | null = null;
     let enrichedUa: string | null = null;
+    let enrichedVisitorId: string | null = null;
     if (
       lead &&
-      (!hasCurrentFbc || !hasCurrentFbp || !hasCurrentIp || !hasCurrentUa)
+      (!hasCurrentFbc ||
+        !hasCurrentFbp ||
+        !hasCurrentIp ||
+        !hasCurrentUa ||
+        !hasCurrentVisitorId)
     ) {
       const historical = await lookupHistoricalBrowserSignals(
         db,
@@ -1077,7 +1100,14 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       if (!hasCurrentFbp) enrichedFbp = historical.fbp;
       if (!hasCurrentIp) enrichedIp = historical.ip;
       if (!hasCurrentUa) enrichedUa = historical.ua;
-      if (enrichedFbc || enrichedFbp || enrichedIp || enrichedUa) {
+      if (!hasCurrentVisitorId) enrichedVisitorId = historical.visitor_id;
+      if (
+        enrichedFbc ||
+        enrichedFbp ||
+        enrichedIp ||
+        enrichedUa ||
+        enrichedVisitorId
+      ) {
         safeLog('info', {
           event: 'meta_capi_browser_signals_enriched',
           dispatch_job_id: job.id,
@@ -1085,6 +1115,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           enriched_fbp: !!enrichedFbp,
           enriched_ip: !!enrichedIp,
           enriched_ua: !!enrichedUa,
+          enriched_visitor_id: !!enrichedVisitorId,
         });
       }
     }
@@ -1111,7 +1142,9 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         lead_id: event.leadId,
         workspace_id: event.workspaceId,
         // BR-CONSENT-003: visitor_id mapeia para Meta external_id (PLANO).
-        visitor_id: event.visitorId,
+        // Webhook Purchases não trazem visitor_id; usamos enriquecido do
+        // histórico tracker.js do mesmo lead quando disponível.
+        visitor_id: event.visitorId ?? enrichedVisitorId,
         user_data: {
           ...(rawUserData as Parameters<typeof mapEventToMetaPayload>[0]['user_data']),
           ...(enrichedFbc ? { fbc: enrichedFbc } : {}),
