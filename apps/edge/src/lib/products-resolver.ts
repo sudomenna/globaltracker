@@ -27,7 +27,8 @@ export type ProductExternalProvider =
   | 'hotmart'
   | 'kiwify'
   | 'stripe'
-  | 'manual';
+  | 'manual'
+  | 'onprofit';
 
 export interface UpsertProductInput {
   workspaceId: string;

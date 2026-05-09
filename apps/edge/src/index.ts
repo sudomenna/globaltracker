@@ -77,6 +77,7 @@ import {
   processDispatchJob,
 } from './lib/dispatch.js';
 import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
+import { processOnprofitRawEvent } from './lib/onprofit-raw-events-processor.js';
 import { processSendflowRawEvent } from './lib/sendflow-raw-events-processor.js';
 import { hashPiiExternal } from './lib/pii.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
@@ -116,6 +117,7 @@ import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
+import { createOnprofitWebhookRoute } from './routes/webhooks/onprofit.js';
 import { createSendflowWebhookRoute } from './routes/webhooks/sendflow.js';
 
 // ---------------------------------------------------------------------------
@@ -442,6 +444,21 @@ app.route(
   ),
 );
 
+// OnProfit webhook — server-to-server; mounted under /v1/webhooks/* (plural,
+// aligned with SendFlow). Workspace resolved by `?workspace=<slug>` query
+// param. HMAC validation TODO until OnProfit publishes the signature spec
+// (see TODO comment in routes/webhooks/onprofit.ts).
+app.route(
+  '/v1/webhooks/onprofit',
+  createOnprofitWebhookRoute((env) =>
+    createDb(
+      (env as unknown as Bindings).DATABASE_URL ??
+        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        '',
+    ),
+  ),
+);
+
 // Control Plane endpoints (Sprint 6 — Wave 1: T-6-003, T-6-004, T-6-007)
 // Auth: Bearer token placeholder — JWT validation via auth-cp.ts in next pass.
 app.route('/v1/pages', pagesRoute);
@@ -713,9 +730,15 @@ async function queueHandler(
         const result =
           platform === 'guru'
             ? await processGuruRawEvent(raw_event_id, db, env.PII_MASTER_KEY_V1)
-            : platform === 'sendflow'
-              ? await processSendflowRawEvent(raw_event_id, db)
-              : await processRawEvent(raw_event_id, db);
+            : platform === 'onprofit'
+              ? await processOnprofitRawEvent(
+                  raw_event_id,
+                  db,
+                  env.PII_MASTER_KEY_V1,
+                )
+              : platform === 'sendflow'
+                ? await processSendflowRawEvent(raw_event_id, db)
+                : await processRawEvent(raw_event_id, db);
 
         if (!result.ok) {
           safeLog('warn', {

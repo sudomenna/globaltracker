@@ -65,7 +65,7 @@ export const products = pgTable(
     ),
     externalProviderCheck: check(
       'chk_products_external_provider',
-      sql`${t.externalProvider} IN ('guru', 'hotmart', 'kiwify', 'stripe', 'manual')`,
+      sql`${t.externalProvider} IN ('guru', 'hotmart', 'kiwify', 'stripe', 'manual', 'onprofit')`,
     ),
     nameLengthCheck: check(
       'chk_products_name_length',
