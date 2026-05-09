@@ -13,7 +13,9 @@ Garante integridade referencial do mapeamento `identifier → lead_id`. Sem isso
 
 ### Enforcement
 - **DB:** `unique partial index on (workspace_id, identifier_type, identifier_hash) where status='active'`.
-- **Domain:** `resolveLeadByAliases()` deve marcar aliases anteriores como `superseded` antes de criar novos com mesmo `(type, hash)`.
+- **Domain:** `resolveLeadByAliases()` deve marcar aliases anteriores do mesmo `(lead_id, identifier_type)` como `superseded` antes de inserir um novo `identifier_hash` daquele type. Aplica em todos os caminhos do resolver:
+  - **path "existing lead, novo hash"** (form re-submit corrigindo typo, troca de telefone, etc.) — corrigido 2026-05-09 (commit do fix do lead `75b3ed42`).
+  - **path "merge"** — semântica diferente (uma pessoa com múltiplos identificadores legítimos): NÃO supersede automaticamente.
 
 ### Aplica-se a
 MOD-IDENTITY, FLOW-02, FLOW-08.
@@ -35,6 +37,14 @@ Scenario: aliases em workspaces diferentes não conflitam
   Given lead alias active (workspace=w1, type=email_hash, hash=H, lead=A)
   When inserir alias active (workspace=w2, type=email_hash, hash=H, lead=B)
   Then deve permitir
+
+Scenario: re-submit com email corrigido marca o anterior como superseded (anti cross-contamination)
+  Given lead L ativo com aliases (email_hash=H_typo) + (phone_hash=H_phone)
+  When form submit chega com (email=H_correto, phone=H_phone)
+  Then resolver bate por phone, reusa lead L
+  And UPDATE lead_aliases SET status='superseded' WHERE lead_id=L AND identifier_type='email_hash' AND status='active'
+  And INSERT lead_aliases (email_hash=H_correto, status='active')
+  And visitante futuro digitando exatamente H_typo NÃO é mergeado em L
 ```
 
 ### Mensagem de erro

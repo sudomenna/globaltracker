@@ -505,6 +505,29 @@ async function updateExistingLead(
   );
 
   if (newAliases.length > 0) {
+    // Supersede aliases ativos anteriores do mesmo identifier_type — eles
+    // foram substituídos pelo novo identificador (típico: usuário corrigiu
+    // typo no email, ou trocou de telefone). Sem isto, o hash antigo (ex.:
+    // email com `.con`) ficaria 'active' e o lead-resolver futuro mergeria
+    // qualquer outra pessoa que digitasse exatamente o mesmo typo nesse lead
+    // — risco real de cross-contamination de identidade.
+    // Não toca em identifier_types que não vieram neste resolve (preserva
+    // phone_hash ativo quando só email mudou, e vice-versa).
+    const newTypes = Array.from(
+      new Set(newAliases.map((a) => a.identifier_type)),
+    );
+    await db
+      .update(leadAliases)
+      .set({ status: 'superseded' })
+      .where(
+        and(
+          eq(leadAliases.leadId, leadId),
+          eq(leadAliases.workspaceId, workspace_id),
+          eq(leadAliases.status, 'active'),
+          inArray(leadAliases.identifierType, newTypes),
+        ),
+      );
+
     await db.insert(leadAliases).values(
       newAliases.map((a) => ({
         workspaceId: workspace_id,
