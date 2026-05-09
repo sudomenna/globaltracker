@@ -267,7 +267,15 @@ function track(eventName: string, customData?: Record<string, unknown>): void {
       event_name: eventName,
       event_time: new Date().toISOString(),
       attribution: buildAttributionRecord(state.attributionParams),
-      user_data: buildUserDataRecord(state.platformCookies, state.attributionParams),
+      // Re-capture platform cookies at send-time (not from state).
+      // Race fix: state.platformCookies is set inside init() AFTER `await fetchConfig(...)`.
+      // Snippets that fire track/page from DOMContentLoaded (e.g. thankyou pages with
+      // auto_page_view=false) may reach track() while init() is still awaiting config —
+      // state would still be the default { _gcl_au: null, _ga: null, fbc: null, fbp: null }
+      // and the event would ship empty user_data even though Pixel/GA already set the cookies.
+      // Reading document.cookie fresh is microseconds; cookies can also be set late by Pixel,
+      // so fresh-read is more correct than cached state in any case.
+      user_data: buildUserDataRecord(capturePlatformCookies(), state.attributionParams),
       custom_data: customData ?? {},
       consent: {
         analytics: consent.analytics,

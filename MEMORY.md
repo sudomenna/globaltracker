@@ -11,11 +11,12 @@
 ## §1 Estado atual
 
 - **Sprint ativo**: nenhum ativo. Hotfix sprint informal "Meta CAPI EMQ Hardening" entregue 2026-05-09.
-- **Última entrega**: pipeline Meta CAPI hardening completo — jsonb cast fix + historical browser signals enrichment (fbc/fbp/IP/UA/visitor_id) + observability view + replay das 7 compras anteriores de anúncios.
-- **Próxima ação**: usuário deve atualizar snippets Meta Pixel nas LPs WordPress (`wk-societarios-1` + `wk-obg`) com `fbq('consent', 'grant')` + `fbq('track', 'PageView')` síncronos. Verificar EMQ no Meta Events Manager em 24h. Trilha 1 (Purchase Guru E2E) e Trilha 3 (survey) seguem em aberto.
-- **Branch**: `main`, working tree clean. `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ba2fbe37` — visitor_id enrichment, IP/UA enrichment, fbc/fbp lookup defensivo, jsonb cast fix, OnProfit live, Sprint 17 live).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0047 aplicadas.
+- **Última entrega**: tracker race-fix — `track()` agora lê `capturePlatformCookies()` fresco a cada send em vez de `state.platformCookies` (snapshot de init). Bug fazia PageView/Lead disparados de DOMContentLoaded em qualquer page (especialmente thankyou com `auto_page_view: false`) saírem com `_ga/_gcl_au/_fbp/_fbc` zerados — o handler do snippet executava DURANTE o `await fetchConfig` do init, antes de `capturePlatformCookies()` rodar. Reproduzido em prod via Playwright contra `wk-obg` e validado com 3 events em DB (`2b7b275a` pre-fix → null; `6ae8332d` post-fix → cookies populados).
+- **Próxima ação**: revisar match score Meta CAPI nas próximas 24h — fix beneficia TODOS os events tracker (não só thankyou). Trilha 1 (Purchase Guru E2E) e Trilha 3 (survey) seguem em aberto.
+- **Branch**: `main`, commits novos pendentes (auto_page_view fix + tracker race fix + doc-sync + CLAUDE.md operational rule). `facebook_docs.md` untracked (referência local, **não commitar**).
+- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ba2fbe37` — sem mudança no edge nesta entrega; só client-side tracker).
+- **CDN tracker.js**: R2 `gt-tracker-cdn` atualizado 2026-05-09 08:24 UTC com fix de race (etag `991734d4`, 9466 bytes).
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0048** aplicadas (0048 = corrigir `obrigado-workshop.event_config.auto_page_view` para `false`, alinhado com migration 0039).
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
 
 ### Entregas recentes (2026-05-09)
@@ -34,6 +35,9 @@
 | meta-capi: historical lookup também enriquece IP/UA + parseUd em todos jsonb reads | `77f97c6` | `974368b9` |
 | Health view `v_meta_capi_health` (migration 0047) — score 0..8 por evento | `10277cf` | — (DB only) |
 | meta-capi: historical lookup também enriquece visitor_id (Meta external_id) | `5ed259d` | `ba2fbe37` |
+| **Migration 0048: corrigir `obrigado-workshop.auto_page_view` para `false`** (alinhado com 0039 — sobrescrita manual incorreta em sessão anterior) | (pending) | — (DB only) |
+| **Tracker race-fix: `capturePlatformCookies()` fresh em `track()`** | (pending) | R2 `tracker.js` etag `991734d4` |
+| Doc-sync: `docs/20-domain/13-mod-tracker.md §7.7` documenta fresh-read em send-time | (pending) | — |
 
 ### Replays executados (2026-05-09 ~07:00–07:11 UTC)
 
@@ -110,7 +114,7 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 
 ### Pendências críticas — Meta CAPI EMQ Hardening (2026-05-09)
 
-- **PIXEL-SNIPPET-LP-FIX (USUÁRIO)** — As 2 LPs WordPress (`wk-societarios-1` LP de captação + `wk-obg` LP obrigado) têm o snippet do Meta Pixel **incompleto**: faltam `fbq('consent', 'grant')` + `fbq('track', 'PageView')` SÍNCRONOS após `fbq('init', '149334790553204')`. Sem isso, o cookie `_fbp` só é setado depois que `fbevents.js` async termina, gerando race condition vs `tracker.js` (também async). Validado em prod 2026-05-09: lead `d3359f5f` mostrou que `_fbp` apareceu só 3 minutos após o PageView. **Ação**: usuário precisa atualizar HTML/CSS/JS dos templates Elementor das 2 pages.
+- ~~**PIXEL-SNIPPET-LP-FIX (USUÁRIO)**~~ — RESOLVIDO 2026-05-09 (diagnóstico anterior estava errado). HTML deployado em `wk-obg` JÁ tem `fbq('consent','grant')` + `fbq('init','149334790553204')` + `fbq('track','PageView')` síncronos no head. O bug real era race interno do tracker (state.platformCookies snapshot em init vs handler do snippet executando durante `await fetchConfig` do init). Resolvido pelo tracker race-fix entregue nesta sessão. Validado via Playwright contra LP de prod.
 - **DISPATCH-ATTEMPTS-PAYLOAD-EMPTY** — `dispatch_attempts.request_payload_sanitized` e `response_payload_sanitized` ainda gravam `{}` literal em todos os call sites de `apps/edge/src/lib/dispatch.ts` (linhas 363/364, 403/404, 436/437, 508/509, 575/576, 595/596). O usuário pediu observabilidade do que efetivamente sai pra Meta — hoje só temos a presença/ausência via `v_meta_capi_health`. Próxima iteração: estender `DispatchResult` com `request`/`response` opcional, popular nos dispatchers, e gravar (com IP redacted) nos attempts.
 - **GEO-CITY-ENRICHMENT-GAP** — Purchase events de Guru sem `contact.address` ficam sem `geo_city` (último sinal faltante pra match score 8/8). Considerar enrichment de geo a partir do IP histórico via Cloudflare CF-IPCity / `cf_ray` no momento do dispatch (precisa lookup adicional). Ou via geolocation do IP enrichado. Não bloqueia (7/8 já é alto), mas fecha o último gap.
 - **JSONB-LEGACY-ROWS-BACKFILL** — Rows pré-deploy `ed9a490d` (todas events/raw_events/dispatch_jobs anteriores a 2026-05-09 ~05:00) têm `jsonb_typeof='string'` em colunas jsonb. Funciona via Drizzle (parse na leitura), mas queries SQL ad-hoc precisam de `(col #>> '{}')::jsonb` defensivo. Backfill seria UPDATE em massa para re-cast: `UPDATE events SET user_data = (user_data #>> '{}')::jsonb WHERE jsonb_typeof(user_data)='string'`. Não urgente — mitigado via `lookupHistoricalBrowserSignals` defensivo e view `v_meta_capi_health`.
@@ -132,7 +136,7 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
   - `buildDetectionScript` (L131): `consent.{analytics,marketing}: false` — deveria ser `'granted'` em todas finalidades.
   - **Plano**: (1) `buildHeadSnippet` v2 emite GA4 → Pixel → tracker (skip blocos não configurados), comentário com exclusões WP Rocket; (2) substituir `buildBodySnippet` por `buildFooterSnippet(role)` específico por `pages.role` (sales/thankyou/webinar); (3) corrigir consent + adicionar `fbq` calls com `eventID`; (4) tests cobrindo head sem GA4, head sem Meta, snippet por role.
 
-- **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE** — Tela de Configuração de eventos da page no CP não expõe toggle `auto_page_view` que vive em `pages.event_config.auto_page_view`. Hoje só via SQL direto. Aplicado em 2026-05-09: `auto_page_view: true` em `obrigado-workshop` e `checkout-onprofit-workshop`.
+- **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE** — Tela de Configuração de eventos da page no CP não expõe toggle `auto_page_view` que vive em `pages.event_config.auto_page_view`. Hoje só via SQL direto. Política canônica (migration 0039): `role=thankyou → false`, `role=sales/webinar → true`. `obrigado-workshop` corrigido para `false` via migration 0048 (2026-05-09) após edição manual incorreta.
 
 - **ONPROFIT-HMAC-VALIDATION-TODO** — `apps/edge/src/routes/webhooks/onprofit.ts:96-100` loga warn `onprofit_webhook_hmac_validation_todo` em todo request porque o spec do header HMAC do OnProfit não foi publicado. Hoje protegido apenas por `?workspace=<slug>` no query string. Atualizar quando OnProfit publicar a assinatura.
 

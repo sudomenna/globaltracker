@@ -190,6 +190,14 @@ com `subdomain_index = 1` (mesmo valor que o Pixel SDK escreve em uso first-part
 
 A síntese acontece **no client**, não no server — o `timestamp_ms` reflete o momento em que o lead carregou a página, não o momento em que o backend processou o evento (esse seria errado para a janela de atribuição da Meta).
 
+## 7.7 Captura de cookies é fresh-read em cada `track()`, não snapshot de init
+
+`buildUserDataRecord` é chamado em [`apps/tracker/src/index.ts`](../../apps/tracker/src/index.ts) no momento de **enviar** cada evento e recebe `capturePlatformCookies()` lido na hora — **não** lê de `state.platformCookies`. A captura fresh-at-send é a forma canônica; `state.platformCookies` permanece sendo populado em `init()` por compatibilidade mas não é mais a fonte de verdade.
+
+> Bug histórico (descoberto e corrigido 2026-05-09): `init()` é `async` e cede controle no `await fetchConfig(...)`. Se um snippet (ex.: thankyou page com `auto_page_view: false`) dispara `F.page()` a partir do listener `DOMContentLoaded`, esse listener executa **durante** o await do init() — antes de `capturePlatformCookies()` rodar. O `track()` lia `state.platformCookies` que ainda era o default `{ _gcl_au: null, _ga: null, fbc: null, fbp: null }`. Resultado: PageView ia para o backend com user_data zerado, mesmo com Pixel/GA já tendo setado os cookies no browser. Match score Meta CAPI travava sem fbp em todo evento "early-fire". Reproduzido em prod via Playwright contra `wk-obg`. Fix: trocar `state.platformCookies` por `capturePlatformCookies()` em `track()`.
+
+Custo: leitura de `document.cookie` é síncrona e da ordem de microssegundos. Cookies podem mudar durante a sessão (Pixel seta `_fbp` no primeiro track, `_fbc` aparece se chegar `fbclid`), então ler fresh é também *mais correto* que cachear — capture-once é otimização que perdeu validade.
+
 ## 8. BRs relacionadas
 
 - `BR-TRACKER-001` — Funil.identify exige lead_token, não lead_id em claro.
