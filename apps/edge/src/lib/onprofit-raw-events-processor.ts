@@ -130,6 +130,11 @@ const OnProfitRawEventPayloadSchema = z
       })
       .passthrough()
       .nullish(),
+
+    // Derived fields injected pela rota webhook (resolveLaunchForOnProfitEvent).
+    // ONPROFIT-LAUNCH-RESOLVER (2026-05-09): paridade com Guru.
+    launch_id: z.string().uuid().optional(),
+    funnel_role: z.string().optional(),
   })
   .passthrough();
 
@@ -630,10 +635,11 @@ export async function processOnprofitRawEvent(
       .insert(events)
       .values({
         workspaceId: rawEvent.workspaceId,
-        // OnProfit does not currently provide launch_id resolution (no
-        // equivalent of resolveLaunchForGuruEvent for now). lead_stages
-        // population requires launch_id — when usuário formalises an
-        // OnProfit launch resolver, wire it here mirroring the Guru handler.
+        // ONPROFIT-LAUNCH-RESOLVER (2026-05-09): launch_id é injetado pela
+        // rota webhook via resolveLaunchForOnProfitEvent (mesmo padrão Guru).
+        // Quando launch_id não é resolvido (productId não mapeado +
+        // lead inédito), permanece undefined e lead_stages é skipado.
+        launchId: payload.launch_id ?? undefined,
         leadId: resolvedLeadId ?? undefined,
         eventId: payload._onprofit_event_id,
         eventName: payload._onprofit_event_type, // "Purchase", "InitiateCheckout", …
@@ -734,27 +740,89 @@ export async function processOnprofitRawEvent(
   }
 
   // -------------------------------------------------------------------------
-  // Step 9 + 10: lead_stages + tag_rules
+  // Step 9 + 10: lead_stages + tag_rules (ONPROFIT-LAUNCH-RESOLVER, 2026-05-09).
   //
-  // OnProfit currently has no launch resolver — lead_stages requires
-  // launch_id, so this block is a no-op until that resolver lands. Tag
-  // rules also depend on the blueprint, which is keyed by launch_id.
-  //
-  // When usuário implements an OnProfit launch resolver (analogous to
-  // resolveLaunchForGuruEvent), inject `launch_id` into the enriched payload
-  // from the route handler and uncomment / adapt the block below.
-  //
-  // The current architecture deliberately lets OnProfit Purchase events flow
-  // through to Meta CAPI / GA4 / Google Ads even without launch attribution
-  // — the Meta cookies (fbc/fbp) are the headline match-quality lift, and
-  // they don't depend on launch_id.
+  // Mirror estrutural do equivalente em guru-raw-events-processor.ts.
+  // payload.launch_id é injetado pela rota webhook via
+  // resolveLaunchForOnProfitEvent. Quando ausente (productId não mapeado +
+  // lead inédito), bloco é skipado — events.launchId fica null, mas o evento
+  // ainda flui pra Meta CAPI / GA4 / Google Ads (fbc/fbp lift independente).
   // -------------------------------------------------------------------------
-  // (intentionally empty — see comment above)
-  void insertLeadStageIgnoreDuplicate; // keep import alive for when resolver lands
-  void getBlueprintForLaunch;
-  void matchesStageFilters;
-  void applyTagRules;
-  void ((): FunnelBlueprint | null => null);
+  if (resolvedLeadId && payload.launch_id) {
+    let blueprint: FunnelBlueprint | null = null;
+    try {
+      blueprint = await getBlueprintForLaunch(payload.launch_id, db);
+    } catch {
+      blueprint = null;
+    }
+
+    const customDataForFilters: Record<string, unknown> = {
+      funnel_role: payload.funnel_role ?? null,
+    };
+
+    if (blueprint !== null) {
+      // Dynamic blueprint-driven stage resolution.
+      for (const stage of blueprint.stages) {
+        if (
+          matchesStageFilters(
+            payload._onprofit_event_type,
+            customDataForFilters,
+            stage,
+          )
+        ) {
+          await insertLeadStageIgnoreDuplicate(
+            {
+              workspaceId: rawEvent.workspaceId,
+              leadId: resolvedLeadId,
+              launchId: payload.launch_id,
+              stage: stage.slug,
+              isRecurring: stage.is_recurring,
+              sourceEventId: insertedEventId,
+            },
+            db,
+          );
+        }
+      }
+    } else if (payload._onprofit_event_type === 'Purchase') {
+      // Fallback: hardcoded stage para launches sem blueprint.
+      await insertLeadStageIgnoreDuplicate(
+        {
+          workspaceId: rawEvent.workspaceId,
+          leadId: resolvedLeadId,
+          launchId: payload.launch_id,
+          stage: 'purchased',
+          isRecurring: false,
+          sourceEventId: insertedEventId,
+        },
+        db,
+      );
+    }
+
+    // T-LEADS-VIEW-002: aplicar tag_rules. BR-PRIVACY-001: nenhum PII.
+    // Falha não bloqueia pipeline (mesmo padrão de promoteLeadLifecycle).
+    try {
+      await applyTagRules({
+        db,
+        workspaceId: rawEvent.workspaceId,
+        leadId: resolvedLeadId,
+        eventName: payload._onprofit_event_type,
+        eventContext: {
+          funnel_role: payload.funnel_role ?? undefined,
+        },
+        tagRules: blueprint?.tag_rules,
+      });
+    } catch (tagErr) {
+      safeLog('warn', {
+        event: 'apply_tag_rules_failed',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        error:
+          tagErr instanceof Error
+            ? tagErr.message.slice(0, 200)
+            : String(tagErr),
+      });
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Step 11: Create dispatch_jobs for enabled integrations.

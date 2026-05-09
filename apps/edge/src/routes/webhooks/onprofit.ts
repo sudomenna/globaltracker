@@ -37,6 +37,7 @@ import { Hono } from 'hono';
 import { mapOnProfitToInternal } from '../../integrations/onprofit/mapper.js';
 import type { OnProfitWebhookPayload } from '../../integrations/onprofit/types.js';
 import { jsonb } from '../../lib/jsonb-cast.js';
+import { resolveLaunchForOnProfitEvent } from '../../lib/onprofit-launch-resolver.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -209,6 +210,41 @@ export function createOnprofitWebhookRoute(
     // -----------------------------------------------------------------------
     const internalEvent = mapResult.value;
 
+    // -----------------------------------------------------------------------
+    // Step 6.5: Resolve launch_id + funnel_role (ONPROFIT-LAUNCH-RESOLVER-TODO).
+    // Mirror estrutural do passo equivalente em createGuruWebhookRoute.
+    // Falha não-fatal: raw_event ainda é persistido sem launch_id; processor
+    // segue sem lead_stages/tag_rules nesse caso.
+    // BR-PRIVACY-001: leadHints (email/phone) NÃO entram em logs.
+    // -----------------------------------------------------------------------
+    let resolvedLaunchId: string | null = null;
+    let resolvedFunnelRole: string | null = null;
+    if (db) {
+      const productId = body.product?.id != null
+        ? String(body.product.id)
+        : null;
+      try {
+        const resolved = await resolveLaunchForOnProfitEvent({
+          workspaceId,
+          productId,
+          leadHints: {
+            email: internalEvent.lead_hints.email,
+            phone: internalEvent.lead_hints.phone,
+            visitorId: null,
+          },
+          db,
+        });
+        resolvedLaunchId = resolved.launch_id;
+        resolvedFunnelRole = resolved.funnel_role;
+      } catch (err) {
+        safeLog('warn', {
+          event: 'onprofit_webhook_launch_resolution_failed',
+          workspace_id: workspaceId,
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+      }
+    }
+
     // Build enriched payload — sanitized body + derived fields the processor
     // uses to short-circuit re-mapping. BR-PRIVACY-001: customer.email/phone/
     // name remain in payload for processor; never written to log columns.
@@ -216,6 +252,8 @@ export function createOnprofitWebhookRoute(
       ...sanitizePayloadForStorage(body),
       _onprofit_event_type: internalEvent.event_type,
       _onprofit_event_id: internalEvent.event_id,
+      ...(resolvedLaunchId !== null && { launch_id: resolvedLaunchId }),
+      ...(resolvedFunnelRole !== null && { funnel_role: resolvedFunnelRole }),
     };
 
     let rawEventId: string | undefined;
