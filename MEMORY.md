@@ -10,9 +10,9 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: nenhum ativo. Sequência de hardening entregue 2026-05-09 (tracker race + KV best-effort + alias supersede + dispatch payload audit + Google Ads OAuth refactor + OnProfit launch resolver + geo enrichment).
-- **Branch**: `main`, working tree limpo (só `facebook_docs.md` untracked — não commitar). 26 commits ahead de origin (sem push automático — pedir confirmação se for pushar).
-- **Edge prod**: deploy atual **`1b45681a`** (geo enrichment via historical lookup).
+- **Sprint ativo**: nenhum ativo. Sequência de hardening entregue 2026-05-09 (tracker race + KV best-effort + alias supersede + dispatch payload audit + Google Ads OAuth refactor + OnProfit launch resolver + geo enrichment + outbox poller + DLQ nativa).
+- **Branch**: `main`, working tree limpo (só `facebook_docs.md` untracked — não commitar). 28+ commits ahead de origin (sem push automático — pedir confirmação se for pushar).
+- **Edge prod**: deploy atual **`9b78719c`** (outbox poller + DLQ, ADR-042). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09).
 - **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas.
 - **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
@@ -65,6 +65,7 @@
 | 15 | **T-14-009-FOLLOWUP**: Google Ads Conv aceita `accessToken` direto (paridade Enhanced) | `bea8042` | edge `db4c5464` |
 | 16 | **OnProfit launch resolver** + lead_stages + tag_rules (paridade Guru) | `5668c67` | edge `d6ce4274` |
 | 17 | **GEO-CITY-ENRICHMENT-GAP**: geo histórico Meta CAPI + view 0050 | `9a00f46` | edge `1b45681a` + migration 0050 |
+| 18 | **Outbox poller + DLQ nativa** (raw_events recovery automática), ADR-042. Token CF migrado pra `.env.local`, `pnpm deploy:edge` com wrangler@4 | `fc1f778` | edge `9b78719c` + queue `gt-events-dlq` |
 
 ### Replays executados (2026-05-09 ~07:00–07:11 UTC)
 

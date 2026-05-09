@@ -1343,6 +1343,48 @@ MOD-DISPATCH (orchestrator), BR-DISPATCH-007 (nova), [`apps/edge/src/lib/dispatc
 
 ---
 
+## ADR-042 — Outbox poller + native DLQ para `raw_events` presos em pending (2026-05-09)
+
+### Status
+aceito. Deploy `9b78719c` em 2026-05-09.
+
+### Contexto
+2026-05-09, investigação do lead Isaías (`f2912fd8`): só `lead_identify` e `Purchase` apareciam na timeline; faltavam `PageView`, `custom:click_buy_workshop` e `Lead`. Investigação encontrou **259 raw_events presos em `processing_status='pending'`** entre 10:00–17:00 UTC do mesmo dia, todos com payload válido. O corte coincidiu com o upgrade Workers Free → Paid às 17:05 UTC: o limite diário de requests do plano free saturou, queue consumer parou de drenar, mensagens enfileiradas exauriram retries (3× default Cloudflare) e foram **silenciosamente descartadas**, deixando os `raw_events` em `pending` indefinidamente.
+
+Duas brechas de design no fluxo `events.ts → QUEUE_EVENTS → processRawEvent`:
+1. Se `QUEUE_EVENTS.send()` lança no catch (queue indisponível, throttle), o `raw_events` já foi inserido como `pending` mas a mensagem **nunca entra na fila** — não há retry possível.
+2. Se `processRawEvent` exauri retries do consumer, o Cloudflare descarta a mensagem sem callback ao worker — `raw_events` fica `pending` para sempre, sem `processing_error`.
+
+### Decisão
+**Adotar padrão Transactional Outbox com poller + DLQ nativa.**
+
+1. **Cron `*/10 * * * *`** em `scheduledHandler` (`apps/edge/src/index.ts`) varre `raw_events` com `processing_status='pending'` na janela `[10min, 24h]` e re-enfileira via `QUEUE_EVENTS.send()`. Cobre tanto o caso (1) quanto recuperação de mensagens descartadas em (2). Limite superior de 24h evita loop infinito para eventos com payload patológico — emite warning `stuck_pending_events` para investigação manual.
+2. **DLQ nativa** `gt-events-dlq` (criada via `wrangler@4 queues create`), declarada em `wrangler.toml` no consumer de `gt-events` (`max_retries=3, dead_letter_queue="gt-events-dlq"`). Após 3 retries, mensagem migra automaticamente para a DLQ.
+3. **Consumer dedicado da DLQ** no `queueHandler` (rota por `batch.queue === 'gt-events-dlq'`) marca o `raw_events` como `processing_status='failed'` com `processing_error='dlq: max_retries exhausted on gt-events (attempts=N)'`. O cron poller deixa de re-enfileirar (filtro só pega `pending`), evitando loop.
+4. **Logging melhorado** — `queue_events_enqueue_failed` agora inclui `raw_event_id` + `event_name`. Eventos `outbox_poll_completed`, `dlq_event_marked_failed`, `stuck_pending_events` para monitoramento via `wrangler tail`.
+
+### Alternativas consideradas
+
+- **Retry inline no `events.ts`** (re-tentar `QUEUE_EVENTS.send` com backoff antes de retornar 202) — aumenta latência da rota de ingestão e ainda não cobre caso (2) (queue retries esgotados).
+- **Polling apenas, sem DLQ** — o plano inicial. Funciona, mas eventos patológicos ficam num loop "re-enqueue → fail → re-enqueue" até atingir 24h, gerando ruído de retry e custos de invocação. DLQ corta o loop em 3 tentativas.
+- **DLQ apenas, sem poller** — não cobre caso (1) (mensagem nunca entrou na fila). Polling do outbox é necessário como rede de segurança independente.
+- **Adicionar coluna `processing_attempts`** ao `raw_events` (soft DLQ) — exige migration. Cobre o caso de eventos patológicos, mas é estritamente inferior à DLQ nativa (que delegou contagem de tentativas e descarte ao Cloudflare). DLQ nativa estava bloqueada por wrangler 3+/4+ falhar com erro 10023, mas em 2026-05-09 o bug foi resolvido pela Cloudflare e wrangler@4 destravou.
+
+### Consequências
+
+- (+) Eventos transitoriamente perdidos (queue throttle, deploy gap, consumer crash) recuperam-se automaticamente em ≤10 minutos.
+- (+) Eventos com payload patológico falham rápido (3 retries) e ficam visíveis em `processing_status='failed'` com motivo, em vez de invisíveis em `pending`.
+- (+) Padrão Transactional Outbox alinhado com a literatura — `raw_events` já era o outbox; faltava o poller. Não exigiu novo storage.
+- (+) `wrangler@4` destravou — `pnpm deploy:edge` simplificado, suporte a versioned deployments, DLQ nativa, e atualizações futuras desbloqueadas.
+- (–) Cron roda a cada 10min mesmo sem eventos pendentes (custo desprezível: 1 query indexada).
+- (–) Window mínima de 10min para recuperar — eventos perdidos dentro dessa janela ficam invisíveis ao usuário até o próximo tick. Aceitável para um sistema async.
+- (–) Janela máxima de 24h: eventos perdidos por >24h precisam de replay manual (ler `stuck_pending_events` warning e re-enfileirar via script). OK no MVP — incidente assim deve disparar investigação humana de qualquer forma.
+
+### Impacta
+[`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (`scheduledHandler` ganha branch `*/10 * * * *`; `queueHandler` ganha branch `gt-events-dlq`), [`apps/edge/src/routes/events.ts`](../../apps/edge/src/routes/events.ts) (log `queue_events_enqueue_failed` adiciona `raw_event_id`+`event_name`), [`apps/edge/wrangler.toml`](../../apps/edge/wrangler.toml) ([triggers] crons + DLQ config), [`package.json`](../../package.json) (script `deploy:edge`). Comportamento de MOD-EVENT (recuperação automática) e observabilidade do pipeline raw_events → events.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

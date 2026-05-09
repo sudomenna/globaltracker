@@ -21,35 +21,42 @@
 - Garantia: at-least-once delivery (RNF-004).
 - Lock atômico no consumer antes de side effect (BR-DISPATCH-002).
 - Backoff: CF Queues controla retry; consumidor decide se sucesso ou falha via response.
-- DLQ: configurada na queue (CF nativa). Após `max_attempts`, mensagem vai para DLQ queue.
+- DLQ nativa configurada por queue no `wrangler.toml` (`dead_letter_queue`). Após `max_retries`, mensagem migra para a DLQ queue (ADR-042).
 
-Queues utilizadas:
+Queues atuais:
 
-| Queue | Producer | Consumer | Mensagens |
-|---|---|---|---|
-| `QUEUE_RAW_EVENTS` | Edge `/v1/events` | `apps/edge/src/lib/raw-events-processor.ts` | `{raw_event_id}` |
-| `QUEUE_DISPATCH` | Ingestion processor + dispatchers | `apps/edge/src/dispatchers/*` workers | `{dispatch_job_id, destination}` |
-| `QUEUE_AUDIENCE_SYNC` | Audience cron | `apps/edge/src/dispatchers/audience-sync/*` | `{audience_sync_job_id}` |
-| `QUEUE_DLQ` | (auto pela CF) | manual reprocessing | mensagens originais |
+| Queue | Producer | Consumer | Mensagens | Retries |
+|---|---|---|---|---|
+| `gt-events` | Edge `/v1/events`, webhooks, outbox poller | `processRawEvent` / `processGuruRawEvent` / `processOnprofitRawEvent` / `processSendflowRawEvent` em `index.ts` (rota por `body.platform`) | `{raw_event_id, workspace_id, page_id, received_at, platform?}` | `max_retries=3`, DLQ → `gt-events-dlq` |
+| `gt-events-dlq` | (auto-promoted pela CF após retries esgotados) | `queueHandler` branch `batch.queue==='gt-events-dlq'` em `index.ts` — marca `raw_events.processing_status='failed'` com `processing_error='dlq: max_retries exhausted'` | `{raw_event_id, ...}` (mesmo shape de `gt-events`) | `max_retries=1` (best-effort, fim da linha) |
+| `gt-dispatch` | Ingestion processor (após criar dispatch_jobs) | `processDispatchJob` em `index.ts` (rota por `destination`) | `{dispatch_job_id, destination}` | `max_retries=5` (controlado pelo dispatch_jobs.attempt_count) |
+
+DLQ para `gt-dispatch` ainda não configurada (Fase 4) — `dispatch_jobs` permanece em `failed` após 5 attempts e é tratado por reprocessamento manual.
 
 ## CF Cron Triggers
 
-Configurados em `apps/edge/wrangler.toml`:
+Configurados em [`apps/edge/wrangler.toml`](../../apps/edge/wrangler.toml):
 
 ```toml
 [triggers]
 crons = [
-  "0 17 * * *",   # FX rates fetch (UTC 17:00)
-  "0 2 * * *",    # daily_funnel_rollup refresh (UTC 02:00)
-  "30 2 * * *",   # ad_performance_rollup refresh
-  "0 3 * * *",    # audience sync evaluation
-  "0 4 * * *",    # cost ingestor
-  "0 5 * * *",    # retention purge (audit_log, events particioning, raw_events)
-  "0 * * * *",    # page_tokens rotation status check (hourly)
+  "*/10 * * * *",   # raw_events outbox poller — re-enqueues stuck pending (ADR-042)
+  "30 17 * * *",    # cost ingestor
+  "0 1 * * *",      # audience sync
 ]
 ```
 
-Handler em `apps/edge/src/index.ts` `scheduled()` despacha por cron expression.
+Crons planejados para fases futuras (FX rates, retention purge, page_tokens rotation, rollup refresh) ainda não implementados — adicionar conforme as sprints respectivas.
+
+Handler em [`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) `scheduledHandler()` despacha por cron expression.
+
+### Outbox poller (`*/10 * * * *`) — ADR-042
+
+Re-enfileira `raw_events` com `processing_status='pending'` na janela `[10min, 24h]` via `QUEUE_EVENTS.send()`. Cobre dois modos de falha:
+- `QUEUE_EVENTS.send()` lançou no `events.ts` (queue indisponível, throttle) → mensagem nunca entrou na fila.
+- Consumer exauriu retries em `gt-events` mas mensagem foi descartada antes de chegar na DLQ (cenário pré-DLQ; preservado por defesa em profundidade).
+
+Acima de 24h, emite warning `stuck_pending_events` (não re-enfileira) — sinaliza incidente que precisa investigação manual.
 
 ## Idempotência — checklist
 
@@ -87,16 +94,25 @@ Histórico do incidente que motivou ADR-040: 2026-05-09 ~11:00 UTC, KV daily quo
 
 ## DLQ (Dead Letter Queue)
 
-DLQ por queue. Após `max_attempts=5` (configurável por queue), mensagem move para DLQ.
+DLQ nativa Cloudflare (ADR-042). Configurada via `dead_letter_queue` no `[[queues.consumers]]` do `wrangler.toml`. Requer wrangler 3+/4+ (destravado em 2026-05-09 após bug 10023 resolvido pela Cloudflare).
 
-Reprocessamento manual:
-- Endpoint admin `/v1/admin/dlq/reprocess?queue=<name>&job_id=<id>` (Fase 4).
+**`gt-events` → `gt-events-dlq`** (implementado):
+- `max_retries=3` no consumer de `gt-events`.
+- Após 3 falhas no `processRawEvent`, mensagem migra automaticamente.
+- Consumer de `gt-events-dlq` marca `raw_events.processing_status='failed'` com `processing_error='dlq: max_retries exhausted on gt-events (attempts=N)'` e `processed_at=now()`.
+- Loga `dlq_event_marked_failed` para alerting.
+
+**`gt-dispatch` → ?** (pendente Fase 4):
+- DLQ ainda não configurada. `dispatch_jobs` exauridos ficam em `status='failed'` com `last_error`.
+
+Reprocessamento manual (Fase 4):
+- Endpoint admin `/v1/admin/dlq/reprocess?queue=<name>&id=<raw_event_id>`.
 - Audit log com `action='reprocess_dlq'`.
-- Reseta `attempt_count`, status retorna a `pending`.
+- Reseta `processing_status` para `pending`, novo enqueue em `gt-events`.
 
 Métricas:
-- `dlq_size{queue}` — alerta se > threshold.
-- `dlq_reprocessed_total{queue}` — operação manual.
+- `count(*) where processing_status='failed' and processing_error like 'dlq:%'` — eventos descartados pela DLQ.
+- Log `dlq_event_marked_failed` searchable via `wrangler tail`.
 
 ## Backoff strategy
 
