@@ -11,7 +11,7 @@
 | ORM | Drizzle | drizzle-orm ≥ 0.30 | ADR-001 |
 | DB connection | Cloudflare Hyperdrive | (gerenciado) | ADR-001 |
 | Filas | Cloudflare Queues | (gerenciado, at-least-once) | ADR-001 |
-| Cache / KV | Cloudflare KV | (gerenciado) | ADR-001 |
+| Cache / KV | Cloudflare KV | (gerenciado, **best-effort**) | ADR-001, ADR-040 |
 | Crons | CF Cron Triggers | (gerenciado) | ADR-001 |
 | Bundler edge | esbuild via Wrangler | wrangler ≥ 3.x | ADR-001 |
 | Validação runtime | Zod | zod ≥ 3.22 | ADR-016 |

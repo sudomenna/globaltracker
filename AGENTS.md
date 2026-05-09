@@ -86,6 +86,7 @@ crons/       → handlers de CF Cron Triggers
 13. **Nunca confunda `lead_id` (interno) com `lead_public_id` (externo).** Browser usa `lead_token`, nunca `lead_id` em claro.
 14. **Nunca desabilite RLS** "porque é mais simples". Cross-workspace leak é sempre crítico.
 15. **Nunca use destrutivo** (drop column, push --force, db:reset) sem aprovação humana explícita.
+16. **Nunca chame `kv.put(...)` cru no edge worker.** Todo write em Cloudflare KV é best-effort (ADR-040): wrap em `try/catch`, retorne `boolean`/`Result`, e logue `safeLog('warn', { event: '<nome>_kv_write_failed', request_id, workspace_id })`. Falha de KV NUNCA pode 500ar a request — defesa primária mora em Postgres (constraints UNIQUE + pre-insert SELECT). Vale para `replay-protection`, `idempotency`, `rate-limit`, `config-cache`, `fx-rates-cache` e qualquer call site novo.
 
 ---
 

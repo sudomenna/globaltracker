@@ -55,7 +55,7 @@ Handler em `apps/edge/src/index.ts` `scheduled()` despacha por cron expression.
 
 | Subsistema | Como garante | Onde está |
 |---|---|---|
-| `/v1/events` | KV replay protection (TTL 7d) + `unique (workspace_id, event_id)` em events | BR-EVENT-002, BR-EVENT-004 |
+| `/v1/events` | KV replay protection (TTL 7d, **best-effort**) + `unique (workspace_id, event_id, received_at)` em events particionada | BR-EVENT-002, BR-EVENT-004, ADR-040 |
 | `/v1/lead` | Mesma; payload com mesmo event_id retorna idempotent | mesmo |
 | `/v1/webhook/*` | `event_id = sha256(platform:platform_event_id)` + unique constraint | BR-WEBHOOK-002 |
 | Ingestion processor | At-least-once delivery; `events` unique constraint absorve duplicata | BR-EVENT-002 |
@@ -63,6 +63,27 @@ Handler em `apps/edge/src/index.ts` `scheduled()` despacha por cron expression.
 | Audience sync | `audience_sync_jobs.snapshot_id`; lock por audience_id | BR-AUDIENCE-002 |
 | Cost ingestor | Unique `(workspace, platform, account, ...granularity, date)`; upsert idempotente | BR-COST-001 |
 | Retention purge | Idempotente por design — DELETE WHERE ts < N | — |
+
+## Cloudflare KV — uso e padrão best-effort (ADR-040)
+
+KV no edge worker é usado para 5 finalidades, **todas best-effort por design** (falha de write NÃO pode 500ar a request — defesa primária mora em Postgres):
+
+| Call site | Path | Função | Defesa primária |
+|---|---|---|---|
+| `apps/edge/src/lib/replay-protection.ts` | `markSeen` (write), `isReplay` (read) | Fast-path dedup de events | `unique (workspace_id, event_id, received_at)` em `events` |
+| `apps/edge/src/lib/idempotency.ts` | `checkAndSet` | Webhook idempotency check | `idempotency_key` UNIQUE em `raw_events` |
+| `apps/edge/src/middleware/rate-limit.ts` | counter increment | Rate limit sliding window | (best-effort puro — perda transiente aceitável) |
+| `apps/edge/src/routes/config.ts` | cache `/v1/config` response | Reduz round-trip ao DB | DB SELECT como fallback (cold start) |
+| `apps/edge/src/integrations/fx-rates/cache.ts` | FX rates cache | Reduz fetch externo de provider | Provider re-fetch como fallback |
+
+**Convenção obrigatória para todo `kv.put()` novo:**
+1. `try/catch` em torno do put. Retorna `boolean` (ou `Result<error>` se distinguir falhas).
+2. Caller loga `safeLog('warn', { event: '<nome>_kv_write_failed', request_id, workspace_id })`.
+3. Sem retry inline. KV é storage não-crítico.
+
+Histórico do incidente que motivou ADR-040: 2026-05-09 ~11:00 UTC, KV daily quota free tier (1.000 writes/dia) bateu o teto. `markSeen` lançava sem catch → `/v1/events` virava 500 → tracker.js silenciava (INV-TRACKER-007) → ZERO PageView/Lead/click no DB de 10:42 a 16:58 UTC. Resolvido com upgrade para Workers Paid + try/catch em `markSeen` (commit `85777ec`).
+
+**Tech-debt / otimizações futuras** (registradas em `MEMORY.md §3`): config cache em memória por instance, rate-limit migrado para Durable Objects, skip `markSeen` quando idempotency check primário já marcou duplicata.
 
 ## DLQ (Dead Letter Queue)
 

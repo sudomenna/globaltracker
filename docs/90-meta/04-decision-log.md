@@ -1256,6 +1256,53 @@ MOD-DISPATCH (orchestrator Meta CAPI), MOD-EVENT (storage de browser signals), M
 
 ---
 
+## ADR-040 — KV writes no edge worker são best-effort (2026-05-09)
+
+### Status
+aceito.
+
+### Contexto
+2026-05-09 ~11:00 UTC, pipeline tracker ficou DEAD. Symptom: ZERO `PageView`/`Lead`/`custom:click_*` no DB entre 10:42 e 16:58 UTC; forms continuavam (`lead_identify` chegava via `/v1/lead`) mas tracker silenciava em background. Root cause: Cloudflare KV daily quota free tier (1.000 writes/dia) atingiu o teto. Quando `kv.put()` falha por quota, lança `Error: KV put() limit exceeded for the day.`. `markSeen()` em [`apps/edge/src/lib/replay-protection.ts`](../../apps/edge/src/lib/replay-protection.ts) chamava `await kv.put(...)` cru — exception propagava pelo handler de [`apps/edge/src/routes/events.ts`](../../apps/edge/src/routes/events.ts) e virava 500. Tracker.js silencia 5xx (INV-TRACKER-007) então o cliente não percebia, só os events sumiam.
+
+Outros KV writes do worker (rate-limit, config-cache, `idempotency.checkAndSet`, fx-rates cache) já tinham try/catch defensivo e degradavam graciosamente. `markSeen` era exceção — único call site que propagava.
+
+### Decisão
+**Todo `kv.put()` no edge worker é best-effort.** Falha de write NUNCA pode 500ar a request. Convenção:
+
+1. Wrap em `try/catch`, retornar `boolean` (ou `Result<error>` se múltiplas modalidades de falha forem distinguíveis).
+2. Caller loga `safeLog('warn', { event: '<nome>_kv_write_failed', request_id, workspace_id })`.
+3. Não há retry inline — KV é storage não-crítico; quem deve persistir state crítico usa Postgres/Hyperdrive.
+
+Aplica a:
+- [`apps/edge/src/lib/replay-protection.ts`](../../apps/edge/src/lib/replay-protection.ts) `markSeen` — corrigido commit `85777ec`.
+- [`apps/edge/src/lib/idempotency.ts`](../../apps/edge/src/lib/idempotency.ts) `checkAndSet` — já era best-effort.
+- [`apps/edge/src/middleware/rate-limit.ts`](../../apps/edge/src/middleware/rate-limit.ts) — já era best-effort.
+- [`apps/edge/src/routes/config.ts`](../../apps/edge/src/routes/config.ts) cache write — já era best-effort.
+- [`apps/edge/src/integrations/fx-rates/cache.ts`](../../apps/edge/src/integrations/fx-rates/cache.ts) — já era best-effort.
+- Qualquer novo `kv.put()` futuro.
+
+**Defesa primária NÃO é KV.** Para replay-protection a defesa primária é o `unique (workspace_id, event_id, received_at)` constraint em `events` particionada + pre-insert `SELECT` (ver BR-EVENT-002 e padrão T-FUNIL-047/T-13-008). KV é só fast-path para evitar round-trip ao DB no caso comum. Para idempotency de webhook é a coluna `idempotency_key` em `raw_events`. Para rate-limit, perda transiente é aceitável (próxima request reposiciona o counter).
+
+### Alternativas consideradas
+
+- **Fail-closed (manter `throw`)** — defenderia replay-protection mais forte se KV está down, mas custa pipeline inteiro 500 em qualquer hiccup transiente do KV (não só quota — também regional outage, eventual consistency edge case). Custo > benefício porque defesa primária é DB constraint.
+- **Retry inline com backoff** — gasta CPU time e write quota (paradoxalmente piora o problema de quota). KV não tem semântica idempotente de retry com TTL.
+- **Migrar `markSeen` para Durable Objects** — fix arquitetural mais robusto (DO state é transactional + sem daily limit) mas é refator caro. Tech-debt registrado em `MEMORY.md §3` para depois.
+- **Workers Paid plan** — feito em paralelo (2026-05-09 17:05 UTC). Resolve o ceiling, mas não substitui o try/catch — hiccups e quota mensal ainda existem.
+
+### Consequências
+
+- (+) Pipeline `/v1/events` sobrevive a esgotamento de KV quota / hiccups regionais — degrada apenas a defesa-em-profundidade do replay-protection.
+- (+) Padrão consistente em todo edge worker — quem chega novo lê 1 ADR e replica.
+- (+) Observabilidade preservada: warn log `replay_kv_write_failed` permite alerta proativo (ex.: regra de monitor "5+ warns em 1h" indica KV degradado).
+- (–) Janela de replay-protection degradada: se KV está down e mesmo `event_id` é replayed em janela curta antes do DB rejeitar, pode haver gravação duplicada que só será detectada no `INSERT ... ON CONFLICT` (ainda detectada — só não no fast-path).
+- (–) Padrão obriga disciplina: code review precisa rejeitar `await kv.put(...)` cru.
+
+### Impacta
+MOD-EVENT (replay-protection), MOD-DISPATCH (idempotency), MOD-WORKSPACE (config cache), BR-EVENT-004 (replay-protection — agora "best-effort defense-in-depth"), [`apps/edge/src/lib/replay-protection.ts`](../../apps/edge/src/lib/replay-protection.ts) (signature mudou: retorna `Promise<boolean>`).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

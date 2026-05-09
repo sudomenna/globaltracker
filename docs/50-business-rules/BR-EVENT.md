@@ -98,20 +98,24 @@ Scenario: offset dentro de janela é preservado
 
 ---
 
-## BR-EVENT-004 — Replay protection via KV cache TTL 7 dias
+## BR-EVENT-004 — Replay protection via KV cache TTL 7 dias (best-effort defense-in-depth)
 
-### Status: Stable (ADR-021)
+### Status: Stable (ADR-021, refinado por ADR-040 — 2026-05-09)
 
 ### Enunciado
 Edge **DEVE** consultar `KV_REPLAY_PROTECTION` para `event_id` no início do request. Se já visto nos últimos 7 dias, retorna `{status: 'duplicate_accepted'}` sem persistir em `raw_events`.
 
+**Defense-in-depth, não defesa primária.** A defesa primária contra duplicatas é o constraint `unique (workspace_id, event_id, received_at)` em `events` particionada + pre-insert `SELECT` (ver BR-EVENT-002). KV é apenas fast-path para evitar round-trip ao DB no caso comum. Se o KV falhar (quota esgotada, hiccup regional), o `INSERT` do DB ainda detecta a duplicata.
+
 ### Enforcement
-- Helper `isReplay()` e `markReplayProtectionSeen()` em `apps/edge/src/lib/replay-protection.ts`.
+- Helper `isReplay()` e `markSeen()` em [`apps/edge/src/lib/replay-protection.ts`](../../apps/edge/src/lib/replay-protection.ts).
 - TTL natural do KV = 7 dias. Sem manutenção.
+- **`markSeen()` é best-effort** (ADR-040): retorna `Promise<boolean>` (true = gravado, false = KV write falhou). Falha NUNCA propaga 5xx — caller loga `safeLog('warn', { event: 'replay_kv_write_failed', ... })`. Padrão obrigatório para todo `kv.put()` no worker.
+- `isReplay()` (KV read) também não pode 500ar — em erro, deve assumir "não é replay" e deixar o DB constraint detectar duplicata real.
 
 ### Gherkin
 ```gherkin
-Scenario: replay rejeitado pelo KV
+Scenario: replay rejeitado pelo KV (caso comum)
   Given event_id=X já visto em T0
   When POST /v1/events com event_id=X em T+1d
   Then 202 { status: 'duplicate_accepted' }
@@ -122,11 +126,18 @@ Scenario: replay aceito após 7d
   Given event_id=X visto em T0
   When POST com event_id=X em T+8d (TTL expirou)
   Then aceita normalmente como novo evento
+
+Scenario: KV write falha (quota esgotada) — best-effort degradation
+  Given KV daily quota atingida
+  When POST /v1/events com event_id=Y novo
+  Then 202 normal (não 500)
+  And warn log "replay_kv_write_failed" emitido
+  And se Y replayed antes do DB rejeitar: defesa primária (DB constraint) ainda detecta
 ```
 
 ### Citação
 ```ts
-// BR-EVENT-004: KV replay protection TTL 7d
+// BR-EVENT-004: KV replay protection TTL 7d (best-effort, ADR-040)
 ```
 
 ---
