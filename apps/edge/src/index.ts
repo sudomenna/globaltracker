@@ -875,11 +875,22 @@ async function lookupHistoricalBrowserSignals(
   ip: string | null;
   ua: string | null;
   visitor_id: string | null;
+  geo_city: string | null;
+  geo_region_code: string | null;
+  geo_postal_code: string | null;
+  geo_country: string | null;
 }> {
-  // Webhook Purchases (Guru/OnProfit/Hotmart/etc) não carregam fbc/fbp/IP/UA
+  // Webhook Purchases (Guru/OnProfit/Hotmart/etc) não carregam fbc/fbp/IP/UA/geo
   // no payload. Buscamos esses sinais nos events anteriores do mesmo lead
   // (PageView/Lead/click_*) capturados pelo tracker.js. Isso eleva muito o
   // EMQ do Meta CAPI: sem esses sinais, advanced match cai pra 5/10.
+  //
+  // GEO-CITY-ENRICHMENT-GAP (2026-05-09): geo_city/region/postal/country
+  // adicionados ao lookup. Antes, Purchase Guru sem contact.address ficava
+  // travado em match_score=7/8 — agora atinge 8/8 quando o lead já passou
+  // pela LP (tracker captura geo via Cloudflare CF-IPCity headers). Replicar
+  // ip/ua: se evento corrente trouxer próprio geo, dispatcher prefere; senão
+  // usa o histórico do mesmo lead.
   //
   // T-13-013: rows pré-deploy ed9a490d têm user_data armazenado como
   // jsonb-string (jsonb_typeof='string') por causa do bug do driver Hyperdrive.
@@ -902,7 +913,9 @@ async function lookupHistoricalBrowserSignals(
           (${events.userData} #>> '{}')::jsonb->>'fbc' IS NOT NULL OR
           (${events.userData} #>> '{}')::jsonb->>'fbp' IS NOT NULL OR
           (${events.userData} #>> '{}')::jsonb->>'client_ip_address' IS NOT NULL OR
-          (${events.userData} #>> '{}')::jsonb->>'client_user_agent' IS NOT NULL
+          (${events.userData} #>> '{}')::jsonb->>'client_user_agent' IS NOT NULL OR
+          (${events.userData} #>> '{}')::jsonb->>'geo_city' IS NOT NULL OR
+          (${events.userData} #>> '{}')::jsonb->>'geo_country' IS NOT NULL
         )`,
       ),
     )
@@ -914,6 +927,10 @@ async function lookupHistoricalBrowserSignals(
   let ip: string | null = null;
   let ua: string | null = null;
   let visitor_id: string | null = null;
+  let geo_city: string | null = null;
+  let geo_region_code: string | null = null;
+  let geo_postal_code: string | null = null;
+  let geo_country: string | null = null;
   for (const row of rows) {
     if (
       !visitor_id &&
@@ -950,9 +967,58 @@ async function lookupHistoricalBrowserSignals(
     ) {
       ua = ud.client_user_agent;
     }
-    if (fbc && fbp && ip && ua && visitor_id) break;
+    if (
+      !geo_city &&
+      typeof ud.geo_city === 'string' &&
+      ud.geo_city.length > 0
+    ) {
+      geo_city = ud.geo_city;
+    }
+    if (
+      !geo_region_code &&
+      typeof ud.geo_region_code === 'string' &&
+      ud.geo_region_code.length > 0
+    ) {
+      geo_region_code = ud.geo_region_code;
+    }
+    if (
+      !geo_postal_code &&
+      typeof ud.geo_postal_code === 'string' &&
+      ud.geo_postal_code.length > 0
+    ) {
+      geo_postal_code = ud.geo_postal_code;
+    }
+    if (
+      !geo_country &&
+      typeof ud.geo_country === 'string' &&
+      ud.geo_country.length > 0
+    ) {
+      geo_country = ud.geo_country;
+    }
+    if (
+      fbc &&
+      fbp &&
+      ip &&
+      ua &&
+      visitor_id &&
+      geo_city &&
+      geo_region_code &&
+      geo_postal_code &&
+      geo_country
+    )
+      break;
   }
-  return { fbc, fbp, ip, ua, visitor_id };
+  return {
+    fbc,
+    fbp,
+    ip,
+    ua,
+    visitor_id,
+    geo_city,
+    geo_region_code,
+    geo_postal_code,
+    geo_country,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,18 +1143,30 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     const hasCurrentIp = typeof rawUserData.client_ip_address === 'string' && rawUserData.client_ip_address.length > 0;
     const hasCurrentUa = typeof rawUserData.client_user_agent === 'string' && rawUserData.client_user_agent.length > 0;
     const hasCurrentVisitorId = typeof event.visitorId === 'string' && event.visitorId.length > 0;
+    const hasCurrentGeoCity = typeof rawUserData.geo_city === 'string' && rawUserData.geo_city.length > 0;
+    const hasCurrentGeoRegion = typeof rawUserData.geo_region_code === 'string' && rawUserData.geo_region_code.length > 0;
+    const hasCurrentGeoPostal = typeof rawUserData.geo_postal_code === 'string' && rawUserData.geo_postal_code.length > 0;
+    const hasCurrentGeoCountry = typeof rawUserData.geo_country === 'string' && rawUserData.geo_country.length > 0;
     let enrichedFbc: string | null = null;
     let enrichedFbp: string | null = null;
     let enrichedIp: string | null = null;
     let enrichedUa: string | null = null;
     let enrichedVisitorId: string | null = null;
+    let enrichedGeoCity: string | null = null;
+    let enrichedGeoRegion: string | null = null;
+    let enrichedGeoPostal: string | null = null;
+    let enrichedGeoCountry: string | null = null;
     if (
       lead &&
       (!hasCurrentFbc ||
         !hasCurrentFbp ||
         !hasCurrentIp ||
         !hasCurrentUa ||
-        !hasCurrentVisitorId)
+        !hasCurrentVisitorId ||
+        !hasCurrentGeoCity ||
+        !hasCurrentGeoRegion ||
+        !hasCurrentGeoPostal ||
+        !hasCurrentGeoCountry)
     ) {
       const historical = await lookupHistoricalBrowserSignals(
         db,
@@ -1100,12 +1178,24 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       if (!hasCurrentIp) enrichedIp = historical.ip;
       if (!hasCurrentUa) enrichedUa = historical.ua;
       if (!hasCurrentVisitorId) enrichedVisitorId = historical.visitor_id;
+      // GEO-CITY-ENRICHMENT-GAP (2026-05-09): geo herda do histórico do
+      // tracker.js quando webhook não traz contact.address. Fecha o último
+      // gap pra match score 8/8 em Purchases Guru de leads que passaram
+      // pela LP antes.
+      if (!hasCurrentGeoCity) enrichedGeoCity = historical.geo_city;
+      if (!hasCurrentGeoRegion) enrichedGeoRegion = historical.geo_region_code;
+      if (!hasCurrentGeoPostal) enrichedGeoPostal = historical.geo_postal_code;
+      if (!hasCurrentGeoCountry) enrichedGeoCountry = historical.geo_country;
       if (
         enrichedFbc ||
         enrichedFbp ||
         enrichedIp ||
         enrichedUa ||
-        enrichedVisitorId
+        enrichedVisitorId ||
+        enrichedGeoCity ||
+        enrichedGeoRegion ||
+        enrichedGeoPostal ||
+        enrichedGeoCountry
       ) {
         safeLog('info', {
           event: 'meta_capi_browser_signals_enriched',
@@ -1115,6 +1205,10 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           enriched_ip: !!enrichedIp,
           enriched_ua: !!enrichedUa,
           enriched_visitor_id: !!enrichedVisitorId,
+          enriched_geo_city: !!enrichedGeoCity,
+          enriched_geo_region: !!enrichedGeoRegion,
+          enriched_geo_postal: !!enrichedGeoPostal,
+          enriched_geo_country: !!enrichedGeoCountry,
         });
       }
     }
@@ -1122,10 +1216,11 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     // Hash geo fields for Meta CAPI (SHA-256 pure, no workspace scope).
     // Normalization: city lowercase trim, state 2-letter lowercase,
     // zip digits-only, country 2-letter lowercase.
-    const geoCity = typeof rawUserData.geo_city === 'string' ? rawUserData.geo_city : null;
-    const geoRegionCode = typeof rawUserData.geo_region_code === 'string' ? rawUserData.geo_region_code : null;
-    const geoPostalCode = typeof rawUserData.geo_postal_code === 'string' ? rawUserData.geo_postal_code : null;
-    const geoCountry = typeof rawUserData.geo_country === 'string' ? rawUserData.geo_country : null;
+    // GEO-CITY-ENRICHMENT-GAP: prefere geo do evento, fallback enriquecido.
+    const geoCity = (typeof rawUserData.geo_city === 'string' ? rawUserData.geo_city : null) ?? enrichedGeoCity;
+    const geoRegionCode = (typeof rawUserData.geo_region_code === 'string' ? rawUserData.geo_region_code : null) ?? enrichedGeoRegion;
+    const geoPostalCode = (typeof rawUserData.geo_postal_code === 'string' ? rawUserData.geo_postal_code : null) ?? enrichedGeoPostal;
+    const geoCountry = (typeof rawUserData.geo_country === 'string' ? rawUserData.geo_country : null) ?? enrichedGeoCountry;
     const [ctHash, stHash, zpHash, countryHash] = await Promise.all([
       geoCity ? hashPiiExternal(geoCity.toLowerCase().trim()) : Promise.resolve(null),
       geoRegionCode ? hashPiiExternal(geoRegionCode.toLowerCase()) : Promise.resolve(null),
