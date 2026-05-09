@@ -123,7 +123,17 @@ describe('markSeen', () => {
   it('is idempotent — calling twice does not throw', async () => {
     const kv = makeMemoryKv();
     await markSeen('evt_001', 'ws_A', kv);
-    await expect(markSeen('evt_001', 'ws_A', kv)).resolves.toBeUndefined();
+    await expect(markSeen('evt_001', 'ws_A', kv)).resolves.toBe(true);
+  });
+
+  it('returns false (best-effort) when KV put throws — does not propagate', async () => {
+    const kv: KvStore = {
+      get: async () => null,
+      put: async () => {
+        throw new Error('KV put() limit exceeded for the day.');
+      },
+    };
+    await expect(markSeen('evt_001', 'ws_A', kv)).resolves.toBe(false);
   });
 
   it('KV key is scoped to workspace (prevents cross-workspace interference)', async () => {

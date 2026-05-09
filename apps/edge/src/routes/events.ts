@@ -600,8 +600,20 @@ export function createEventsRoute(
     // Must happen after insert attempt so a failed insert still deduplicates
     // on retry (idempotent behaviour).
     // BR-EVENT-003: KV TTL 7 days.
+    // Best-effort: see markSeen() — KV failure does not 500 the request.
     // -----------------------------------------------------------------------
-    await markSeen(payload.event_id, workspaceId, c.env.GT_KV);
+    const replayKvOk = await markSeen(
+      payload.event_id,
+      workspaceId,
+      c.env.GT_KV,
+    );
+    if (!replayKvOk) {
+      safeLog('warn', {
+        event: 'replay_kv_write_failed',
+        request_id: requestId,
+        workspace_id: workspaceId,
+      });
+    }
 
     // -----------------------------------------------------------------------
     // Step 8: Enqueue to QUEUE_EVENTS for async ingestion

@@ -11,10 +11,12 @@
 ## §1 Estado atual
 
 - **Sprint ativo**: nenhum ativo. Hotfix sprint informal "Meta CAPI EMQ Hardening" entregue 2026-05-09.
-- **Última entrega**: tracker race-fix — `track()` agora lê `capturePlatformCookies()` fresco a cada send em vez de `state.platformCookies` (snapshot de init). Bug fazia PageView/Lead disparados de DOMContentLoaded em qualquer page (especialmente thankyou com `auto_page_view: false`) saírem com `_ga/_gcl_au/_fbp/_fbc` zerados — o handler do snippet executava DURANTE o `await fetchConfig` do init, antes de `capturePlatformCookies()` rodar. Reproduzido em prod via Playwright contra `wk-obg` e validado com 3 events em DB (`2b7b275a` pre-fix → null; `6ae8332d` post-fix → cookies populados).
-- **Próxima ação**: revisar match score Meta CAPI nas próximas 24h — fix beneficia TODOS os events tracker (não só thankyou). Trilha 1 (Purchase Guru E2E) e Trilha 3 (survey) seguem em aberto.
-- **Branch**: `main`, commits novos pendentes (auto_page_view fix + tracker race fix + doc-sync + CLAUDE.md operational rule). `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ba2fbe37` — sem mudança no edge nesta entrega; só client-side tracker).
+- **Última entrega (2 fixes consecutivos 2026-05-09)**:
+  1. **Tracker race-fix** — `track()` lê `capturePlatformCookies()` fresco a cada send (era snapshot de init).
+  2. **`markSeen` best-effort** — replay-protection KV write não pode mais 500ar `/v1/events`. **Pipeline estava DEAD desde 11:00 UTC** porque KV daily quota (1.000 writes free tier) atingiu o teto e `markSeen` lançava sem catch. Sintoma: ZERO PageView/Lead/click no DB entre 10:42 e 16:58 UTC. Forms continuavam (lead_identify chegava via /v1/lead) mas tracker não. Validado pós-deploy `f97af05f`: PageView 202 OK, persistido com cookies+geo+IP+UA.
+- **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês + uso adicional, account `cursonovaeconomia@gmail.com`). Resolveu o teto diário do KV. Validado pós-upgrade: `/v1/events` 202 sem `replay_kv_write_failed` warn.
+- **Branch**: `main`, commits novos pendentes (auto_page_view migration + tracker race fix + replay-protection best-effort + doc-sync). `facebook_docs.md` untracked (referência local).
+- **Edge prod**: deploy atual `f97af05f` (replay-protection best-effort). Anterior `ba2fbe37`.
 - **CDN tracker.js**: R2 `gt-tracker-cdn` atualizado 2026-05-09 08:24 UTC com fix de race (etag `991734d4`, 9466 bytes).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0048** aplicadas (0048 = corrigir `obrigado-workshop.event_config.auto_page_view` para `false`, alinhado com migration 0039).
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
@@ -36,8 +38,10 @@
 | Health view `v_meta_capi_health` (migration 0047) — score 0..8 por evento | `10277cf` | — (DB only) |
 | meta-capi: historical lookup também enriquece visitor_id (Meta external_id) | `5ed259d` | `ba2fbe37` |
 | **Migration 0048: corrigir `obrigado-workshop.auto_page_view` para `false`** (alinhado com 0039 — sobrescrita manual incorreta em sessão anterior) | (pending) | — (DB only) |
-| **Tracker race-fix: `capturePlatformCookies()` fresh em `track()`** | (pending) | R2 `tracker.js` etag `991734d4` |
-| Doc-sync: `docs/20-domain/13-mod-tracker.md §7.7` documenta fresh-read em send-time | (pending) | — |
+| **Tracker race-fix: `capturePlatformCookies()` fresh em `track()`** | `6fbcf6c` | R2 `tracker.js` etag `991734d4` |
+| Doc-sync: `docs/20-domain/13-mod-tracker.md §7.7` documenta fresh-read em send-time | `6fbcf6c` | — |
+| CLAUDE.md §9: regra operacional Playwright — matar processo dono em conflito | `2974bd5` | — |
+| **`markSeen` best-effort (catch KV throw)** + test cobre KV exceeded | (pending) | edge `f97af05f` |
 
 ### Replays executados (2026-05-09 ~07:00–07:11 UTC)
 
@@ -111,6 +115,17 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 ---
 
 ## §3 Pendências abertas
+
+### Otimizações de KV writes (TECH-DEBT, médio prazo)
+
+Hoje cada `/v1/events` faz ~3 KV writes (rate-limit + idempotency + markSeen) e cada `/v1/config` faz ~2 (rate-limit + cache). Workers Paid resolve o teto, mas reduzir writes melhora custo+performance e diminui acoplamento ao KV. Itens (não bloqueantes — só compensam se volume crescer >10x):
+
+- **Config cache em memória por instance** — hoje cada cold start re-busca config do DB e regrava no KV. In-memory Map com TTL mediano cobriria boa parte sem write.
+- **Rate-limit em Durable Objects** — sliding window via DO state em vez de KV counter. Menos writes, mais preciso, atomicidade nativa.
+- **Skip markSeen quando idempotency já marcou duplicata** — hoje sempre tenta gravar; pode ler antes ou unificar com idempotency.checkAndSet.
+- **TTL maior em config cache** — se config muda raramente, TTL atual pode estar alto demais (gerando refresh writes).
+
+Tracking: criar issue futura quando o assunto voltar.
 
 ### Pendências críticas — Meta CAPI EMQ Hardening (2026-05-09)
 

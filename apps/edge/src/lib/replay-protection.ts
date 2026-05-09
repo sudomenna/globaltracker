@@ -76,18 +76,30 @@ export async function isReplay(
  *
  * BR-EVENT-004: KV TTL = 7 days by default.
  *
+ * **Best-effort**: KV write failures are caught and returned as `false` (caller
+ * decides whether to log). Replay-protection é defesa em profundidade — o
+ * idempotency check na inserção do `events` é a defesa primária. Lançar daqui
+ * faria todo `/v1/events` virar 500 quando o KV bate o daily quota (consistente
+ * com rate-limit / config-cache que também são best-effort).
+ *
  * @param eventId - unique event identifier
  * @param workspaceId - workspace scope
  * @param kv - KV store
  * @param ttlSeconds - optional override (default 604800 = 7 days)
+ * @returns `true` se gravado; `false` se write falhou (KV quota/erro transiente)
  */
 export async function markSeen(
   eventId: string,
   workspaceId: string,
   kv: KvStore,
   ttlSeconds: number = DEFAULT_REPLAY_TTL_SECONDS,
-): Promise<void> {
+): Promise<boolean> {
   // BR-EVENT-004: set KV entry with TTL so it auto-expires after the window
   const key = buildReplayKey(eventId, workspaceId);
-  await kv.put(key, '1', { expirationTtl: ttlSeconds });
+  try {
+    await kv.put(key, '1', { expirationTtl: ttlSeconds });
+    return true;
+  } catch {
+    return false;
+  }
 }
