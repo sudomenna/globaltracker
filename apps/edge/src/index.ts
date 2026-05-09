@@ -871,6 +871,12 @@ async function lookupHistoricalBrowserSignals(
   workspaceId: string,
   leadId: string,
 ): Promise<{ fbc: string | null; fbp: string | null }> {
+  // T-13-013: rows pré-deploy ed9a490d têm user_data armazenado como
+  // jsonb-string (jsonb_typeof='string') por causa do bug do driver Hyperdrive.
+  // O filtro `user_data->>'fbc'` direto NÃO matcha nessas rows porque o operador
+  // ->> sobre uma jsonb-string retorna NULL. Usar `(user_data #>> '{}')::jsonb`
+  // re-parseia a string como objeto antes do ->>. Funciona para rows novas
+  // (jsonb-object) e legadas (jsonb-string) — idempotente.
   const rows = await db
     .select({ userData: events.userData })
     .from(events)
@@ -878,7 +884,7 @@ async function lookupHistoricalBrowserSignals(
       and(
         eq(events.workspaceId, workspaceId),
         eq(events.leadId, leadId),
-        sql`(${events.userData}->>'fbc' IS NOT NULL OR ${events.userData}->>'fbp' IS NOT NULL)`,
+        sql`((${events.userData} #>> '{}')::jsonb->>'fbc' IS NOT NULL OR (${events.userData} #>> '{}')::jsonb->>'fbp' IS NOT NULL)`,
       ),
     )
     .orderBy(desc(events.receivedAt))
@@ -887,7 +893,18 @@ async function lookupHistoricalBrowserSignals(
   let fbc: string | null = null;
   let fbp: string | null = null;
   for (const row of rows) {
-    const ud = (row.userData ?? {}) as Record<string, unknown>;
+    // T-13-013: row.userData pode chegar como string (rows pré-deploy) ou
+    // object (rows pós-jsonb-fix). Parse defensivo aceita os dois.
+    let ud: Record<string, unknown>;
+    if (typeof row.userData === 'string') {
+      try {
+        ud = JSON.parse(row.userData) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+    } else {
+      ud = (row.userData ?? {}) as Record<string, unknown>;
+    }
     if (!fbc && typeof ud.fbc === 'string' && ud.fbc.length > 0) fbc = ud.fbc;
     if (!fbp && typeof ud.fbp === 'string' && ud.fbp.length > 0) fbp = ud.fbp;
     if (fbc && fbp) break;
