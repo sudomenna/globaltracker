@@ -14,7 +14,7 @@
 - **Última entrega**: OnProfit webhook adapter completo + fixes fbc/fbp global + Sprint 17 observability. Ver commits abaixo.
 - **Próxima ação**: testar compra real OnProfit com snippet no checkout; verificar fbc/fbp aparecendo em Meta Events Manager. Trilha 1 (Purchase Guru) e Trilha 3 (survey) seguem em aberto.
 - **Branch**: `main`, working tree clean. `facebook_docs.md` untracked (referência local, **não commitar**).
-- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `1e905322` — OnProfit adapter live, fbc/fbp fixes live, Sprint 17 live).
+- **Edge prod**: `https://globaltracker-edge.globaltracker.workers.dev` (deploy atual `ed9a490d` — jsonb cast fix, OnProfit adapter live, fbc/fbp fixes live, Sprint 17 live).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–0045 aplicadas.
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
 
@@ -28,6 +28,8 @@
 | fbc/fbp global fix (tracker cookie names `_fbc`/`_fbp` + historical lookup) | `748f32e` | — |
 | fbc/fbp doc-sync | `f53e2b6` | — |
 | OnProfit adapter (types/mapper/route/processor/migration) | `59003f9` | `1e905322` |
+| OnProfit event_source CHECK constraint fix (migration 0046) | `46e9c2e` | — (DB only) |
+| jsonb() helper aplicado em todos writes (T-13-013-FOLLOWUP) | `22db9a9` | `ed9a490d` |
 
 ### OnProfit configuração (IMPORTANTE)
 
@@ -105,7 +107,7 @@ Doc-sync das Ondas 9–12 foi entregue no commit `445c048`.
 
 - **CP-MISSING-AUTO-PAGE-VIEW-TOGGLE** — Tela de Configuração de eventos da page no CP não expõe toggle `auto_page_view` que vive em `pages.event_config.auto_page_view`. Hoje só via SQL direto.
 
-- **T-13-013-FOLLOWUP** — Aplicar helper `apps/edge/src/lib/jsonb-cast.ts` (`jsonb()`) em todos os call sites de `db.insert(rawEvents).values({ payload })` (adapters webhook + tracker). Hoje `raw_events.payload` sempre vai como jsonb-string em prod; consumers compensam com parse defensivo. Não urgente — refactor ~30min com testes.
+- **T-13-013-FOLLOWUP** — RESOLVIDO (commit `22db9a9`, deploy `ed9a490d`, 2026-05-09). Helper `jsonb()` aplicado em ~58 writes em 12 arquivos do edge worker (4 raw-events-processors + dispatch.ts + index.ts + 6 webhook adapters). Adicionado `tests/helpers/jsonb-unwrap.ts` para mocks de teste extraírem JS value do SQL fragment. Pendente: backfill de rows antigas (events.user_data/custom_data/attribution/consent_snapshot ainda com jsonb_typeof='string' nas linhas pré-deploy — não bloqueia, queries SQL ad-hoc precisam usar `(col #>> '{}')::jsonb` pra essas).
 
 - **T-14-009-FOLLOWUP** — Refatorar [`apps/edge/src/dispatchers/google-ads-conversion/client.ts`](apps/edge/src/dispatchers/google-ads-conversion/client.ts) para aceitar `accessToken?` direto (alternativa ao tuple `oauth: OAuthConfig` que faz refresh interno). Hoje gera +200ms latency e `invalid_grant` cai em `server_error` em vez de `oauth_token_revoked`. `buildEnhancedConversionDispatchFn` já usa o padrão correto. Estimativa ~30min.
 
