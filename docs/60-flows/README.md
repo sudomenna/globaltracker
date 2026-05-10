@@ -14,6 +14,7 @@ Comportamentos que **atravessam módulos**. Cada FLOW-NNN gera 1 spec Playwright
 | `08-merge-converging-leads.md` | FLOW-08 — Merge de leads convergentes | UC-008 |
 | `09-erasure-by-sar.md` | FLOW-09 — Erasure por SAR | UC-009 |
 | `10-create-new-launch-template.md` | FLOW-10 — Criar novo template de lançamento (playbook orquestrador) | — |
+| `11-manual-dispatch-recovery.md` | FLOW-11 — Recovery manual de eventos e dispatches (runbook operacional) | — |
 
 ## Formato obrigatório
 
