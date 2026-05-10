@@ -45,6 +45,19 @@ export type OnProfitPaymentType =
   | 'boleto'
   | (string & NonNullable<unknown>);
 
+/**
+ * Item type discriminator. Confirmed via real purchase 2026-05-10 17:34 UTC:
+ * a single OnProfit order can fire N webhooks (1 main product + N order_bumps),
+ * each with its own webhook id but sharing the same `offer_hash`. Wave 3 will
+ * use this to derive `transaction_group_id` and skip dispatch on order_bumps.
+ *
+ * Open enum: tolerate future OnProfit values gracefully.
+ */
+export type OnProfitItemType =
+  | 'product'
+  | 'order_bump'
+  | (string & NonNullable<unknown>);
+
 // ---------------------------------------------------------------------------
 // Customer (PII — never log)
 // ---------------------------------------------------------------------------
@@ -94,6 +107,32 @@ export interface OnProfitProduct {
 }
 
 // ---------------------------------------------------------------------------
+// Transaction (gateway-level detail, present in PAID/AUTHORIZED payloads)
+// ---------------------------------------------------------------------------
+
+/**
+ * Gateway transaction detail present in PAID / AUTHORIZED webhooks.
+ * Real payload (2026-05-10): an array of one or more transaction records
+ * carrying gateway internals. We type only the stable fields we may use; the
+ * rest is preserved as `additional_data` to avoid coupling to gateway shape.
+ */
+export interface OnProfitTransaction {
+  id: number;
+  amount: number;
+  status: OnProfitStatus;
+  gateway: string;
+  order_id?: number | null;
+  installments?: number | null;
+  payment_method?: OnProfitPaymentType | null;
+  installment_fee?: string | null;
+  gateway_version?: string | null;
+  gateway_integration_id?: number | null;
+  gateway_transaction_id?: string | null;
+  /** Loose gateway-specific fields (card_id, trans_id, charge_id, …) */
+  additional_data?: Record<string, unknown> | null;
+}
+
+// ---------------------------------------------------------------------------
 // Subscription (currently null in observed payload — leave loose)
 // ---------------------------------------------------------------------------
 
@@ -103,7 +142,19 @@ export type OnProfitSubscription = Record<string, unknown> | null;
 // Custom fields (operator-defined; may carry lead_public_id)
 // ---------------------------------------------------------------------------
 
+/**
+ * Real-world shape (confirmed 2026-05-10): OnProfit sends `custom_fields` as
+ *   - an empty array `[]` when the operator did not configure custom fields
+ *     in the checkout (this is the default and most common case),
+ *   - an object mapping custom-field keys to values when configured,
+ *   - or `null` (defensive — observed in some legacy payloads).
+ *
+ * Consumers MUST narrow with `Array.isArray(custom_fields)` before reading
+ * `lead_public_id` — accessing `.lead_public_id` on the array form is a type
+ * error (and would yield `undefined` at runtime).
+ */
 export type OnProfitCustomFields =
+  | unknown[]
   | (Record<string, unknown> & {
       /**
        * BR-WEBHOOK-004: highest-priority lead resolution signal when present.
@@ -122,18 +173,54 @@ export interface OnProfitWebhookPayload {
   object: 'order' | (string & NonNullable<unknown>);
   /** OnProfit order/transaction id — used as platform_event_id */
   id: number;
-  item_type?: string | null;
+  /**
+   * Discriminator between the main product webhook and order bump webhooks
+   * fired for the same order. Confirmed in production payload (2026-05-10).
+   * Wave 3 uses this to skip dispatch for `order_bump` events while still
+   * persisting them under a shared `transaction_group_id`.
+   */
+  item_type?: OnProfitItemType | null;
   user_id?: number | null;
   customer_id?: number | null;
+  /**
+   * For `item_type='product'`: equals `product.id`.
+   * For `item_type='order_bump'`: points to the MAIN product's id (the one
+   * the order_bump is attached to), not to `product.id` of this row.
+   * Useful as a parent reference when grouping transactions.
+   */
   product_id?: number | null;
+  /**
+   * Numeric link to a product. In observed payloads (2026-05-10) it equals
+   * the row's own `product.id` for both main products and order bumps.
+   * Treat as opaque — kept for forward compatibility / debugging.
+   */
+  product_link?: number | null;
   delivery?: number | null;
   offer_id?: number | null;
+  /**
+   * Stable offer hash shared across the main product and all order bumps of
+   * the same checkout. CRITICAL: Wave 3 derives `transaction_group_id` from
+   * this so that N webhooks (1 main + N order_bumps) of one purchase
+   * collapse into one canonical Purchase event.
+   */
   offer_hash?: string | null;
   offer_name?: string | null;
   /** CENTAVOS — divide by 100 before storing as currency unit */
   offer_price?: number | null;
   /** CENTAVOS — divide by 100 before storing as currency unit */
   price: number;
+  /**
+   * Affiliate / producer commission in currency unit (NOT centavos),
+   * delivered as a string (e.g. "200", "97"). Parse with `Number()` only at
+   * the point of use; we keep it raw to avoid lossy precision conversions.
+   */
+  comission?: string | null;
+  /**
+   * Gateway-level transaction details. Present on PAID / AUTHORIZED webhooks;
+   * absent / null on STARTED / WAITING. Treated as advisory — primary status
+   * comes from root `status`, not from `transactions[].status`.
+   */
+  transactions?: OnProfitTransaction[] | null;
   currency: string;
   payment_type?: OnProfitPaymentType | null;
   /** ISO-like "YYYY-MM-DD HH:mm:ss" (no timezone — assumed BRT/UTC-3) */

@@ -81,6 +81,26 @@ const OnProfitRawEventPayloadSchema = z
     purchase_date: z.string().nullish(),
     confirmation_purchase_date: z.string().nullish(),
 
+    // Item / offer metadata (real payload 2026-05-10).
+    // ONPROFIT-W1-TYPES: item_type / offer_hash / transactions are required by
+    // Wave 3 (transaction_group_id + skip-dispatch on order_bumps). Schema
+    // accepts them now so the processor can persist them downstream without
+    // failing validation; mapper logic stays untouched.
+    // Strings here (not enums) — mapper owns the discriminator decision.
+    item_type: z.string().nullish(),
+    product_id: z.number().nullish(),
+    product_link: z.number().nullish(),
+    offer_id: z.number().nullish(),
+    offer_hash: z.string().nullish(),
+    offer_name: z.string().nullish(),
+    offer_price: z.number().nullish(),
+    comission: z.string().nullish(),
+    /**
+     * Gateway transactions array — passthrough only. We do not validate
+     * gateway internals; downstream consumers narrow as needed.
+     */
+    transactions: z.array(z.unknown()).nullish(),
+
     // UTMs
     utm_source: z.string().nullish(),
     utm_medium: z.string().nullish(),
@@ -124,11 +144,23 @@ const OnProfitRawEventPayloadSchema = z
       })
       .optional(),
 
+    /**
+     * ONPROFIT-W1-TYPES (2026-05-10): real payload may send `custom_fields`
+     * as an empty array `[]` (default when operator did not configure custom
+     * fields in the checkout) instead of an object. The previous schema
+     * rejected the array form and forced the whole event into 'failed'.
+     * Accept either shape here; consumers must narrow with `Array.isArray()`
+     * before reading `.lead_public_id`.
+     */
     custom_fields: z
-      .object({
-        lead_public_id: z.string().nullish(),
-      })
-      .passthrough()
+      .union([
+        z.array(z.unknown()),
+        z
+          .object({
+            lead_public_id: z.string().nullish(),
+          })
+          .passthrough(),
+      ])
       .nullish(),
 
     // Derived fields injected pela rota webhook (resolveLaunchForOnProfitEvent).
@@ -254,6 +286,45 @@ function parseOnProfitTime(raw: string | null | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * ONPROFIT-W3-PROCESSOR (2026-05-10): derives a deterministic group id that
+ * unites the main-product webhook + N order-bump webhooks of the same OnProfit
+ * transaction. Each OnProfit checkout fires N webhooks (one per item_type),
+ * each with its own _onprofit_event_id, but sharing `offer_hash` + customer
+ * email + roughly the same timestamp. Wave 4 will use this id in the
+ * dispatcher to aggregate value across rows.
+ *
+ * Convention: sha256(workspaceId + ":" + emailNormalized + ":" + offerHash +
+ *                    ":" + bucket(occurredAt, 5min))[:32]
+ *
+ * Bucket = floor(epoch_seconds / 300) * 300. 5min is safe against typical
+ * webhook delay (up to ~60s observed) yet tight enough to avoid colliding two
+ * distinct orders of the same customer that happen to land minutes apart.
+ *
+ * BR-PRIVACY-001: email is normalized + hashed; never appears raw in the
+ * returned id nor in any log.
+ *
+ * Returns null when email or offer_hash are missing — caller still persists,
+ * just loses aggregation capability (degrades to 1 dispatch per event).
+ */
+async function deriveTransactionGroupId(input: {
+  workspaceId: string;
+  email: string | null | undefined;
+  offerHash: string | null | undefined;
+  occurredAt: Date;
+}): Promise<string | null> {
+  if (!input.email || !input.offerHash) return null;
+  const emailNorm = input.email.trim().toLowerCase();
+  const bucketSec = Math.floor(input.occurredAt.getTime() / 1000 / 300) * 300;
+  const raw = `${input.workspaceId}:${emailNorm}:${input.offerHash}:${bucketSec}`;
+  const enc = new TextEncoder().encode(raw);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  const hex = Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return hex.slice(0, 32);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -296,7 +367,11 @@ export async function processOnprofitRawEvent(
     {
       event_id: string;
       dispatch_jobs_created: number;
-      dispatch_job_ids: Array<{ id: string; destination: string }>;
+      dispatch_job_ids: Array<{
+        id: string;
+        destination: string;
+        delay_seconds?: number;
+      }>;
     },
     ProcessingError
   >
@@ -392,8 +467,15 @@ export async function processOnprofitRawEvent(
     rawEvent.receivedAt ??
     new Date();
 
-  // Priority a: lead_public_id from custom_fields
-  const pptc = payload.custom_fields?.lead_public_id;
+  // Priority a: lead_public_id from custom_fields.
+  // ONPROFIT-W1-TYPES: `custom_fields` may be an empty array (default) or an
+  // object with named keys — narrow before reading. Array form carries no
+  // pptc by construction.
+  const cf = payload.custom_fields;
+  const pptc =
+    cf && !Array.isArray(cf)
+      ? ((cf as { lead_public_id?: string | null }).lead_public_id ?? null)
+      : null;
   if (pptc) {
     resolvedLeadId = await resolveLeadByPptc(pptc, rawEvent.workspaceId, db);
     if (!resolvedLeadId) {
@@ -628,6 +710,17 @@ export async function processOnprofitRawEvent(
   // -------------------------------------------------------------------------
   const amountUnit = payload.price / 100;
 
+  // ONPROFIT-W3-PROCESSOR: derive transaction_group_id (unites main product +
+  // order_bumps of the same OnProfit checkout). Persisted under custom_data so
+  // Wave 4 dispatcher can aggregate value across grouped rows. Null when email
+  // or offer_hash missing — pipeline still proceeds (1 dispatch per row).
+  const transactionGroupId = await deriveTransactionGroupId({
+    workspaceId: rawEvent.workspaceId,
+    email: payload.customer?.email,
+    offerHash: payload.offer_hash,
+    occurredAt: eventTime,
+  });
+
   let insertedEventId: string;
 
   try {
@@ -691,6 +784,16 @@ export async function processOnprofitRawEvent(
           sck: payload.sck ?? null,
           // OnProfit native status preserved for downstream segmentation.
           onprofit_status: payload.status,
+          // ONPROFIT-W3-PROCESSOR: discriminator between main product + order
+          // bumps of the same checkout. UI (Wave 6) reads this to render the
+          // grouped Purchase visual; dispatcher (Wave 4) reads it to decide
+          // skip vs aggregate.
+          item_type: payload.item_type ?? 'product',
+          // ONPROFIT-W3-PROCESSOR: deterministic group id for aggregation;
+          // null when email/offer_hash absent (degrades gracefully).
+          ...(transactionGroupId !== null && {
+            transaction_group_id: transactionGroupId,
+          }),
         }),
         // Buyer who completed checkout → implicit consent granted.
         // INV-EVENT-006: consent_snapshot populated on every event.
@@ -808,6 +911,11 @@ export async function processOnprofitRawEvent(
         eventName: payload._onprofit_event_type,
         eventContext: {
           funnel_role: payload.funnel_role ?? undefined,
+          // ONPROFIT-W3-PROCESSOR: expose item_type so the blueprint rule
+          // `purchased_order_bump` (Wave 7) can match `when: { item_type:
+          // 'order_bump' }`. Defaults to 'product' to align with the value
+          // persisted in events.custom_data.
+          item_type: payload.item_type ?? 'product',
         },
         tagRules: blueprint?.tag_rules,
       });
@@ -832,9 +940,32 @@ export async function processOnprofitRawEvent(
   // — no internal-only filter needed.
   // -------------------------------------------------------------------------
   let dispatchJobsCreated = 0;
-  const dispatchJobIds: Array<{ id: string; destination: string }> = [];
+  const dispatchJobIds: Array<{
+    id: string;
+    destination: string;
+    delay_seconds?: number;
+  }> = [];
+
+  // ONPROFIT-W3-PROCESSOR: order_bump rows are internal-only — they generate
+  // event rows, lead_stages and tag_rules (handled above), but MUST NOT create
+  // dispatch_jobs. The main product row (item_type='product') of the same
+  // checkout fans out to Meta/GA4/Google Ads carrying the aggregated value
+  // (Wave 4). Dropping a duplicate Purchase per OB avoids inflating reported
+  // revenue Nx in Meta/GA4 dashboards.
+  const isOrderBump = payload.item_type === 'order_bump';
 
   try {
+    if (isOrderBump) {
+      safeLog('info', {
+        event: 'onprofit_dispatch_skipped_order_bump',
+        raw_event_id,
+        workspace_id: rawEvent.workspaceId,
+        event_id: payload._onprofit_event_id,
+        transaction_group_id: transactionGroupId,
+        // BR-PRIVACY-001: product.id is an internal OnProfit numeric id, not PII.
+        onprofit_product_id: String(payload.product?.id ?? ''),
+      });
+    } else {
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, rawEvent.workspaceId),
       columns: { config: true },
@@ -933,10 +1064,21 @@ export async function processOnprofitRawEvent(
     if (jobInputs.length > 0) {
       const created = await createDispatchJobs(jobInputs, db);
       dispatchJobsCreated = created.length;
+      // ONPROFIT-W4: produto principal espera 80s antes do dispatch externo —
+      // dá tempo para que webhooks de order bumps cheguem e fiquem disponíveis
+      // para agregação por transaction_group_id no dispatcher Meta CAPI.
+      // BR-DISPATCH-007: consolida valor consolidado da transação OnProfit.
+      const isMainProduct = payload.item_type === 'product' || !payload.item_type;
+      const delaySeconds = isMainProduct ? 80 : undefined;
       for (const job of created) {
-        dispatchJobIds.push({ id: job.id, destination: job.destination });
+        dispatchJobIds.push({
+          id: job.id,
+          destination: job.destination,
+          ...(delaySeconds !== undefined && { delay_seconds: delaySeconds }),
+        });
       }
     }
+    } // end of else (isOrderBump === false)
   } catch (dispatchErr) {
     safeLog('error', {
       event: 'onprofit_dispatch_jobs_creation_failed',

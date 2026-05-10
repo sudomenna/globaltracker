@@ -10,22 +10,39 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: nenhum ativo. Sequência de hardening entregue 2026-05-09/10 (tracker race + KV best-effort + alias supersede + dispatch payload audit + Google Ads OAuth refactor + OnProfit launch resolver + geo enrichment + outbox poller + DLQ nativa + event_id dedup fix em 4 dispatchers + **Lead event race fix em snippet workshop**).
-- **Branch**: `main`. Último 5 commits desta sessão:
+- **Sprint ativo**: OnProfit Consolidated Dispatch — Waves 1–8 implementadas em 2026-05-10. **NÃO deployado ainda.** Commit pronto, aguarda `pnpm deploy:edge`.
+- **Branch**: `traffic-cockpit/sprint-tc-1-foundation`. Último commit desta sessão:
+  - `(pendente)` feat(onprofit): consolidated Purchase dispatch — transaction_group_id + order bump skip + value aggregation (Waves 1–8)
   - `5b32b5b` **fix(snippet/workshop): attribution vazia + race redirect antes do Lead event** (2026-05-10)
-  - `055c45d` feat(cp): tabela de contatos sortável + remoção do card Atribuição
-  - `444d740` fix(edge): sort_by/sort_dir em listLeads + backfill dispatch_jobs.lead_id
-  - `9b75337` fix(dispatch): event_id dedup bug — usar eventId do tracker em vez da PK do banco (4 dispatchers: Meta CAPI, GA4, Google Ads Conv, Enhanced Conv)
-- **Edge prod**: deploy atual **`452e3565`** (event_id fix em todos os 4 dispatchers). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09).
+- **Edge prod**: deploy atual **`452e3565`** (event_id fix em todos os 4 dispatchers). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09). **PRÓXIMO DEPLOY**: incluir as Waves 1–8 do OnProfit consolidated dispatch.
 - **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas.
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas. **Sem migration nova** nas Waves 1–8 (tudo em custom_data JSONB livre + SQL seeds + UPDATE blueprint).
 - **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
 - **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
 - **Match score Meta CAPI**: 7/8 → **8/8 alcançável** (validado: 15 Purchases em score 8 nos últimos 7 dias).
 
+### OnProfit Consolidated Dispatch — o que foi entregue (2026-05-10, Waves 1–8)
+
+| Wave | Entrega | Arquivos |
+|---|---|---|
+| 1 | Tipos OnProfit: `item_type`, `offer_hash`, `transactions`, `custom_fields` union | `integrations/onprofit/types.ts`, `mapper.ts`, Zod schema no processor |
+| 2 | Seed 3 produtos OnProfit no catálogo + `launch_products` para wkshop-cs-jun26 | SQL direto (sem migration) |
+| 3 | Processor: `deriveTransactionGroupId`, persiste `item_type`+`transaction_group_id` em `custom_data`, skip dispatch para `order_bump` | `onprofit-raw-events-processor.ts` |
+| 4 | Helper `aggregatePurchaseValueByGroup` + Meta CAPI consolida valor + delay 80s no CF Queue | `lib/transaction-aggregator.ts`, `index.ts` |
+| 5 | Mesma agregação em GA4, Google Ads Conversion e Enhanced Conversions | `index.ts` (3 dispatch fns) |
+| 6 | Endpoint `GET /v1/leads/:id/purchases` + aba "Compras" no lead detail CP | `routes/leads-purchases.ts`, CP `purchases-tab.tsx`, `page.tsx` |
+| 7 | Tag rule `purchased_order_bump` adicionada ao blueprint de `wkshop-cs-jun26` | SQL UPDATE direto no banco |
+| 8 | 11 testes unitários: `transaction-aggregator.test.ts` + `onprofit-order-bump-dispatch.test.ts` + fixtures | `tests/` |
+
+**Padrão `transaction_group_id`**: `sha256(workspaceId:emailNorm:offerHash:bucket5min)[:32]`. Todos os webhooks da mesma compra (main + OBs) compartilham o mesmo hash. Dispatcher espera 80s (CF Queue `delaySeconds`) para OBs chegarem, depois soma `custom_data.amount` de todos os events do grupo.
+
+**Dívida futura Guru**: documentada em `memory/project_dispatch_consolidation_pattern.md` cross-session. Guru tem `is_order_bump` no payload — quando OBs ficarem comuns lá, replicar o mesmo padrão em `guru-raw-events-processor.ts`.
+
 ### Onde começar a próxima sessão
 
-**Pendências críticas**: TODAS resolvidas. Nada bloqueando. Pipeline 100% operacional.
+**FAZER PRIMEIRO**: `pnpm deploy:edge` para colocar as Waves 1–8 em produção. Depois validar com uma compra real OnProfit (produto principal + order bumps) e checar a aba "Compras" no lead detail.
+
+**Pendências críticas restantes**: TODAS resolvidas. Nada bloqueando além do deploy.
 
 **0. Aguardar 24-48h pós event_id fix** — deploy `452e3565` em 2026-05-09 noite corrigiu `event_id: event.id` (PK do banco) → `event_id: event.eventId` (UUID do tracker) nos 4 dispatch builders. Validar Match Quality + Dedup Coverage Rate no Events Manager Meta para Lead/InitiateCheckout/custom events. Se subir, fix resolveu. PageView vai continuar baixo no dedup (esperado — ver `memory/project_pixel_pageview_dedup_decision.md` cross-session).
 

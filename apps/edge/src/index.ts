@@ -79,6 +79,7 @@ import {
 import { processGuruRawEvent } from './lib/guru-raw-events-processor.js';
 import { jsonb } from './lib/jsonb-cast.js';
 import { processOnprofitRawEvent } from './lib/onprofit-raw-events-processor.js';
+import { aggregatePurchaseValueByGroup } from './lib/transaction-aggregator.js';
 import { processSendflowRawEvent } from './lib/sendflow-raw-events-processor.js';
 import { hashPiiExternal } from './lib/pii.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
@@ -105,6 +106,7 @@ import { integrationsSendflowRoute } from './routes/integrations-sendflow.js';
 import { integrationsTestRoute } from './routes/integrations-test.js';
 import { launchesRoute } from './routes/launches.js';
 import { leadRoute } from './routes/lead.js';
+import { createLeadsPurchasesRoute } from './routes/leads-purchases.js';
 import { createLeadsSummaryRoute } from './routes/leads-summary.js';
 import { createLeadsTimelineRoute } from './routes/leads-timeline.js';
 import { onboardingStateRoute } from './routes/onboarding-state.js';
@@ -671,6 +673,14 @@ app.all('/v1/dispatch-jobs/:id/replay', async (c) => {
 });
 
 app.route('/v1/help', helpRoute);
+// Leads purchases route — mounted BEFORE summary and timeline so the more
+// specific /:public_id/purchases path is matched first.
+app.route(
+  '/v1/leads',
+  createLeadsPurchasesRoute({
+    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
 // Leads summary route (T-17-007) — mounted BEFORE leads-timeline so the more
 // specific /:public_id/summary path is matched ahead of any catch-all in the
 // timeline router. Both share the /v1/leads prefix and identical auth chain.
@@ -794,10 +804,19 @@ async function queueHandler(
           // Enqueue each created dispatch_job to gt-dispatch for external calls.
           for (const job of result.value.dispatch_job_ids) {
             try {
-              await env.QUEUE_DISPATCH.send({
-                dispatch_job_id: job.id,
-                destination: job.destination,
-              });
+              // ONPROFIT-W4: produto principal vem com delay_seconds=80 — dá
+              // tempo para webhooks de order bumps chegarem e ficarem
+              // disponíveis para agregação no dispatcher Meta CAPI.
+              // BR-DISPATCH-007.
+              const delaySeconds = (job as { delay_seconds?: number })
+                .delay_seconds;
+              await env.QUEUE_DISPATCH.send(
+                {
+                  dispatch_job_id: job.id,
+                  destination: job.destination,
+                },
+                delaySeconds !== undefined ? { delaySeconds } : undefined,
+              );
             } catch (qErr) {
               safeLog('error', {
                 event: 'dispatch_enqueue_failed',
@@ -1129,6 +1148,63 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
     };
     const parsedConsent = parseUd(event.consentSnapshot);
     const parsedUserData = parseUd(event.userData);
+    const parsedCustomData = parseUd(event.customData);
+
+    // === ONPROFIT-W4: agregação de valor para transações multi-produto ===
+    // Quando o event é Purchase E tem transaction_group_id E item_type='product'
+    // (ou null para events legacy/Guru), soma custom_data.amount de TODOS os
+    // events do grupo (produto principal + N order bumps) para que o Meta CAPI
+    // receba o valor real da transação consolidada. Evita fragmentar ROAS no
+    // algoritmo de bidding.
+    //
+    // BR-DISPATCH-007: agregação por transaction_group_id consolida Purchase.
+    // BR-EVENT-002: idempotency_key não muda (ainda 1 dispatch_job por event
+    //   principal, derivado de event.eventId).
+    // BR-PRIVACY-001: log apenas IDs internos + contadores.
+    //
+    // Ver: memory/project_dispatch_consolidation_pattern.md
+    {
+      const tgid =
+        typeof parsedCustomData.transaction_group_id === 'string'
+          ? parsedCustomData.transaction_group_id
+          : null;
+      const itemType =
+        typeof parsedCustomData.item_type === 'string'
+          ? parsedCustomData.item_type
+          : null;
+      const currentAmount =
+        typeof parsedCustomData.amount === 'number'
+          ? parsedCustomData.amount
+          : 0;
+
+      if (
+        event.eventName === 'Purchase' &&
+        tgid &&
+        (itemType === 'product' || itemType === null)
+      ) {
+        const agg = await aggregatePurchaseValueByGroup({
+          db,
+          workspaceId: event.workspaceId,
+          transactionGroupId: tgid,
+          currentEventAmount: currentAmount,
+        });
+
+        if (agg.isAggregated) {
+          // Mutate local copy — não persiste no DB. Mapper lerá `parsedCustomData`
+          // logo abaixo na chamada de mapEventToMetaPayload.
+          parsedCustomData.amount = agg.aggregatedAmount;
+          safeLog('info', {
+            event: 'meta_capi_value_aggregated',
+            dispatch_job_id: job.id,
+            transaction_group_id: tgid,
+            event_count_in_group: agg.eventCount,
+            aggregated_amount: agg.aggregatedAmount,
+            original_event_amount: currentAmount,
+          });
+        }
+      }
+    }
+    // === fim ONPROFIT-W4 ===
 
     // 4. Check eligibility — pure function, no I/O.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
@@ -1287,7 +1363,9 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           ...(zpHash ? { zp: zpHash } : {}),
           ...(countryHash ? { country: countryHash } : {}),
         },
-        custom_data: parseUd(event.customData) as Parameters<
+        // ONPROFIT-W4: usa parsedCustomData local (pode ter sido mutado pelo
+        // agregador acima — campo `amount` consolidado dos order bumps).
+        custom_data: parsedCustomData as Parameters<
           typeof mapEventToMetaPayload
         >[0]['custom_data'],
       },
@@ -1559,6 +1637,45 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
     }
 
     // 4. Map internal event → Ga4MpPayload.
+    // ONPROFIT-W5: mesma agregação do Meta CAPI — consolida Purchase value
+    // por transaction_group_id antes de mapear. BR-DISPATCH-007.
+    const ga4ParsedCustomData = parseUd(event.customData) ?? {};
+    {
+      const tgid =
+        typeof ga4ParsedCustomData.transaction_group_id === 'string'
+          ? ga4ParsedCustomData.transaction_group_id
+          : null;
+      const itemType =
+        typeof ga4ParsedCustomData.item_type === 'string'
+          ? ga4ParsedCustomData.item_type
+          : null;
+      const currentAmount =
+        typeof ga4ParsedCustomData.amount === 'number'
+          ? ga4ParsedCustomData.amount
+          : 0;
+      if (
+        event.eventName === 'Purchase' &&
+        tgid &&
+        (itemType === 'product' || itemType === null)
+      ) {
+        const agg = await aggregatePurchaseValueByGroup({
+          db,
+          workspaceId: event.workspaceId,
+          transactionGroupId: tgid,
+          currentEventAmount: currentAmount,
+        });
+        if (agg.isAggregated) {
+          ga4ParsedCustomData.amount = agg.aggregatedAmount;
+          safeLog('info', {
+            event: 'ga4_value_aggregated',
+            dispatch_job_id: job.id,
+            transaction_group_id: tgid,
+            event_count_in_group: agg.eventCount,
+            aggregated_amount: agg.aggregatedAmount,
+          });
+        }
+      }
+    }
     const payload = mapEventToGa4Payload(
       {
         event_id: event.eventId,
@@ -1569,7 +1686,7 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
         user_data: event.userData as Parameters<
           typeof mapEventToGa4Payload
         >[0]['user_data'],
-        custom_data: event.customData as Parameters<
+        custom_data: ga4ParsedCustomData as Parameters<
           typeof mapEventToGa4Payload
         >[0]['custom_data'],
         consent_snapshot: event.consentSnapshot as Parameters<
@@ -1751,6 +1868,51 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
     }
 
     // 5. Map internal event → ConversionUploadPayload.
+    // ONPROFIT-W5: consolida Purchase value por transaction_group_id antes de
+    // mapear. Google Ads recebe valor total (main + OBs). BR-DISPATCH-007.
+    const gadsConvParseUd = (raw: unknown): Record<string, unknown> => {
+      if (raw == null) return {};
+      if (typeof raw === 'string') { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; } }
+      if (typeof raw === 'object') return raw as Record<string, unknown>;
+      return {};
+    };
+    const gadsConvParsedCustomData = gadsConvParseUd(event.customData);
+    {
+      const tgid =
+        typeof gadsConvParsedCustomData.transaction_group_id === 'string'
+          ? gadsConvParsedCustomData.transaction_group_id
+          : null;
+      const itemType =
+        typeof gadsConvParsedCustomData.item_type === 'string'
+          ? gadsConvParsedCustomData.item_type
+          : null;
+      const currentAmount =
+        typeof gadsConvParsedCustomData.amount === 'number'
+          ? gadsConvParsedCustomData.amount
+          : 0;
+      if (
+        event.eventName === 'Purchase' &&
+        tgid &&
+        (itemType === 'product' || itemType === null)
+      ) {
+        const agg = await aggregatePurchaseValueByGroup({
+          db,
+          workspaceId: event.workspaceId,
+          transactionGroupId: tgid,
+          currentEventAmount: currentAmount,
+        });
+        if (agg.isAggregated) {
+          gadsConvParsedCustomData.amount = agg.aggregatedAmount;
+          safeLog('info', {
+            event: 'gads_conversion_value_aggregated',
+            dispatch_job_id: job.id,
+            transaction_group_id: tgid,
+            event_count_in_group: agg.eventCount,
+            aggregated_amount: agg.aggregatedAmount,
+          });
+        }
+      }
+    }
     const payload = mapEventToConversionUpload(
       {
         event_id: event.eventId,
@@ -1760,7 +1922,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
         attribution: event.attribution as Parameters<
           typeof mapEventToConversionUpload
         >[0]['attribution'],
-        custom_data: event.customData as Parameters<
+        custom_data: gadsConvParsedCustomData as Parameters<
           typeof mapEventToConversionUpload
         >[0]['custom_data'],
       },
@@ -1900,6 +2062,52 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
       },
     };
 
+    // ONPROFIT-W5: consolida Purchase value por transaction_group_id antes de
+    // eligibility + mapper. BR-DISPATCH-007.
+    const enhParseUd = (raw: unknown): Record<string, unknown> => {
+      if (raw == null) return {};
+      if (typeof raw === 'string') { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return {}; } }
+      if (typeof raw === 'object') return raw as Record<string, unknown>;
+      return {};
+    };
+    const enhParsedCustomData = enhParseUd(event.customData);
+    {
+      const tgid =
+        typeof enhParsedCustomData.transaction_group_id === 'string'
+          ? enhParsedCustomData.transaction_group_id
+          : null;
+      const itemType =
+        typeof enhParsedCustomData.item_type === 'string'
+          ? enhParsedCustomData.item_type
+          : null;
+      const currentAmount =
+        typeof enhParsedCustomData.amount === 'number'
+          ? enhParsedCustomData.amount
+          : 0;
+      if (
+        event.eventName === 'Purchase' &&
+        tgid &&
+        (itemType === 'product' || itemType === null)
+      ) {
+        const agg = await aggregatePurchaseValueByGroup({
+          db,
+          workspaceId: event.workspaceId,
+          transactionGroupId: tgid,
+          currentEventAmount: currentAmount,
+        });
+        if (agg.isAggregated) {
+          enhParsedCustomData.amount = agg.aggregatedAmount;
+          safeLog('info', {
+            event: 'enhanced_conversion_value_aggregated',
+            dispatch_job_id: job.id,
+            transaction_group_id: tgid,
+            event_count_in_group: agg.eventCount,
+            aggregated_amount: agg.aggregatedAmount,
+          });
+        }
+      }
+    }
+
     // 5. Check eligibility — pure function, no I/O.
     // BR-CONSENT-003: ad_user_data consent required for Enhanced Conversions.
     // BR-DISPATCH-004: checkEligibility returns mandatory skip_reason when not eligible.
@@ -1910,7 +2118,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
         consent_snapshot: event.consentSnapshot as Parameters<
           typeof checkEnhancedEligibility
         >[0]['consent_snapshot'],
-        custom_data: event.customData as Parameters<
+        custom_data: enhParsedCustomData as Parameters<
           typeof checkEnhancedEligibility
         >[0]['custom_data'],
       },
@@ -1932,7 +2140,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
         event_time: event.eventTime,
         lead_id: event.leadId,
         workspace_id: event.workspaceId,
-        custom_data: event.customData as Parameters<
+        custom_data: enhParsedCustomData as Parameters<
           typeof mapEventToEnhancedConversion
         >[0]['custom_data'],
         consent_snapshot: event.consentSnapshot as Parameters<

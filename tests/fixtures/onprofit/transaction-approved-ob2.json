@@ -1,0 +1,25 @@
+{
+  "object": "order",
+  "id": 100003,
+  "item_type": "order_bump",
+  "status": "PAID",
+  "customer": {
+    "name": "Comprador Teste",
+    "email": "comprador@test.com",
+    "phone": "11999999999"
+  },
+  "product": {
+    "id": 4854,
+    "name": "Pack Estruturas Avançadas",
+    "hash": "hash-ob2-001"
+  },
+  "price": 30000,
+  "currency": "BRL",
+  "offer_hash": "offer-abc-001",
+  "payment_type": "credit_card",
+  "custom_fields": [],
+  "purchase_date": "2026-05-10 17:45:00",
+  "_onprofit_event_type": "PAID",
+  "_onprofit_event_id": "evt-onprofit-ob2-001",
+  "funnel_role": "workshop"
+}

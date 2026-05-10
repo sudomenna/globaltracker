@@ -9,6 +9,7 @@ import { AttributionTab } from './attribution-tab';
 import { ConsentTab } from './consent-tab';
 import { DispatchesTab } from './dispatches-tab';
 import { EventsTab } from './events-tab';
+import { PurchasesTab } from './purchases-tab';
 import { IdentityTab } from './identity-tab';
 import { JourneyTab } from './journey-tab';
 import type {
@@ -82,6 +83,7 @@ const VALID_TYPES: NodeType[] = [
 const TAB_VALUES = [
   'jornada',
   'eventos',
+  'compras',
   'despachos',
   'atribuicao',
   'consent',
@@ -262,6 +264,7 @@ export default async function LeadDetailPage({
         <TabsList>
           <TabsTrigger value="jornada">Jornada</TabsTrigger>
           <TabsTrigger value="eventos">Eventos</TabsTrigger>
+          <TabsTrigger value="compras">Compras</TabsTrigger>
           <TabsTrigger value="despachos">Despachos</TabsTrigger>
           <TabsTrigger value="atribuicao">Atribuição</TabsTrigger>
           <TabsTrigger value="consent">Consent</TabsTrigger>
@@ -282,6 +285,10 @@ export default async function LeadDetailPage({
             initialStatusFilter={initialStatusFilter}
             initialPeriod={initialPeriod}
           />
+        </TabsContent>
+
+        <TabsContent value="compras">
+          <PurchasesTab leadPublicId={lead_public_id} accessToken={accessToken} />
         </TabsContent>
 
         <TabsContent value="despachos">

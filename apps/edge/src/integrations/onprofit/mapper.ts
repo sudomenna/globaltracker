@@ -291,7 +291,14 @@ export async function mapOnProfitToInternal(
   // and inflate ROAS dashboards by two orders of magnitude.
   const amountUnit = payload.price / 100;
 
-  const lead_public_id = payload.custom_fields?.lead_public_id ?? null;
+  // ONPROFIT-W1-TYPES (2026-05-10): `custom_fields` may be an empty array
+  // (default) or an object — narrow before reading. Array form carries no
+  // pptc by construction.
+  const cfMapper = payload.custom_fields;
+  const lead_public_id =
+    cfMapper && !Array.isArray(cfMapper)
+      ? (cfMapper.lead_public_id ?? null)
+      : null;
 
   // Lead resolution priority (BR-WEBHOOK-004):
   //   1. custom_fields.lead_public_id (operator-injected pptc)
