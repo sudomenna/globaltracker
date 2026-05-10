@@ -338,7 +338,7 @@ export default function LeadsPage() {
           <>
             <table className="w-full">
               <thead>
-                <tr className="border-b bg-muted/50">
+                <tr className="border-b bg-muted">
                   <th className="text-left px-4 py-3 font-normal">
                     <span className="text-xs font-medium text-muted-foreground">Contato</span>
                   </th>
@@ -365,7 +365,7 @@ export default function LeadsPage() {
               </thead>
               <tbody className="divide-y">
                 {items.map((lead) => (
-                  <tr key={lead.lead_public_id} className="hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer">
+                  <tr key={lead.lead_public_id} className="hover:bg-muted transition-colors cursor-pointer">
                     <td className="px-4 py-3 min-w-0">
                       <Link
                         href={`/contatos/${lead.lead_public_id}`}
