@@ -1385,6 +1385,56 @@ Duas brechas de design no fluxo `events.ts → QUEUE_EVENTS → processRawEvent`
 
 ---
 
+## ADR-043 — `event_id` dos dispatchers deve ser `event.eventId` (tracker UUID), nunca `event.id` (PK do banco) (2026-05-09)
+
+### Status
+Aceito. Commit `9b75337`, deploy `452e3565` (2026-05-09).
+
+### Contexto
+Meta Conversions API e Google Ads Conversion API usam `event_id` para deduplicar eventos entre o Pixel browser e o server-to-server (CAPI/Conversion Upload). O Pixel envia o UUID gerado pelo tracker.js e exposto em `window.__funil_event_id` via `fbq('track', ..., {}, { eventID })`. Para dedup funcionar, o CAPI **precisa enviar o mesmo UUID**.
+
+Até 2026-05-09, os 4 dispatch builders em `apps/edge/src/index.ts` enviavam `event_id: event.id` — a PK gerada pelo Postgres via `gen_random_uuid()`. Esse valor é completamente diferente do UUID do tracker. Resultado: **Dedup Coverage Rate = 0%** no Events Manager Meta, e equivalente nos demais dispatchers.
+
+Detectado via:
+1. Screenshots do Meta Events Manager mostrando "sem deduplicação".
+2. Query DB confirmando `events.id ≠ events.event_id` em todas as rows.
+3. Inspeção de `dispatch_attempts.request_payload_sanitized` confirmando o campo errado sendo enviado.
+4. Auditoria retroativa (7 dias): 472 PageView, 41 click_buy, 31 Lead, 6 Purchase afetados.
+
+### Decisão
+**Todo dispatcher que envia `event_id` para plataforma externa deve usar `event.eventId`** — a coluna `event_id TEXT NOT NULL` da tabela `events`, populada pelo tracker.js no momento de criação do evento. Nunca usar `event.id` (coluna `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`).
+
+Quatro call sites corrigidos simultaneamente:
+- Meta CAPI (~L1270 em `apps/edge/src/index.ts`)
+- GA4 Measurement Protocol (~L1564)
+- Google Ads Conversion Upload (~L1756)
+- Google Ads Enhanced Conversions (~L1930)
+
+**Complemento — boilerplate Pixel nas LPs**: investigação via Playwright revelou que o `fbq('track', 'PageView')` síncrono do boilerplate WordPress não carrega `eventID`. O segundo PageView disparado pelo tracker.js (com eventID correto) é deduplicado internamente pelo Pixel e descartado antes de chegar à rede. Resultado: PageView nunca deduplica no Events Manager — isso é trade-off aceito, não bug. Remover o boilerplate quebraria a criação do cookie `_fbp` a tempo do tracker capturá-lo, zerando match quality em Lead/Purchase/InitiateCheckout. Decisão: **não remover o `fbq('track','PageView')` síncrono**. Dedup baixo de PageView no dashboard Meta é esperado.
+
+### Alternativas consideradas
+
+- **Pré-gerar UUID no boilerplate antes do `fbq`** ("Opção D") — resolveria o dedup do PageView, mas exige mudar o snippet HTML em todas as LPs do cliente + modificar `pixel-coexist.ts` para reutilizar UUID preexistente. Ganho marginal (PageView não é evento de otimização). Adiado.
+- **Usar PK do banco como event_id para todos os eventos** — impossível: Pixel já envia o UUID do tracker antes do request chegar ao edge; não é possível retroativamente substituir o ID no browser.
+- **Gerar `eventId` novo no dispatcher** — geraria UUID diferente do tracker, mantendo dedup quebrado.
+
+### Consequências
+
+- (+) Dedup Coverage Rate entre Pixel e CAPI funcional para Lead, InitiateCheckout, Purchase, Contact e custom events.
+- (+) INV-TRACKER-006 atendida: `event_id` compartilhado entre browser e server.
+- (+) Dispatchers GA4 e Google Ads também beneficiados (mesmo fix, mesma raiz).
+- (–) Rows históricas pré-fix (2026-05-09) têm `event_id` errado em `dispatch_attempts.request_payload_sanitized`. Não recuperável — os requests já foram enviados. Meta não deduplica retroativamente.
+- (–) PageView continua sem dedup (trade-off aceito — ver §Complemento acima).
+
+### Invariante estabelecida
+
+**INV-DISPATCH-001**: Qualquer `DispatchableEvent` enviado a plataforma externa (Meta, Google Ads, GA4) deve mapear `event_id` do payload usando `event.eventId`. Todo dispatcher novo deve incluir teste que confirme `payload.event_id === event.eventId`.
+
+### Impacta
+[`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (4 dispatch builders), [`packages/db/src/schema/event.ts`](../../packages/db/src/schema/event.ts) (coluna canônica `event_id`), [`docs/40-integrations/01-meta-capi.md`](../../docs/40-integrations/01-meta-capi.md), [`docs/40-integrations/03-google-ads-conversion-upload.md`](../../docs/40-integrations/03-google-ads-conversion-upload.md), [`docs/40-integrations/04-google-ads-enhanced-conversions.md`](../../docs/40-integrations/04-google-ads-enhanced-conversions.md), [`docs/40-integrations/06-ga4-measurement-protocol.md`](../../docs/40-integrations/06-ga4-measurement-protocol.md).
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
