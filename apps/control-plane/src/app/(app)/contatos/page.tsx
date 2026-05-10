@@ -3,7 +3,10 @@
 import { type Lifecycle, LifecycleBadge } from '@/components/lifecycle-badge';
 import { Badge } from '@/components/ui/badge';
 import {
+  ChevronDown,
   ChevronRight,
+  ChevronsUpDown,
+  ChevronUp,
   Loader2,
   Mail,
   Phone,
@@ -51,6 +54,9 @@ interface LeadItem {
   first_seen_at: string;
   last_seen_at: string;
 }
+
+type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status';
+type SortDir = 'asc' | 'desc';
 
 const LIFECYCLE_OPTIONS: Lifecycle[] = [
   'contato',
@@ -116,6 +122,42 @@ function formatPhone(raw: string): string {
   return raw;
 }
 
+// ─── Sortable header button ───────────────────────────────────────────────────
+
+function SortableHeader({
+  label,
+  field,
+  sortBy,
+  sortDir,
+  onSort,
+}: {
+  label: string;
+  field: SortField;
+  sortBy: SortField;
+  sortDir: SortDir;
+  onSort: (field: SortField) => void;
+}) {
+  const isActive = sortBy === field;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(field)}
+      className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors whitespace-nowrap"
+    >
+      {label}
+      {isActive ? (
+        sortDir === 'desc' ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronUp className="h-3.5 w-3.5" />
+        )
+      ) : (
+        <ChevronsUpDown className="h-3.5 w-3.5 opacity-40" />
+      )}
+    </button>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function LeadsPage() {
@@ -130,10 +172,22 @@ export default function LeadsPage() {
 
   const [selectedLifecycle, setSelectedLifecycle] = useState<string>('');
 
+  const [sortBy, setSortBy] = useState<SortField>('last_seen_at');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
   const [items, setItems] = useState<LeadItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+
+  function handleSort(field: SortField) {
+    if (sortBy === field) {
+      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(field);
+      setSortDir('desc');
+    }
+  }
 
   // Load launches for filter dropdown
   useEffect(() => {
@@ -165,6 +219,8 @@ export default function LeadsPage() {
       if (debouncedQ) params.set('q', debouncedQ);
       if (selectedLaunch) params.set('launch_public_id', selectedLaunch);
       if (selectedLifecycle) params.set('lifecycle', selectedLifecycle);
+      params.set('sort_by', sortBy);
+      params.set('sort_dir', sortDir);
       if (cursor) params.set('cursor', cursor);
 
       const isLoadMore = !!cursor;
@@ -196,10 +252,10 @@ export default function LeadsPage() {
         setLoadingMore(false);
       }
     },
-    [accessToken, debouncedQ, selectedLaunch, selectedLifecycle],
+    [accessToken, debouncedQ, selectedLaunch, selectedLifecycle, sortBy, sortDir],
   );
 
-  // Re-fetch when filters or search change
+  // Re-fetch when filters, search, or sort change
   useEffect(() => {
     void fetchLeads();
   }, [fetchLeads]);
@@ -260,7 +316,7 @@ export default function LeadsPage() {
       </div>
 
       {/* Results */}
-      <div className="rounded-md border">
+      <div className="rounded-md border overflow-hidden">
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -280,70 +336,92 @@ export default function LeadsPage() {
           </div>
         ) : (
           <>
-            <ul className="divide-y">
-              {items.map((lead) => (
-                <li key={lead.lead_public_id}>
-                  <Link
-                    href={`/contatos/${lead.lead_public_id}`}
-                    className="flex items-start justify-between gap-4 py-3 px-4 hover:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                  >
-                    <div className="min-w-0 flex-1 space-y-1">
-                      {/* Linha 1: Nome + status */}
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium truncate">
-                          {lead.display_name ?? '—'}
-                        </span>
-                        <Badge variant={STATUS_BADGE[lead.status]}>
-                          {STATUS_LABEL[lead.status]}
-                        </Badge>
-                        {lead.lifecycle_status && (
-                          <LifecycleBadge lifecycle={lead.lifecycle_status} />
-                        )}
-                      </div>
-
-                      {/* Linha 2: Email | WhatsApp inline em sm+, stack em mobile */}
-                      <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
-                        <span className="inline-flex items-center gap-1.5 truncate">
-                          <Mail
-                            className="h-3 w-3 shrink-0"
-                            aria-hidden="true"
-                          />
-                          <span className="truncate">
-                            {lead.display_email ?? '—'}
+            <table className="w-full">
+              <thead>
+                <tr className="border-b bg-muted/50">
+                  <th className="text-left px-4 py-3 font-normal">
+                    <span className="text-xs font-medium text-muted-foreground">Contato</span>
+                  </th>
+                  <th className="text-left px-3 py-3 font-normal hidden sm:table-cell w-px whitespace-nowrap">
+                    <SortableHeader
+                      label="Primeiro contato"
+                      field="first_seen_at"
+                      sortBy={sortBy}
+                      sortDir={sortDir}
+                      onSort={handleSort}
+                    />
+                  </th>
+                  <th className="text-left px-3 py-3 font-normal hidden sm:table-cell w-px whitespace-nowrap">
+                    <SortableHeader
+                      label="Última atividade"
+                      field="last_seen_at"
+                      sortBy={sortBy}
+                      sortDir={sortDir}
+                      onSort={handleSort}
+                    />
+                  </th>
+                  <th className="w-8" />
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {items.map((lead) => (
+                  <tr key={lead.lead_public_id} className="hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors cursor-pointer">
+                    <td className="px-4 py-3 min-w-0">
+                      <Link
+                        href={`/contatos/${lead.lead_public_id}`}
+                        className="flex flex-col gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                      >
+                        {/* Linha 1: Nome + status */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium truncate">
+                            {lead.display_name ?? '—'}
                           </span>
-                        </span>
-                        <span className="inline-flex items-center gap-1.5 truncate">
-                          <Phone
-                            className="h-3 w-3 shrink-0"
-                            aria-hidden="true"
-                          />
-                          <span className="truncate">
-                            {lead.display_phone
-                              ? formatPhone(lead.display_phone)
-                              : '—'}
-                          </span>
-                        </span>
-                      </div>
-                    </div>
+                          <Badge variant={STATUS_BADGE[lead.status]}>
+                            {STATUS_LABEL[lead.status]}
+                          </Badge>
+                          {lead.lifecycle_status && (
+                            <LifecycleBadge lifecycle={lead.lifecycle_status} />
+                          )}
+                        </div>
 
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right hidden sm:block">
-                        <p className="text-xs text-muted-foreground">
-                          Última atividade
+                        {/* Linha 2: Email | Telefone */}
+                        <div className="flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
+                          <span className="inline-flex items-center gap-1.5 truncate">
+                            <Mail className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span className="truncate">{lead.display_email ?? '—'}</span>
+                          </span>
+                          <span className="inline-flex items-center gap-1.5 truncate">
+                            <Phone className="h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span className="truncate">
+                              {lead.display_phone ? formatPhone(lead.display_phone) : '—'}
+                            </span>
+                          </span>
+                        </div>
+                      </Link>
+                    </td>
+                    <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap">
+                      <Link href={`/contatos/${lead.lead_public_id}`} tabIndex={-1} className="block">
+                        <p className="text-xs font-medium tabular-nums">
+                          {formatDateTime(lead.first_seen_at)}
                         </p>
+                      </Link>
+                    </td>
+                    <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap">
+                      <Link href={`/contatos/${lead.lead_public_id}`} tabIndex={-1} className="block">
                         <p className="text-xs font-medium tabular-nums">
                           {formatDateTime(lead.last_seen_at)}
                         </p>
-                      </div>
-                      <ChevronRight
-                        className="h-4 w-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link href={`/contatos/${lead.lead_public_id}`} tabIndex={-1}>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
 
             {nextCursor && (
               <div className="flex justify-center py-4 border-t">

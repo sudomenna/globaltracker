@@ -24,12 +24,11 @@ import {
   Activity,
   Clock,
   Coins,
-  GitBranch,
   Send,
   Shield,
   Tag,
 } from 'lucide-react';
-import type { LeadSummary, LeadSummaryUtm } from './lead-summary-types';
+import type { LeadSummary } from './lead-summary-types';
 
 interface LeadSummaryHeaderProps {
   summary: LeadSummary;
@@ -71,11 +70,6 @@ function formatRelativePtBR(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function truncateClickId(value: string): string {
-  if (value.length <= 8) return value;
-  return `${value.slice(0, 8)}...`;
 }
 
 function formatBrl(value: number): string {
@@ -177,113 +171,6 @@ function TagsPanel({ tags }: { tags: LeadSummary['tags'] }) {
                 </Tooltip>
               ))}
             </div>
-          )}
-        </CardContent>
-      </section>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// AttributionPanel
-// ---------------------------------------------------------------------------
-
-function utmIsEmpty(u: LeadSummaryUtm | null): boolean {
-  if (!u) return true;
-  return !u.utm_source && !u.utm_medium && !u.utm_campaign;
-}
-
-function UtmRow({ utm }: { utm: LeadSummaryUtm }) {
-  return (
-    <div className="text-xs space-y-0.5">
-      {utm.utm_source && (
-        <div>
-          <span className="text-muted-foreground">Origem:</span>{' '}
-          <span className="font-mono">{utm.utm_source}</span>
-        </div>
-      )}
-      {utm.utm_campaign && (
-        <div>
-          <span className="text-muted-foreground">Campanha:</span>{' '}
-          <span className="font-mono">{utm.utm_campaign}</span>
-        </div>
-      )}
-      {utm.utm_medium && (
-        <div>
-          <span className="text-muted-foreground">Médio:</span>{' '}
-          <span className="font-mono">{utm.utm_medium}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AttributionPanel({
-  attribution,
-}: {
-  attribution: LeadSummary['attribution_summary'];
-}) {
-  const { first_touch, last_touch, fbclid, gclid } = attribution;
-  const hasFirst = !utmIsEmpty(first_touch);
-  const hasLast = !utmIsEmpty(last_touch);
-  const hasAny = hasFirst || hasLast || !!fbclid || !!gclid;
-  const showBothLabels = hasFirst && hasLast;
-
-  return (
-    <Card>
-      <section aria-label="Atribuição do lead">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <GitBranch className="h-4 w-4" aria-hidden="true" />
-            Atribuição
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4 pt-2 space-y-3">
-          {!hasAny ? (
-            <p className="text-sm text-muted-foreground">
-              Sem atribuição registrada
-            </p>
-          ) : (
-            <>
-              {hasLast && last_touch && (
-                <div>
-                  {showBothLabels && (
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
-                      Last touch
-                    </p>
-                  )}
-                  <UtmRow utm={last_touch} />
-                </div>
-              )}
-              {hasFirst && first_touch && (
-                <div>
-                  {showBothLabels && (
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">
-                      First touch
-                    </p>
-                  )}
-                  <UtmRow utm={first_touch} />
-                </div>
-              )}
-              {(fbclid || gclid) && (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {fbclid && (
-                    <Tooltip content={`fbclid: ${fbclid}`}>
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        fbclid: {truncateClickId(fbclid)}
-                      </Badge>
-                    </Tooltip>
-                  )}
-                  {gclid && (
-                    <Tooltip content={`gclid: ${gclid}`}>
-                      <Badge variant="outline" className="font-mono text-[10px]">
-                        gclid: {truncateClickId(gclid)}
-                      </Badge>
-                    </Tooltip>
-                  )}
-                </div>
-              )}
-            </>
           )}
         </CardContent>
       </section>
@@ -479,12 +366,9 @@ export function LeadSummaryHeader({ summary, role: _role }: LeadSummaryHeaderPro
       {/* Linha 2 — Métricas (sempre full-width grid) */}
       <MetricsPanel metrics={summary.metrics} />
 
-      {/* Linha 3 — grid 2 colunas (desktop) com Tags+Atribuição | Consent */}
+      {/* Linha 3 — grid 2 colunas (desktop) com Tags | Consent */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="space-y-3">
-          <TagsPanel tags={summary.tags} />
-          <AttributionPanel attribution={summary.attribution_summary} />
-        </div>
+        <TagsPanel tags={summary.tags} />
         <ConsentPanel consent={summary.consent_current} />
       </div>
     </div>
