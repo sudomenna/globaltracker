@@ -51,6 +51,13 @@ export interface TimelineNode {
   can_replay: boolean;
 }
 
+export interface OrderBumpSummary {
+  key: string;
+  productName: string;
+  amount?: number;
+  currency?: string;
+}
+
 interface EventCardProps {
   event: TimelineNode;
   dispatches: TimelineNode[];
@@ -58,6 +65,8 @@ interface EventCardProps {
   /** stage_changed correlacionado (opcional) — exibido inline no body */
   stageChange?: TimelineNode | null;
   role: string;
+  /** Order bumps do mesmo checkout OnProfit — exibidos dentro do card */
+  orderBumps?: OrderBumpSummary[];
 }
 
 const DESTINATION_LABEL: Record<string, string> = {
@@ -130,6 +139,7 @@ export function EventCard({
   tags,
   stageChange,
   role,
+  orderBumps,
 }: EventCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [whySheetOpen, setWhySheetOpen] = useState(false);
@@ -305,6 +315,42 @@ export function EventCard({
               </code>
             </p>
           )}
+
+          {orderBumps && orderBumps.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-dashed space-y-1">
+              {/* produto principal */}
+              {(() => {
+                const cd = isRecord(customData) ? customData : null;
+                const name = cd?.product_name as string | undefined;
+                const amt = cd?.amount as number | undefined;
+                const cur = (cd?.currency as string | undefined) ?? currency ?? 'BRL';
+                const formatted = amt != null
+                  ? amt.toLocaleString('pt-BR', { style: 'currency', currency: cur })
+                  : null;
+                return (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">produto</span>
+                    <span className="font-medium text-foreground">{name ?? eventName}</span>
+                    {formatted && <span>{formatted}</span>}
+                  </div>
+                );
+              })()}
+              {/* order bumps */}
+              {orderBumps.map((ob) => {
+                const formatted = ob.amount != null
+                  ? ob.amount.toLocaleString('pt-BR', { style: 'currency', currency: ob.currency ?? 'BRL' })
+                  : null;
+                return (
+                  <div key={ob.key} className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">order bump</span>
+                    <span className="font-medium text-foreground">{ob.productName}</span>
+                    {formatted && <span>{formatted}</span>}
+                    <span className="ml-auto italic">consolidado no despacho acima</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Toggle "Ver detalhes" */}
@@ -332,18 +378,72 @@ export function EventCard({
             {isRecord(customData) && Object.keys(customData).length > 0 && (
               <section>
                 <h4 className="font-semibold mb-1.5">Dados do evento</h4>
-                <table className="w-full">
-                  <tbody>
-                    {Object.entries(customData).map(([k, v]) => (
-                      <tr key={k} className="border-b border-muted last:border-0">
-                        <td className="py-1 pr-2 text-muted-foreground font-mono">
-                          {k}
-                        </td>
-                        <td className="py-1 font-mono break-all">{String(v)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+
+                {orderBumps && orderBumps.length > 0 ? (() => {
+                  const cd = customData as Record<string, unknown>;
+                  const mainAmt = cd.amount as number | undefined;
+                  const cur = (cd.currency as string | undefined) ?? 'BRL';
+                  const fmt = (amt: number) =>
+                    amt.toLocaleString('pt-BR', { style: 'currency', currency: cur });
+                  const obTotal = orderBumps.reduce((s, ob) => s + (ob.amount ?? 0), 0);
+                  const total = (mainAmt ?? 0) + obTotal;
+                  const SKIP = new Set(['amount', 'currency', 'product_name', 'item_type', 'transaction_group_id']);
+                  const extras = Object.entries(cd).filter(([k]) => !SKIP.has(k));
+                  return (
+                    <div className="space-y-3">
+                      {/* Itens individuais */}
+                      <div>
+                        <p className="text-muted-foreground mb-1">Itens</p>
+                        <table className="w-full">
+                          <tbody>
+                            <tr className="border-b border-muted">
+                              <td className="py-1 pr-2 text-muted-foreground">produto</td>
+                              <td className="py-1 font-medium">{cd.product_name as string ?? eventName}</td>
+                              <td className="py-1 text-right">{mainAmt != null ? fmt(mainAmt) : '—'}</td>
+                            </tr>
+                            {orderBumps.map((ob) => (
+                              <tr key={ob.key} className="border-b border-muted last:border-0">
+                                <td className="py-1 pr-2 text-muted-foreground">order bump</td>
+                                <td className="py-1 font-medium">{ob.productName}</td>
+                                <td className="py-1 text-right">{ob.amount != null ? fmt(ob.amount) : '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {/* Total consolidado enviado */}
+                      <div className="rounded-md bg-muted/50 px-3 py-2 space-y-0.5">
+                        <p className="text-muted-foreground">Total enviado (consolidado)</p>
+                        <p className="font-semibold text-sm">{fmt(total)} <span className="font-normal text-muted-foreground">{cur}</span></p>
+                        <p className="text-[10px] text-muted-foreground">transaction_group_id: <span className="font-mono">{cd.transaction_group_id as string}</span></p>
+                      </div>
+                      {/* Demais campos */}
+                      {extras.length > 0 && (
+                        <table className="w-full">
+                          <tbody>
+                            {extras.map(([k, v]) => (
+                              <tr key={k} className="border-b border-muted last:border-0">
+                                <td className="py-1 pr-2 text-muted-foreground font-mono">{k}</td>
+                                <td className="py-1 font-mono break-all">{String(v)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  );
+                })() : (
+                  <table className="w-full">
+                    <tbody>
+                      {Object.entries(customData).map(([k, v]) => (
+                        <tr key={k} className="border-b border-muted last:border-0">
+                          <td className="py-1 pr-2 text-muted-foreground font-mono">{k}</td>
+                          <td className="py-1 font-mono break-all">{String(v)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </section>
             )}
 

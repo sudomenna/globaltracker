@@ -420,10 +420,13 @@ function sanitizePayload(
 // T-17-001: filter custom_data to a small UI-relevant set; omit the rest
 const CUSTOM_DATA_ALLOWED_KEYS = new Set([
   'value',
+  'amount',
   'currency',
   'product_name',
   'order_id',
   'transaction_id',
+  'transaction_group_id',
+  'item_type',
 ]);
 
 function pickCustomData(raw: unknown): Record<string, unknown> | undefined {

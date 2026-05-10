@@ -21,7 +21,7 @@ import { edgeFetch } from '@/lib/api-client';
 import { createSupabaseBrowser } from '@/lib/supabase-browser';
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { EventCard, type TimelineNode } from './event-card';
+import { EventCard, type OrderBumpSummary, type TimelineNode } from './event-card';
 import { StageDivider } from './journey-helpers';
 
 interface TimelineResponse {
@@ -38,9 +38,16 @@ interface JourneyTabProps {
 
 const CORRELATION_WINDOW_MS = 30_000;
 
+type EventItem = { kind: 'event'; key: string; event: TimelineNode; dispatches: TimelineNode[]; tags: TimelineNode[]; stageChange: TimelineNode | null };
+type StageItem = { kind: 'stage'; key: string; node: TimelineNode };
+
+// GroupedItem: saída de groupNodes — só event + stage, sem purchase_group
+type GroupedItem = EventItem | StageItem;
+
+// TimelineItem: saída final após mergePurchaseGroups — inclui purchase_group
 type TimelineItem =
-  | { kind: 'event'; key: string; event: TimelineNode; dispatches: TimelineNode[]; tags: TimelineNode[]; stageChange: TimelineNode | null }
-  | { kind: 'stage'; key: string; node: TimelineNode };
+  | GroupedItem
+  | { kind: 'purchase_group'; key: string; primary: EventItem; orderBumps: EventItem[] };
 
 /**
  * Agrupa nodes em blocos de evento + intercala stage dividers.
@@ -60,7 +67,7 @@ type TimelineItem =
  *
  * Saída final: ordem DESC (mais recente em cima).
  */
-function groupNodes(nodes: TimelineNode[]): TimelineItem[] {
+function groupNodes(nodes: TimelineNode[]): GroupedItem[] {
   const sortedAsc = [...nodes].sort(
     (a, b) =>
       new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
@@ -75,7 +82,7 @@ function groupNodes(nodes: TimelineNode[]): TimelineItem[] {
   const consumedDispatches = new Set<string>();
   const consumedTags = new Set<string>();
 
-  const items: TimelineItem[] = [];
+  const items: GroupedItem[] = [];
 
   events.forEach((event, idx) => {
     const eventTs = new Date(event.occurred_at).getTime();
@@ -154,6 +161,61 @@ function groupNodes(nodes: TimelineNode[]): TimelineItem[] {
   return items.reverse();
 }
 
+/**
+ * Agrupa eventos Purchase do OnProfit que compartilham o mesmo
+ * transaction_group_id. Apenas webhook:onprofit com transaction_group_id
+ * não-nulo são elegíveis — Guru e demais sources ficam intocados.
+ */
+function mergePurchaseGroups(items: GroupedItem[]): TimelineItem[] {
+  const grouped = new Map<string, EventItem[]>();
+
+  for (const item of items) {
+    if (item.kind !== 'event') continue;
+    const cd = item.event.payload.custom_data as Record<string, unknown> | undefined;
+    const tgId = cd?.transaction_group_id as string | undefined;
+    const source = item.event.payload.event_source as string | undefined;
+    const name = item.event.payload.event_name as string | undefined;
+    if (tgId && source === 'webhook:onprofit' && name === 'Purchase') {
+      const bucket = grouped.get(tgId) ?? [];
+      bucket.push(item);
+      grouped.set(tgId, bucket);
+    }
+  }
+
+  // Apenas grupos com >1 evento precisam de merge
+  const toMerge = new Map<string, EventItem[]>();
+  for (const [id, bucket] of grouped) {
+    if (bucket.length > 1) toMerge.set(id, bucket);
+  }
+  if (toMerge.size === 0) return items;
+
+  const mergedIds = new Set<string>();
+  for (const bucket of toMerge.values()) {
+    for (const it of bucket) mergedIds.add(it.key);
+  }
+
+  const result: TimelineItem[] = [];
+  for (const item of items) {
+    if (item.kind === 'stage' || !mergedIds.has(item.key)) {
+      result.push(item);
+      continue;
+    }
+    const cd = item.event.payload.custom_data as Record<string, unknown> | undefined;
+    const tgId = cd?.transaction_group_id as string;
+    // Só insere o grupo na primeira ocorrência (primary = item_type 'product')
+    if (!result.some((r) => r.kind === 'purchase_group' && r.key === `pg-${tgId}`)) {
+      const bucket = toMerge.get(tgId)!;
+      const primary = (bucket.find((it) => {
+        const c = it.event.payload.custom_data as Record<string, unknown> | undefined;
+        return (c?.item_type as string | undefined) !== 'order_bump';
+      }) ?? bucket[0]) as EventItem;
+      const orderBumps = bucket.filter((it) => it.key !== primary.key);
+      result.push({ kind: 'purchase_group', key: `pg-${tgId}`, primary, orderBumps });
+    }
+  }
+  return result;
+}
+
 export function JourneyTab({ leadPublicId, role }: JourneyTabProps) {
   const fetcher = useCallback(
     async (url: string): Promise<TimelineResponse> => {
@@ -216,7 +278,7 @@ export function JourneyTab({ leadPublicId, role }: JourneyTabProps) {
     );
   }
 
-  const items = groupNodes(nodes);
+  const items = mergePurchaseGroups(groupNodes(nodes));
 
   return (
     <div className="space-y-0">
@@ -231,6 +293,30 @@ export function JourneyTab({ leadPublicId, role }: JourneyTabProps) {
             />
           );
         }
+
+        if (item.kind === 'purchase_group') {
+          const obSummaries: OrderBumpSummary[] = item.orderBumps.map((ob) => {
+            const cd = ob.event.payload.custom_data as Record<string, unknown> | undefined;
+            return {
+              key: ob.key,
+              productName: (cd?.product_name as string | undefined) ?? 'Order Bump',
+              amount: cd?.amount as number | undefined,
+              currency: (cd?.currency as string | undefined) ?? 'BRL',
+            };
+          });
+          return (
+            <EventCard
+              key={item.key}
+              event={item.primary.event}
+              dispatches={item.primary.dispatches}
+              tags={item.primary.tags}
+              stageChange={item.primary.stageChange}
+              role={role}
+              orderBumps={obSummaries}
+            />
+          );
+        }
+
         return (
           <EventCard
             key={item.key}
