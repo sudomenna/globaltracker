@@ -38,6 +38,9 @@ export const launches = pgTable('launches', {
   // BR-AUDIENCE-001: customer_match_strategy is conditional on audience eligibility
   // INV-LAUNCH-005: config.tracking.google.customer_match_strategy ∈ CustomerMatchStrategy enum — Zod validates
   // INV-LAUNCH-003: config.tracking.meta.pixel_policy must be declared before status -> 'live' — service validates
+  // config.metaCampaignPrefix?: string — prefixo de campanha Meta Ads para inferência de audiences
+  //   Ex: "WCS-JUN26". Usado pelo Meta Audiences Mirror para filtrar campanhas e popular meta_audiences.
+  //   Validado pelo Zod no Edge (opcional; ausência desabilita sincronização de audiences).
   config: jsonb('config').notNull().default({}),
 
   // T-FUNIL-010: funnel template applied to this launch (nullable — legacy launches have none)

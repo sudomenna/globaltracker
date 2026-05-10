@@ -116,6 +116,7 @@ import { pagesRoute } from './routes/pages.js';
 import { createProductsRoute } from './routes/products.js';
 import { createLaunchProductsRoute } from './routes/launch-products.js';
 import { createLaunchLeadsRoute } from './routes/launches-leads.js';
+import { createMetaAudiencesRoute } from './routes/meta-audiences.js';
 import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
@@ -516,6 +517,18 @@ app.route(
     getConnStr: (env) =>
       env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
     getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
+  }),
+);
+// Meta Audiences Mirror: POST /:public_id/meta-audiences/sync + GET /:public_id/meta-audiences
+// IMPORTANT: mounted BEFORE launchesRoute to prevent catch-all interception.
+// BR-RBAC-001: workspace_id from JWT membership. BR-RBAC-002: sync requires OPERATOR+.
+// BR-PRIVACY-001: no PII in logs or error responses.
+// INV-META-AUDIENCE-001: upsert is idempotent on (workspace_id, launch_id, meta_audience_id).
+app.route(
+  '/v1/launches',
+  createMetaAudiencesRoute({
+    getConnStr: (env) =>
+      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
   }),
 );
 app.route('/v1/launches', launchesRoute);

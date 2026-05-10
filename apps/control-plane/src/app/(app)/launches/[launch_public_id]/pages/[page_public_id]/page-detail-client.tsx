@@ -72,6 +72,7 @@ interface Props {
   initialEventConfig?: EventConfig | null;
   initialUrl?: string | null;
   initialAllowedDomains?: string[];
+  pageRole?: string | null;
 }
 
 const TRACKER_CDN_URL =
@@ -370,6 +371,8 @@ ${wires}
 
 const MASKED_TOKEN = '••••••••••••••••••••••';
 
+const ROLES_WITHOUT_FORM = new Set(['checkout', 'thankyou']);
+
 export function PageDetailClient({
   launchPublicId,
   pagePublicId,
@@ -378,7 +381,9 @@ export function PageDetailClient({
   initialEventConfig,
   initialUrl,
   initialAllowedDomains = [],
+  pageRole,
 }: Props) {
+  const showFormSnippet = !ROLES_WITHOUT_FORM.has(pageRole ?? '');
   const [tokenVisible, setTokenVisible] = useState(false);
   // pageToken: lê do localStorage **após mount** para evitar hydration mismatch
   // (SSR retorna null, client tem valor → render diverge). Inicia null e
@@ -928,8 +933,8 @@ export function PageDetailClient({
         </CardContent>
       </Card>
 
-      {/* Snippet do body — captura de leads do formulário */}
-      <Card>
+      {/* Snippet do body — captura de leads do formulário (oculto para checkout/thankyou) */}
+      {showFormSnippet && <Card>
         <CardHeader>
           <CardTitle className="text-base">
             Captura de leads do formulário
@@ -1072,7 +1077,7 @@ export function PageDetailClient({
             </Button>
           </div>
         </CardContent>
-      </Card>
+      </Card>}
 
       {/* Eventos customizados — wire de seletores DOM */}
       {eventConfig.custom.length > 0 && (
