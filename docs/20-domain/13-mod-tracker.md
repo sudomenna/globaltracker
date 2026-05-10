@@ -112,7 +112,7 @@ Todos os snippets seguem 4 blocos comuns:
 
 Responsabilidades:
 - `wireBuyButton()` — intercepta click no CTA → `F.track('custom:click_buy_*')` + `fbqIfAvailable('track', 'InitiateCheckout')`.
-- `wireForm()` (opcional, se a page tem form de captura) — intercepta submit, POST `/v1/lead` com `consent: { analytics: 'granted', marketing: 'granted', ad_user_data: 'granted', ad_personalization: 'granted', customer_match: 'granted' }`, persiste `lead_token` em `localStorage.__gt_ftk`, chama `F.identify` + `F.track('Lead')` + `fbqIfAvailable('track', 'Lead')`, redireciona ao checkout.
+- `wireForm()` (opcional, se a page tem form de captura) — intercepta submit, POST `/v1/lead` com `attribution: readUtms()` (UTMs + click IDs canônicos da URL — **NUNCA** `{}` hardcoded; `lead_identify` perderia atribuição) e `consent: { analytics: 'granted', marketing: 'granted', ad_user_data: 'granted', ad_personalization: 'granted', customer_match: 'granted' }`, persiste `lead_token` em `localStorage.__gt_ftk`, chama `F.identify` + `F.track('Lead')` + `fbqIfAvailable('track', 'Lead')`, redireciona ao checkout. **Padrão obrigatório de redirect** (BR-TRACKER-002): `setTimeout(safeRedirect, 120)` fica **dentro** do callback do `withTracker` (após `F.track('Lead')`), com fallback `setTimeout(safeRedirect, 2000)` fora — flag `redirected` evita duplo redirect. Se o redirect ficar fora do `withTracker` (no `.then` final ou `.catch`), submits que ocorrem antes do tracker.js executar disparam o redirect em 120ms cancelando o polling do `withTracker` → `F.track('Lead')` nunca roda → lead fica sem evento `Lead` (sem `lead_workshop` stage, sem dispatch_jobs).
 - `fbqAutoPageView()` no `boot()` (PageView fired pelo tracker via `auto_page_view: true`).
 
 Referência completa: [`apps/tracker/snippets/paid-workshop/workshop.html`](../../apps/tracker/snippets/paid-workshop/workshop.html).
@@ -201,6 +201,7 @@ Custo: leitura de `document.cookie` é síncrona e da ordem de microssegundos. C
 ## 8. BRs relacionadas
 
 - `BR-TRACKER-001` — Funil.identify exige lead_token, não lead_id em claro.
+- `BR-TRACKER-002` — Snippets de capture page com redirect pós-`/v1/lead` devem disparar o redirect **dentro** do callback do `withTracker` (após `F.track('Lead')`), com fallback `setTimeout(safeRedirect, 2000)` fora e flag `redirected` para evitar duplo navigation. Redirect fora do `withTracker` causa race: submits antes do tracker.js executar perdem o evento `Lead` (e portanto `lead_workshop` stage e dispatch_jobs). `attribution` no body do POST `/v1/lead` deve usar `readUtms()` — nunca `{}` hardcoded. Bug reproduzido em 2026-05-10 (3/67 leads — Sheila Richeti, Maria Fernanda, Flávio); fix em `apps/tracker/snippets/paid-workshop/workshop.html` (commit `5b32b5b`).
 - `BR-CONSENT-*` — Cookies próprios respeitam consent.
 
 ## 9. Contratos consumidos

@@ -151,7 +151,7 @@ Boilerplate por role (referência `apps/tracker/snippets/paid-workshop/`):
 
 | Page role | Arquivo | Inclui |
 |---|---|---|
-| `sales` (capture) | `<page>.html` | `withTracker`, `fbqIfAvailable`, `fbqAutoPageView`, `wireBuyButton` (CTA → custom event + fbq), `wireForm` (POST /v1/lead com consent granted + identify + Lead + fbq), `boot` |
+| `sales` (capture) | `<page>.html` | `withTracker`, `fbqIfAvailable`, `fbqAutoPageView`, `wireBuyButton` (CTA → custom event + fbq), `wireForm` (POST /v1/lead com `attribution: readUtms()` + consent granted + identify + Lead + fbq; redirect **dentro** do `withTracker` callback com fallback de 2s — ver BR-TRACKER-002), `boot` |
 | `sales` (oferta sem form) | `<page>.html` | `withTracker`, `fbqIfAvailable`, `bootIdentity` (rebind localStorage), `F.page` + `fbqIfAvailable` PageView, `wireBuyButton` (CTA → custom event + fbq) |
 | `webinar` | `<page>.html` | `withTracker`, `fbqIfAvailable`, identity rebind, `F.page` + `fbqIfAvailable` PageView, listener de engagement event |
 | `thankyou` | `<page>.html` | `withTracker`, `fbqIfAvailable`, `readParamsAndStrip`, `postLead` (consent granted) ou hot path `__gt_ftk`, `F.page` + `fbqIfAvailable` PageView, opcional listeners de engagement |
