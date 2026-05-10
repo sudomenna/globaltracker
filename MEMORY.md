@@ -10,11 +10,18 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: OnProfit Consolidated Dispatch — Waves 1–8 implementadas em 2026-05-10. **NÃO deployado ainda.** Commit pronto, aguarda `pnpm deploy:edge`.
-- **Branch**: `traffic-cockpit/sprint-tc-1-foundation`. Último commit desta sessão:
-  - `(pendente)` feat(onprofit): consolidated Purchase dispatch — transaction_group_id + order bump skip + value aggregation (Waves 1–8)
-  - `5b32b5b` **fix(snippet/workshop): attribution vazia + race redirect antes do Lead event** (2026-05-10)
-- **Edge prod**: deploy atual **`452e3565`** (event_id fix em todos os 4 dispatchers). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09). **PRÓXIMO DEPLOY**: incluir as Waves 1–8 do OnProfit consolidated dispatch.
+- **Sprint ativo**: OnProfit Consolidated Dispatch — Waves 1–8 **deployadas e validadas** (2026-05-10). Compra real OnProfit (R$2 + order bump R$1) executada e confirmada: evento Purchase consolidado correto no edge, dispatches Meta CAPI + GA4 disparados.
+- **Branch**: `main`. Commits desta sessão (7 commits à frente de `origin/main` — ainda NÃO pushedados):
+  - `28859ea` feat(jornada): background colorido por tipo de evento nos cards
+  - `2646ae5` feat(jornada): agrupa Purchase OnProfit com order bumps na timeline
+  - `3242f77` feat(onprofit): consolidated Purchase dispatch com order bumps (Waves 1–8)
+  - `a523991` + anteriores: doc-sync + ADR-043 + BR-TRACKER-002 + FLOW-11 + contatos UX
+- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
+- **Edge prod**: deploy atual **`8668652c`** (OnProfit Waves 1–8 consolidadas + event_id fix). Comando: **`pnpm deploy:edge`**.
+- **Jornada UX — novidades desta sessão**:
+  - Purchase OnProfit com `transaction_group_id` compartilhado → agrupados em 1 card: produto principal visível + OBs indentados abaixo sem click.
+  - Expanded "Dados do evento": tabela item-a-item (produto principal + cada OB com valor) + caixa "Total consolidado despachado".
+  - Cards com background colorido por tipo: Purchase=emerald-50, Lead=blue-50, LeadIdentify=violet-50, PageView=slate-50, InitiateCheckout=amber-50, ViewContent=sky-50, demais=gray-50.
 - **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas. **Sem migration nova** nas Waves 1–8 (tudo em custom_data JSONB livre + SQL seeds + UPDATE blueprint).
 - **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
@@ -40,11 +47,11 @@
 
 ### Onde começar a próxima sessão
 
-**FAZER PRIMEIRO**: `pnpm deploy:edge` para colocar as Waves 1–8 em produção. Depois validar com uma compra real OnProfit (produto principal + order bumps) e checar a aba "Compras" no lead detail.
+**Push pendente**: `git push origin main` — 7 commits locais à frente de `origin/main`. Nenhum bloqueio, push pode ocorrer quando quiser.
 
-**Pendências críticas restantes**: TODAS resolvidas. Nada bloqueando além do deploy.
+**Pendências críticas restantes**: TODAS resolvidas. Nenhum P0 aberto.
 
-**0. Aguardar 24-48h pós event_id fix** — deploy `452e3565` em 2026-05-09 noite corrigiu `event_id: event.id` (PK do banco) → `event_id: event.eventId` (UUID do tracker) nos 4 dispatch builders. Validar Match Quality + Dedup Coverage Rate no Events Manager Meta para Lead/InitiateCheckout/custom events. Se subir, fix resolveu. PageView vai continuar baixo no dedup (esperado — ver `memory/project_pixel_pageview_dedup_decision.md` cross-session).
+**0. Aguardar 24-48h pós event_id fix** — deploy `452e3565` (2026-05-09 noite) corrigiu `event_id: event.id` → `event_id: event.eventId` nos 4 dispatchers. Validar Match Quality + Dedup Coverage Rate no Events Manager Meta para Lead/InitiateCheckout/custom events. PageView vai continuar baixo no dedup (esperado — ver `memory/project_pixel_pageview_dedup_decision.md` cross-session).
 
 **ADR-043 NÃO escrito** — usuário pediu pra registrar como ADR, mas o write foi rejeitado e em seguida pediu pra preparar pra zerar contexto. Conteúdo da decisão preservado em memória cross-session (`project_event_id_dispatcher_fix.md` + `project_pixel_pageview_dedup_decision.md`). Próxima sessão pode promover pra ADR-043 se quiser.
 
