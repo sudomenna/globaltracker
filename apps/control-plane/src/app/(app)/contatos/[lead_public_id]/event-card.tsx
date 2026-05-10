@@ -118,6 +118,17 @@ function eventBorderClass(status: TimelineNode['status']): string {
   }
 }
 
+function eventBgClass(eventName: string): string {
+  const name = eventName.toLowerCase();
+  if (name === 'purchase')        return 'bg-emerald-50';
+  if (name === 'lead')            return 'bg-blue-50';
+  if (name === 'lead_identify')   return 'bg-violet-50';
+  if (name === 'pageview')        return 'bg-slate-50';
+  if (name === 'initiatecheckout' || name === 'initiate_checkout') return 'bg-amber-50';
+  if (name === 'viewcontent' || name === 'view_content') return 'bg-sky-50';
+  return 'bg-gray-50';
+}
+
 function formatLatency(ms: unknown): string | null {
   const n = typeof ms === 'number' ? ms : Number(ms);
   if (!Number.isFinite(n)) return null;
@@ -198,7 +209,7 @@ export function EventCard({
         'mb-3',
       )}
     >
-      <Card className={cn('border-l-4', eventBorderClass(event.status))}>
+      <Card className={cn('border-l-4', eventBorderClass(event.status), eventBgClass(eventName))}>
         {/* Header — sempre visível */}
         <div className="p-4 space-y-1.5">
           {/* Linha 1: origin + nome + valor */}
