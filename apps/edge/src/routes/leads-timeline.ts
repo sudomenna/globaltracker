@@ -102,6 +102,10 @@ const ListLeadsQuerySchema = z
     lifecycle: z
       .enum(LIFECYCLE_STATUSES as readonly [LifecycleStatus, ...LifecycleStatus[]])
       .optional(),
+    sort_by: z
+      .enum(['last_seen_at', 'first_seen_at', 'name', 'lifecycle_status'])
+      .optional(),
+    sort_dir: z.enum(['asc', 'desc']).optional(),
   })
   .strict();
 
@@ -869,6 +873,8 @@ export function createLeadsTimelineRoute(opts?: {
       cursor: rawQuery.cursor,
       limit: rawQuery.limit,
       lifecycle: rawQuery.lifecycle,
+      sort_by: rawQuery.sort_by,
+      sort_dir: rawQuery.sort_dir,
     });
     if (!listParseResult.success) {
       return c.json(
@@ -885,6 +891,8 @@ export function createLeadsTimelineRoute(opts?: {
     const q = listParseResult.data.q?.trim() || undefined;
     const launchPublicId = listParseResult.data.launch_public_id?.trim() || undefined;
     const lifecycle = listParseResult.data.lifecycle;
+    const sortBy = listParseResult.data.sort_by ?? 'last_seen_at';
+    const sortDir = listParseResult.data.sort_dir ?? 'desc';
     const rawLimit = Math.min(
       Math.max(1, Number(listParseResult.data.limit ?? 30)),
       100,
@@ -907,13 +915,17 @@ export function createLeadsTimelineRoute(opts?: {
       lifecycle,
       cursor,
       limit: rawLimit + 1,
+      sortBy,
+      sortDir,
     });
 
     const hasMore = items.length > rawLimit;
     const page = hasMore ? items.slice(0, rawLimit) : items;
+    const lastItem = page.length > 0 ? page[page.length - 1]! : null;
+    // Cursor is only supported for date-based sorts (keyset pagination).
     const nextCursor =
-      hasMore && page.length > 0
-        ? page[page.length - 1]!.last_seen_at
+      hasMore && lastItem && (sortBy === 'last_seen_at' || sortBy === 'first_seen_at')
+        ? (sortBy === 'first_seen_at' ? lastItem.first_seen_at : lastItem.last_seen_at)
         : null;
 
     // ADR-034 / BR-IDENTITY-006: mask email/phone for operator/viewer.

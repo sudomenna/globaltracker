@@ -11,8 +11,15 @@
 ## §1 Estado atual
 
 - **Sprint ativo**: nenhum ativo. Sequência de hardening entregue 2026-05-09 (tracker race + KV best-effort + alias supersede + dispatch payload audit + Google Ads OAuth refactor + OnProfit launch resolver + geo enrichment + outbox poller + DLQ nativa).
-- **Branch**: `main`, working tree limpo (só `facebook_docs.md` untracked — não commitar). 28+ commits ahead de origin (sem push automático — pedir confirmação se for pushar).
-- **Edge prod**: deploy atual **`9b78719c`** (outbox poller + DLQ, ADR-042). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09).
+- **Branch**: `main`. **Working tree com 5 arquivos modificados não commitados** desta sessão:
+  - `apps/control-plane/src/app/(app)/contatos/page.tsx` (tabela sortável + first_seen_at)
+  - `apps/control-plane/src/app/(app)/contatos/[lead_public_id]/lead-summary-header.tsx` (removido card Atribuição)
+  - `apps/edge/src/routes/leads-timeline.ts` (sort_by/sort_dir params)
+  - `apps/edge/src/lib/leads-queries.ts` (sortBy/sortDir no listLeads)
+  - `apps/edge/src/lib/raw-events-processor.ts` (recordTouches fora do !resolvedLeadId + dispatch_jobs.lead_id backfill)
+
+  Edge worker já deployado nos commits respectivos. Falta commitar as mudanças locais e push pro GitHub. 28+ commits ahead de origin (sem push automático — pedir confirmação se for pushar).
+- **Edge prod**: deploy atual **`aa9dfc13`** (dispatch_jobs.lead_id backfill no Step 8 do raw-events-processor + sort_by/sort_dir em GET /v1/leads + recordTouches fora do bloco !resolvedLeadId). Comando: **`pnpm deploy:edge`** (wrangler@4; bug 10023 destravado pela CF em 2026-05-09).
 - **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
 - **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas.
 - **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
@@ -24,6 +31,8 @@
 **Pendências críticas**: TODAS resolvidas. Nada bloqueando. Pipeline 100% operacional.
 
 **Recomendação minha pra atacar primeiro** (em ordem de valor/risco):
+
+0. **Commitar e fazer push das 5 mudanças locais** (anti-perda) — sessão atual entregou 4 itens (tabela sortável, card removido, lead_attributions fix, dispatch_jobs.lead_id fix) e está só local. Edge prod já refletindo deploy `aa9dfc13`, mas se o working tree perder, perde tudo. Commits sugeridos: 2 — um de UX (page.tsx + lead-summary-header.tsx) e outro de bug fix de pipeline (3 arquivos do edge).
 
 1. **Doc-sync pendentes** (low risk, low effort, high coverage) — 8 itens marcados `[SYNC-PENDING]` em §3 abaixo. Atualizar:
    - `CONTRACT-api-events-v1` (events.user_data jsonb shape, consent string|bool)
@@ -66,6 +75,10 @@
 | 16 | **OnProfit launch resolver** + lead_stages + tag_rules (paridade Guru) | `5668c67` | edge `d6ce4274` |
 | 17 | **GEO-CITY-ENRICHMENT-GAP**: geo histórico Meta CAPI + view 0050 | `9a00f46` | edge `1b45681a` + migration 0050 |
 | 18 | **Outbox poller + DLQ nativa** (raw_events recovery automática), ADR-042. Token CF migrado pra `.env.local`, `pnpm deploy:edge` com wrangler@4 | `fc1f778` | edge `9b78719c` + queue `gt-events-dlq` |
+| 19 | **Contatos UX**: tabela com colunas sortáveis (nome, primeiro contato, lifecycle, última atividade), nova coluna `first_seen_at`, hover gray-100, datas alinhadas à direita. Edge worker aceita `sort_by`/`sort_dir` em `GET /v1/leads` | uncommitted | edge `778fcbcf` |
+| 20 | **Lead detail header cleanup**: removido card "Atribuição" do summary (info duplica a aba Atribuição). Helpers/imports limpos (UtmRow, utmIsEmpty, truncateClickId, GitBranch icon) | uncommitted | — |
+| 21 | **BUG FIX CRÍTICO — lead_attributions vazio para tracker leads**: `recordTouches` extraído de dentro do bloco `if (!resolvedLeadId)`. O bug: tracker dispara `lead_identify` (sem UTM) → cria lead → devolve `lead_token`. Quando o `Lead` (com UTMs) chega 250ms depois, já vem com `lead_id` no payload, então o bloco é pulado e attribution nunca grava. Fix passa a rodar para qualquer `isIdentifyEvent && resolvedLeadId && launch_id`. **Backfill: 118 lead_attributions** (36 first + 37 last + 43 all) inseridos a partir de `events.attribution`. Memória cross-session atualizada em `project_lead_attributions_fix.md` | uncommitted | edge `0a331910` |
+| 22 | **BUG FIX — dispatches invisíveis na timeline da UI**: `dispatch_jobs.lead_id` ficava NULL para eventos pré-identificação (PageView, clicks anônimos). Step 8 do `raw-events-processor.ts` backfillava `events.lead_id` mas não `dispatch_jobs.lead_id`. Timeline filtra por `dj.lead_id`, perdia tudo NULL. Fix estende Step 8 para UPDATE em `dispatch_jobs` via subquery por visitor_id. **Backfill: 196 dispatch_jobs** atualizados. Validado UI Ana Maria — PageView agora mostra "OK GA4 + OK Meta CAPI". Memória cross-session em `project_dispatch_jobs_lead_id_orphan.md` | uncommitted | edge `aa9dfc13` |
 
 ### Replays executados (2026-05-09 ~07:00–07:11 UTC)
 

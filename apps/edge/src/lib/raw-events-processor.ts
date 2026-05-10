@@ -23,6 +23,7 @@
 
 import type { Db } from '@globaltracker/db';
 import {
+  dispatchJobs,
   events,
   launches,
   leadStages,
@@ -600,18 +601,21 @@ export async function processRawEvent(
 
     // BR-IDENTITY-003: use canonical lead_id (merge may have been executed)
     resolvedLeadId = resolveResult.value.lead_id;
+  }
 
-    // Record attribution touches on every identify event that carries attribution data.
-    // BR-ATTRIBUTION-001: first-touch is protected by ON CONFLICT DO NOTHING — won't overwrite.
-    // BR-ATTRIBUTION-002: last-touch updated on every call — correct for returning leads with new UTMs.
-    // Previously gated on was_created || merge_executed, which caused lead_attributions to stay
-    // empty for existing leads even when they arrived with full UTM + fbclid data.
+  // Record attribution touches on every identify event that carries attribution data.
+  // BR-ATTRIBUTION-001: first-touch is protected by ON CONFLICT DO NOTHING — won't overwrite.
+  // BR-ATTRIBUTION-002: last-touch updated on every call — correct for returning leads with new UTMs.
+  // Intentionally outside the !resolvedLeadId block: when lead_id arrives via lead_token in the
+  // payload, the resolve block above is skipped entirely — but attribution must still be recorded
+  // (the Lead event fires ~250ms after lead_identify, already has the token, and carries the UTMs).
+  if (resolvedLeadId && isIdentifyEvent && payload.launch_id) {
     const attrPayload = payload.attribution as AttributionParams | undefined;
     const hasAttribution = Boolean(
       attrPayload?.utm_source || attrPayload?.fbclid || attrPayload?.gclid ||
       attrPayload?.gbraid || attrPayload?.wbraid,
     );
-    if (payload.launch_id && hasAttribution) {
+    if (hasAttribution) {
       const touchResult = await recordTouches(
         {
           lead_id: resolvedLeadId,
@@ -890,6 +894,9 @@ export async function processRawEvent(
   // lead_id on prior anonymous events (lead_id IS NULL) sharing the same visitor_id.
   // This links anonymous PageViews to the lead after identification.
   //
+  // Also backfill dispatch_jobs.lead_id for the same anonymous events — otherwise
+  // the timeline route filters them out (it queries dispatch_jobs by lead_id).
+  //
   // INV-TRACKER-003: visitor_id is only present when consent_analytics='granted'.
   // -------------------------------------------------------------------------
   if (resolvedLeadId && visitorId) {
@@ -901,6 +908,18 @@ export async function processRawEvent(
           sql`workspace_id = ${rawEvent.workspaceId}::uuid
             AND lead_id IS NULL
             AND visitor_id = ${visitorId}`,
+        );
+      await db
+        .update(dispatchJobs)
+        .set({ leadId: resolvedLeadId, updatedAt: new Date() })
+        .where(
+          sql`workspace_id = ${rawEvent.workspaceId}::uuid
+            AND lead_id IS NULL
+            AND event_id IN (
+              SELECT id FROM events
+              WHERE workspace_id = ${rawEvent.workspaceId}::uuid
+                AND visitor_id = ${visitorId}
+            )`,
         );
     } catch (backfillErr) {
       const backfillMsg =

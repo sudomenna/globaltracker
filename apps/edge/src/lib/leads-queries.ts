@@ -19,7 +19,7 @@ import {
   leads,
   pages,
 } from '@globaltracker/db';
-import { and, desc, eq, ilike, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, lt, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { decryptPii, hashPii } from './pii.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
@@ -62,6 +62,9 @@ export type LeadListItem = {
   last_seen_at: string;
 };
 
+export type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status';
+export type SortDir = 'asc' | 'desc';
+
 export type ListLeadsOpts = {
   workspaceId: string;
   q?: string; // UUID / email / phone / name substring
@@ -69,6 +72,8 @@ export type ListLeadsOpts = {
   lifecycle?: LifecycleStatus;
   cursor?: Date | null;
   limit: number;
+  sortBy?: SortField;
+  sortDir?: SortDir;
 };
 
 const UUID_RE =
@@ -485,6 +490,8 @@ export function createLeadsQueryFns(
   // -------------------------------------------------------------------------
   async function listLeads(opts: ListLeadsOpts): Promise<LeadListItem[]> {
     const { workspaceId, q, launchPublicId, lifecycle, cursor, limit } = opts;
+    const sortBy = opts.sortBy ?? 'last_seen_at';
+    const sortDir = opts.sortDir ?? 'desc';
 
     const conditions = [eq(leads.workspaceId, workspaceId)];
 
@@ -513,7 +520,11 @@ export function createLeadsQueryFns(
       }
     }
 
-    if (cursor) conditions.push(lt(leads.lastSeenAt, cursor));
+    // Cursor applies only to date-based sorts (stable keyset pagination).
+    if (cursor && (sortBy === 'last_seen_at' || sortBy === 'first_seen_at')) {
+      const col = sortBy === 'first_seen_at' ? leads.firstSeenAt : leads.lastSeenAt;
+      conditions.push(sortDir === 'desc' ? lt(col, cursor) : gt(col, cursor));
+    }
 
     let query = db
       .select({
@@ -550,9 +561,18 @@ export function createLeadsQueryFns(
         );
     }
 
+    const sortColMap = {
+      last_seen_at: leads.lastSeenAt,
+      first_seen_at: leads.firstSeenAt,
+      name: leads.name,
+      lifecycle_status: leads.lifecycleStatus,
+    } as const;
+    const sortCol = sortColMap[sortBy];
+    const orderExpr = sortDir === 'asc' ? asc(sortCol) : desc(sortCol);
+
     const rows = await query
       .where(and(...conditions))
-      .orderBy(desc(leads.lastSeenAt))
+      .orderBy(orderExpr, asc(leads.id))
       .limit(limit);
 
     const items = await Promise.all(
