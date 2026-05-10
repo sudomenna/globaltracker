@@ -1267,7 +1267,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
 
     const payload = mapEventToMetaPayload(
       {
-        event_id: event.id,
+        event_id: event.eventId,
         event_name: event.eventName,
         event_time: event.eventTime,
         lead_id: event.leadId,
@@ -1561,7 +1561,7 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
     // 4. Map internal event → Ga4MpPayload.
     const payload = mapEventToGa4Payload(
       {
-        event_id: event.id,
+        event_id: event.eventId,
         event_name: event.eventName,
         event_time: event.eventTime,
         lead_id: event.leadId,
@@ -1753,7 +1753,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
     // 5. Map internal event → ConversionUploadPayload.
     const payload = mapEventToConversionUpload(
       {
-        event_id: event.id,
+        event_id: event.eventId,
         event_name: event.eventName,
         event_time: event.eventTime,
         workspace_id: event.workspaceId,
@@ -1927,7 +1927,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
     const enhancedRawUserData = (event.userData ?? {}) as Record<string, unknown>;
     const payload = mapEventToEnhancedConversion(
       {
-        event_id: event.id,
+        event_id: event.eventId,
         event_name: event.eventName,
         event_time: event.eventTime,
         lead_id: event.leadId,
