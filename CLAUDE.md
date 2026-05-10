@@ -113,6 +113,7 @@ Pirâmide canônica em [`docs/`](docs/). Use este mapa para localizar o que cada
 | [`docs/60-flows/08-merge-converging-leads.md`](docs/60-flows/08-merge-converging-leads.md) | Merge de leads |
 | [`docs/60-flows/09-erasure-by-sar.md`](docs/60-flows/09-erasure-by-sar.md) | SAR/erasure |
 | [`docs/60-flows/10-create-new-launch-template.md`](docs/60-flows/10-create-new-launch-template.md) | **Playbook orquestrador**: criar novo template de lançamento (page roles, custom events, mappers, snippets, migration) |
+| [`docs/60-flows/11-manual-dispatch-recovery.md`](docs/60-flows/11-manual-dispatch-recovery.md) | **Runbook operacional**: recovery manual de eventos faltantes e dispatches (inserção retroativa, replay, lote) |
 
 ### 70 — UX
 | Arquivo | Conteúdo |
