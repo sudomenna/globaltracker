@@ -193,7 +193,7 @@
         name: name,
         email: email,
         phone: phone,
-        attribution: {},
+        attribution: readUtms(),
         // Lead opt-in via form submit → todas as finalidades granted
         consent: {
           analytics: 'granted',
@@ -225,17 +225,31 @@
       .then(function(resp){
         if (resp && resp.lead_token) {
           try { localStorage.setItem('__gt_ftk', resp.lead_token); } catch (e) {}
+
+          // Garante redirect único mesmo se withTracker e o fallback dispararem próximos.
+          var redirected = false;
+          function safeRedirect(){ if (!redirected){ redirected = true; redirectToCheckout(); } }
+
+          // Fallback: se o tracker.js ainda não carregou após 2s, redireciona sem Lead.
+          // keepalive: true no sendEvent garante que requests já em-voo completam pós-redirect.
+          setTimeout(safeRedirect, 2000);
+
           withTracker(function(F){
             F.identify({ lead_token: resp.lead_token });
             F.track('Lead');
             // Pixel browser dispara Lead com mesmo eventID → Meta deduplica com CAPI.
             fbqIfAvailable('track', 'Lead');
+            // 120ms: margem para sendEvent (keepalive) entrar em-voo antes do redirect.
+            setTimeout(safeRedirect, 120);
           });
+        } else {
+          // /v1/lead respondeu sem token — redireciona sem identify.
+          setTimeout(redirectToCheckout, 120);
         }
       })
-      .catch(function(e){ console.warn('[gt] lead capture failed', e); })
-      .then(function(){
-        // Pequeno delay pra garantir sendBeacon do track('Lead') antes do redirect.
+      .catch(function(e){
+        console.warn('[gt] lead capture failed', e);
+        // Em caso de erro no /v1/lead, redireciona mesmo assim para não travar o usuário.
         setTimeout(redirectToCheckout, 120);
       });
     }, true); // capture phase: roda antes de qualquer outro listener interno do Elementor
