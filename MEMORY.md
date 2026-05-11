@@ -18,7 +18,7 @@
   - `a523991` + anteriores: doc-sync + ADR-043 + BR-TRACKER-002 + FLOW-11 + contatos UX
   - (sem commit desta sessão — mudanças só no deploy edge, sem git commit feito)
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`6dac7119`** (InitiateCheckout dedup cart_abandonment + WAITING). Comando: **`pnpm deploy:edge`**.
+- **Edge prod**: deploy atual **`11d94a7c`** (dashboard stats + cost-backfill + upsert fix). Comando: **`pnpm deploy:edge`**.
 - **Jornada UX — novidades desta sessão**:
   - Purchase OnProfit com `transaction_group_id` compartilhado → agrupados em 1 card: produto principal visível + OBs indentados abaixo sem click.
   - Expanded "Dados do evento": tabela item-a-item (produto principal + cada OB com valor) + caixa "Total consolidado despachado".
@@ -59,6 +59,23 @@
 | 7 | 5 raw_events históricos cart_abandonment re-postados e processados | — |
 
 **Sem migration nova** — dedup usa unique constraint existente em `events(workspace_id, event_id)`.
+
+### Entregas 2026-05-11 — Dashboard de performance (esta sessão, sessão posterior)
+
+| # | Tema | Deploy |
+|---|---|---|
+| 1 | `GET /v1/dashboard/stats?period=7d\|30d\|today` — 5 queries paralelas: funil+receita, dispatch health, attribution coverage, per-launch breakdown, ad spend | `11d94a7c` |
+| 2 | CP dashboard home (`page.tsx`) — KpiCards Faturamento/Ticket/ROAS, FunnelCard Lead→IC→Compradores, tracking health, LaunchesTable + PeriodSelector global | — |
+| 3 | `cost-backfill.ts` — `POST /v1/admin/cost-backfill?date=YYYY-MM-DD` para backfill histórico | `11d94a7c` |
+| 4 | Bug fix `upsertAdSpend` — substituído `onConflictDoUpdate` (Drizzle quebrava com expression index) por `db.execute(sql\`INSERT ... ON CONFLICT (expressions) DO UPDATE\`)` + `.toISOString()` no Date | `11d94a7c` |
+| 5 | Fix `resolveWorkspaceId` no cost-ingestor — lê `DEV_WORKSPACE_ID` do env em vez de hardcode | `11d94a7c` |
+| 6 | Backfill Meta spend 4 dias (2026-05-08 a 11): 29 rows ingested, 0 erros Meta | — |
+
+**Google Ads OAuth**: refresh token expirado (401) — não é bug de código, é credencial. Não bloqueia dashboard (spend Meta funciona).
+
+**Playwright MCP**: não carrega em algumas sessões. Matar processo: `pkill -f "user-data-dir=/Users/tiagomenna/Library/Caches/ms-playwright/mcp-chrome-1ead15c"`. Se não resolver, zerar contexto.
+
+**Edge prod**: deploy atual **`11d94a7c`** (dashboard + upsert fix + backfill endpoint).
 
 ### Onde começar a próxima sessão
 

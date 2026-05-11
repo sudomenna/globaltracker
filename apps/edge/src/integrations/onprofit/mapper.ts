@@ -287,11 +287,12 @@ function parseOnProfitCartAbandonmentTimestamp(
 ): string {
   if (!raw) return new Date().toISOString();
   const isoLike = raw.includes('T') ? raw : raw.replace(' ', 'T');
-  const withZ =
+  // OnProfit sends naive timestamps in BRT (UTC-3) without timezone marker.
+  const withTz =
     isoLike.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(isoLike)
       ? isoLike
-      : `${isoLike}Z`;
-  const d = new Date(withZ);
+      : `${isoLike}-03:00`;
+  const d = new Date(withTz);
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
@@ -331,20 +332,17 @@ function resolveInternalEventType(
 /**
  * Parses OnProfit's "YYYY-MM-DD HH:mm:ss" timestamps to ISO-8601 UTC.
  *
- * OnProfit does not send a timezone — we treat the value as UTC because
- * we have no documented offset to apply. For analytics this is acceptable
- * (the event_time will be within a few hours of the true wall-clock time).
- * If/when OnProfit confirms the source TZ, adjust here.
+ * OnProfit sends naive timestamps in BRT (UTC-3) without a timezone marker.
  */
 function parseOnProfitTimestamp(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  // Replace space with T to make it ISO-parseable, append Z for UTC.
   const isoLike = raw.includes('T') ? raw : raw.replace(' ', 'T');
-  const withZ =
+  // Append BRT offset (-03:00) when no timezone marker is present.
+  const withTz =
     isoLike.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(isoLike)
       ? isoLike
-      : `${isoLike}Z`;
-  const d = new Date(withZ);
+      : `${isoLike}-03:00`;
+  const d = new Date(withTz);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
 }

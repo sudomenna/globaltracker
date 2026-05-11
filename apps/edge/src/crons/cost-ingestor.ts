@@ -48,6 +48,7 @@ export interface CostIngestorEnv extends FxEnv {
   GOOGLE_ADS_CLIENT_SECRET: string;
   GOOGLE_ADS_REFRESH_TOKEN: string;
   GOOGLE_ADS_CURRENCY: string;
+  DEV_WORKSPACE_ID?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +70,13 @@ const WORKSPACE_FX_NORMALIZATION_CURRENCY = 'BRL';
 
 // Fixed workspace_id for Phase 1 (single-tenant).
 // Phase 2: enumerate workspaces from DB.
-const GLOBAL_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
+// Resolved at call time from env.DEV_WORKSPACE_ID (set in wrangler.toml).
+// Fallback to legacy placeholder so existing unit tests don't break.
+const GLOBAL_WORKSPACE_ID_FALLBACK = '00000000-0000-0000-0000-000000000001';
+
+export function resolveWorkspaceId(env: { DEV_WORKSPACE_ID?: string }): string {
+  return env.DEV_WORKSPACE_ID ?? GLOBAL_WORKSPACE_ID_FALLBACK;
+}
 
 // ---------------------------------------------------------------------------
 // Upsert helper
@@ -99,58 +106,45 @@ type UpsertRow = {
 /**
  * Upsert a single row into ad_spend_daily.
  *
- * INV-COST-001: ON CONFLICT targets the expression index on
- *   (workspace_id, platform, account_id,
- *    COALESCE(campaign_id,''), COALESCE(adset_id,''), COALESCE(ad_id,''),
- *    granularity, date)
+ * INV-COST-001: ON CONFLICT targets the named constraint
+ *   uq_ad_spend_daily_natural_key (expression index on natural key).
  *
- * On conflict, we update spend, FX, impressions, clicks, and fetched_at
- * to allow retroactive corrections from platform providers.
+ * Uses raw SQL execute to avoid Drizzle ORM limitations with expression-based
+ * conflict targets — the `target: sql\`ON CONSTRAINT\`` hack corrupts SET clause
+ * generation regardless of whether SET values use sql`` or raw JS.
  */
 async function upsertAdSpend(db: Db, row: UpsertRow): Promise<void> {
-  // INV-COST-001: BR-COST-001 — upsert on natural key; timezone excluded from key.
-  await db
-    .insert(adSpendDaily)
-    .values({
-      workspaceId: row.workspaceId,
-      platform: row.platform,
-      accountId: row.accountId,
-      campaignId: row.campaignId,
-      adsetId: row.adsetId,
-      adId: row.adId,
-      granularity: row.granularity,
-      date: row.date,
-      timezone: row.timezone,
-      currency: row.currency,
-      spendCents: row.spendCents,
-      spendCentsNormalized: row.spendCentsNormalized,
-      fxRate: row.fxRate,
-      fxSource: row.fxSource,
-      fxCurrency: row.fxCurrency,
-      impressions: row.impressions,
-      clicks: row.clicks,
-      fetchedAt: row.fetchedAt,
-    })
-    .onConflictDoUpdate({
-      // INV-COST-001: the DB index is an expression index using COALESCE.
-      // Drizzle does not support expression-based conflict targets directly;
-      // use the index name as `target` is not supported for expression indexes.
-      // We use the raw SQL form via `targetWhere` is also unavailable here.
-      // Solution: target the unique constraint by name via sql`` tag.
-      // The migration must create this as a named unique index:
-      //   uq_ad_spend_daily_natural_key
-      target: sql`ON CONSTRAINT uq_ad_spend_daily_natural_key` as never,
-      set: {
-        spendCents: row.spendCents,
-        spendCentsNormalized: row.spendCentsNormalized,
-        fxRate: row.fxRate,
-        fxSource: row.fxSource,
-        fxCurrency: row.fxCurrency,
-        impressions: row.impressions,
-        clicks: row.clicks,
-        fetchedAt: row.fetchedAt,
-      },
-    });
+  await db.execute(sql`
+    INSERT INTO ad_spend_daily (
+      workspace_id, platform, account_id,
+      campaign_id, adset_id, ad_id,
+      granularity, date, timezone, currency,
+      spend_cents, spend_cents_normalized,
+      fx_rate, fx_source, fx_currency,
+      impressions, clicks, fetched_at
+    ) VALUES (
+      ${row.workspaceId}, ${row.platform}, ${row.accountId},
+      ${row.campaignId}, ${row.adsetId}, ${row.adId},
+      ${row.granularity}, ${row.date}::date, ${row.timezone}, ${row.currency},
+      ${row.spendCents}, ${row.spendCentsNormalized},
+      ${row.fxRate}, ${row.fxSource}, ${row.fxCurrency},
+      ${row.impressions}, ${row.clicks}, ${row.fetchedAt.toISOString()}
+    )
+    ON CONFLICT (
+      workspace_id, platform, account_id,
+      COALESCE(campaign_id, ''), COALESCE(adset_id, ''), COALESCE(ad_id, ''),
+      granularity, date
+    )
+    DO UPDATE SET
+      spend_cents              = EXCLUDED.spend_cents,
+      spend_cents_normalized   = EXCLUDED.spend_cents_normalized,
+      fx_rate                  = EXCLUDED.fx_rate,
+      fx_source                = EXCLUDED.fx_source,
+      fx_currency              = EXCLUDED.fx_currency,
+      impressions              = EXCLUDED.impressions,
+      clicks                   = EXCLUDED.clicks,
+      fetched_at               = EXCLUDED.fetched_at
+  `);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +289,7 @@ export async function ingestDailySpend(
       );
 
       const upsertRow: UpsertRow = {
-        workspaceId: GLOBAL_WORKSPACE_ID,
+        workspaceId: resolveWorkspaceId(env),
         platform: 'meta',
         accountId: env.META_ADS_ACCOUNT_ID,
         // INV-COST-001: COALESCE(campaign_id,'') is part of unique key
@@ -372,7 +366,7 @@ export async function ingestDailySpend(
       );
 
       const upsertRow: UpsertRow = {
-        workspaceId: GLOBAL_WORKSPACE_ID,
+        workspaceId: resolveWorkspaceId(env),
         platform: 'google',
         accountId: env.GOOGLE_ADS_CUSTOMER_ID,
         // INV-COST-001: campaign_id and adset_id present; ad_id=null for adset granularity

@@ -91,6 +91,7 @@ import { type GetAllowedDomainsFn, corsMiddleware } from './middleware/cors.js';
 import { rateLimit } from './middleware/rate-limit.js';
 import { safeLog, sanitizeLogs } from './middleware/sanitize-logs.js';
 import { adminLeadsEraseRoute } from './routes/admin/leads-erase.js';
+import { createCostBackfillRoute } from './routes/admin/cost-backfill.js';
 import { createConfigRoute } from './routes/config.js';
 import type { GetPageConfigFn } from './routes/config.js';
 import {
@@ -423,6 +424,9 @@ app.route('/v1/lead', leadRoute);
 app.route('/v1/config', createConfigRoute(getPageConfig));
 app.route('/r', redirectRoute);
 app.route('/v1/admin/leads', adminLeadsEraseRoute);
+app.route('/v1/admin/cost-backfill', createCostBackfillRoute({
+  buildDb: (env) => createDb(env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? ''),
+}));
 
 // Guru webhook — server-to-server; no authPublicToken, no corsMiddleware
 // Token auth is validated inside the handler (BR-WEBHOOK-001: constant-time comparison).

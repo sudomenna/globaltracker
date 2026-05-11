@@ -57,11 +57,10 @@ type DashboardStats = {
     conversion_rate: number;
   };
   funnel: {
+    page_views: number;
+    click_buy: number;
     leads: number;
-    initiate_checkout: number;
     buyers: number;
-    lead_to_checkout_rate: number;
-    checkout_to_buyer_rate: number;
   };
   tracking: {
     dispatch_success_rate: number | null;
@@ -71,6 +70,7 @@ type DashboardStats = {
   };
   roas: number | null;
   spend: number;
+  avg_daily_spend: number | null;
   launches: LaunchStat[];
 };
 
@@ -99,7 +99,7 @@ function fmtCount(n: number): string {
 // ─── Period selector ──────────────────────────────────────────────────────────
 
 const PERIODS = [
-  { value: 'today', label: 'Hoje' },
+  { value: 'today', label: '24h' },
   { value: '7d', label: '7 dias' },
   { value: '30d', label: '30 dias' },
 ] as const;
@@ -168,19 +168,46 @@ function KpiCard({
 
 // ─── Funnel row ───────────────────────────────────────────────────────────────
 
-function FunnelCard({
-  leads,
-  ic,
-  buyers,
-  leadToIcRate,
-  icToBuyerRate,
+function FunnelStep({
+  value,
+  label,
+  rate,
 }: {
-  leads: number;
-  ic: number;
-  buyers: number;
-  leadToIcRate: number;
-  icToBuyerRate: number;
+  value: number;
+  label: string;
+  rate?: number | null;
 }) {
+  return (
+    <>
+      <div className="text-center min-w-[72px]">
+        <p className="text-xl font-bold tabular-nums">{fmtCount(value)}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+      </div>
+      {rate !== undefined && (
+        <div className="flex flex-col items-center text-muted-foreground min-w-[48px]">
+          <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          <p className="text-xs tabular-nums">{rate == null ? '—' : fmtPct(Math.min(rate, 1))}</p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function FunnelCard({
+  pageViews,
+  clickBuy,
+  leads,
+  buyers,
+}: {
+  pageViews: number;
+  clickBuy: number;
+  leads: number;
+  buyers: number;
+}) {
+  const pvToClick = pageViews > 0 ? clickBuy / pageViews : null;
+  const clickToLead = clickBuy > 0 ? leads / clickBuy : null;
+  const leadToBuyer = leads > 0 ? buyers / leads : null;
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -188,36 +215,15 @@ function FunnelCard({
       </CardHeader>
       <CardContent>
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="text-center min-w-[72px]">
-            <p className="text-xl font-bold tabular-nums">{fmtCount(leads)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Leads</p>
-          </div>
-
-          <div className="flex flex-col items-center text-muted-foreground min-w-[60px]">
-            <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            <p className="text-xs tabular-nums">{fmtPct(leadToIcRate)}</p>
-          </div>
-
-          <div className="text-center min-w-[72px]">
-            <p className="text-xl font-bold tabular-nums">{fmtCount(ic)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Checkout</p>
-          </div>
-
-          <div className="flex flex-col items-center text-muted-foreground min-w-[60px]">
-            <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            <p className="text-xs tabular-nums">{fmtPct(icToBuyerRate)}</p>
-          </div>
-
-          <div className="text-center min-w-[72px]">
-            <p className="text-xl font-bold tabular-nums">{fmtCount(buyers)}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Compradores</p>
-          </div>
+          <FunnelStep value={pageViews} label="PageViews" rate={pvToClick} />
+          <FunnelStep value={clickBuy} label="Click buy" rate={clickToLead} />
+          <FunnelStep value={leads} label="Leads" rate={leadToBuyer} />
+          <FunnelStep value={buyers} label="Compradores" />
         </div>
 
-        {ic > 0 && buyers < ic && (
+        {clickBuy > 0 && leads > clickBuy && (
           <p className="text-xs text-muted-foreground mt-3">
-            {fmtCount(ic - buyers)} pessoa{ic - buyers !== 1 ? 's' : ''} chegou{ic - buyers !== 1 ? 'aram' : ''} ao checkout mas não comprou{ic - buyers !== 1 ? 'aram' : ''} —{' '}
-            potencial de retargeting.
+            Mais leads que clicks — possível captura por outros canais além da página workshop.
           </p>
         )}
       </CardContent>
@@ -365,11 +371,16 @@ export default function DashboardPage() {
           {/* Linha 1 — Negócio */}
           <div>
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Negócio</p>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <KpiCard
                 title="Faturamento"
                 value={fmtCurrency(business?.revenue ?? 0)}
                 sub={business?.buyers_unique ? `${fmtCount(business.buyers_unique)} compradores únicos` : undefined}
+              />
+              <KpiCard
+                title="Investimento"
+                value={fmtCurrency(stats.spend)}
+                sub={stats.avg_daily_spend != null ? `${fmtCurrency(stats.avg_daily_spend)}/dia` : 'Sem dados de custo'}
               />
               <KpiCard
                 title="Ticket médio"
@@ -379,11 +390,7 @@ export default function DashboardPage() {
               <KpiCard
                 title="ROAS"
                 value={fmtRoas(stats.roas)}
-                sub={
-                  stats.spend > 0
-                    ? `Investimento: ${fmtCurrency(stats.spend)}`
-                    : 'Sem dados de custo no período'
-                }
+                sub={stats.spend > 0 ? `${fmtCurrency(stats.spend)} investido` : 'Sem dados de custo no período'}
               />
             </div>
           </div>
@@ -392,11 +399,10 @@ export default function DashboardPage() {
           <div>
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Funil</p>
             <FunnelCard
+              pageViews={funnel?.page_views ?? 0}
+              clickBuy={funnel?.click_buy ?? 0}
               leads={funnel?.leads ?? 0}
-              ic={funnel?.initiate_checkout ?? 0}
               buyers={funnel?.buyers ?? 0}
-              leadToIcRate={funnel?.lead_to_checkout_rate ?? 0}
-              icToBuyerRate={funnel?.checkout_to_buyer_rate ?? 0}
             />
           </div>
 

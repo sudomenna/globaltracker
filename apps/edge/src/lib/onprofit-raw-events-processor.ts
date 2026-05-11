@@ -272,17 +272,17 @@ async function resolveLeadByPptc(
 
 /**
  * Parses OnProfit's "YYYY-MM-DD HH:mm:ss" timestamps.
- * No timezone in payload — treated as UTC (best available; documented in
- * mapper.ts parseOnProfitTimestamp).
+ * OnProfit sends naive timestamps in BRT (UTC-3) without timezone marker.
+ * Append -03:00 so JS Date parses correctly as UTC.
  */
 function parseOnProfitTime(raw: string | null | undefined): Date | null {
   if (!raw) return null;
   const isoLike = raw.includes('T') ? raw : raw.replace(' ', 'T');
-  const withZ =
+  const withTz =
     isoLike.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(isoLike)
       ? isoLike
-      : `${isoLike}Z`;
-  const d = new Date(withZ);
+      : `${isoLike}-03:00`;
+  const d = new Date(withTz);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 

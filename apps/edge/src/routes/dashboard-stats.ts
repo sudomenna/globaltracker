@@ -23,10 +23,11 @@ import {
   events,
   launches,
   leadAttributions,
+  pages,
   workspaceMembers,
   type Db,
 } from '@globaltracker/db';
-import { and, eq, gte, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, like, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { isValidRole } from '../lib/rbac.js';
 import {
@@ -77,11 +78,10 @@ export type DashboardStatsResponse = {
     conversion_rate: number;
   };
   funnel: {
+    page_views: number;
+    click_buy: number;
     leads: number;
-    initiate_checkout: number;
     buyers: number;
-    lead_to_checkout_rate: number;
-    checkout_to_buyer_rate: number;
   };
   tracking: {
     dispatch_success_rate: number | null;
@@ -91,6 +91,7 @@ export type DashboardStatsResponse = {
   };
   roas: number | null;
   spend: number;
+  avg_daily_spend: number | null;
   launches: LaunchStat[];
 };
 
@@ -101,9 +102,7 @@ export type DashboardStatsResponse = {
 function periodToCutoff(period: string): Date {
   const now = new Date();
   if (period === 'today') {
-    const d = new Date(now);
-    d.setHours(0, 0, 0, 0);
-    return d;
+    return new Date(now.getTime() - 24 * 60 * 60 * 1000);
   }
   if (period === '30d') {
     const d = new Date(now);
@@ -197,13 +196,15 @@ export function createDashboardStatsRoute(opts: {
 
     try {
       // Run all queries in parallel — independent DB reads.
-      const [funnelRows, dispatchRows, attrRows, launchRows, spendRows] =
+      const [funnelRows, pageViewRows, dispatchRows, attrRows, launchRows, spendRows] =
         await Promise.all([
-          // ── 1. Funnel + Revenue ──────────────────────────────────────────
+          // ── 1. Funnel (identified events) ────────────────────────────────
           db
             .select({
+              clickBuyUnique: sql<number>`COUNT(DISTINCT ${events.leadId}) FILTER (
+                WHERE ${events.eventName} LIKE 'custom:click_buy%'
+              )::int`,
               leadsUnique: sql<number>`COUNT(DISTINCT ${events.leadId}) FILTER (WHERE ${events.eventName} = 'Lead')::int`,
-              icUnique: sql<number>`COUNT(DISTINCT ${events.leadId}) FILTER (WHERE ${events.eventName} = 'InitiateCheckout')::int`,
               buyersUnique: sql<number>`COUNT(DISTINCT ${events.leadId}) FILTER (WHERE ${events.eventName} = 'Purchase')::int`,
               revenue: sql<string>`COALESCE(SUM(
                 CASE WHEN ${events.eventName} = 'Purchase' THEN
@@ -220,6 +221,24 @@ export function createDashboardStatsRoute(opts: {
                 isNotNull(events.leadId),
               ),
             ),
+
+          // ── 1b. PageViews únicos (sales pages, includes anonymous) ───────
+          // Separate query: no isNotNull(leadId) — anonymous visitors counted via
+          // COALESCE(lead_id, visitor_id, event pk) using raw SQL to avoid
+          // Drizzle FILTER+EXISTS generation issues.
+          db.execute<{ page_views_unique: number }>(sql`
+            SELECT COUNT(DISTINCT COALESCE(
+              e.lead_id::text,
+              e.visitor_id,
+              e.id::text
+            ))::int AS page_views_unique
+            FROM events e
+            INNER JOIN pages p ON p.id = e.page_id AND p.role = 'sales'
+            WHERE e.workspace_id = ${workspaceId}
+              AND e.event_name = 'PageView'
+              AND e.received_at >= ${cutoff.toISOString()}
+              AND e.is_test = false
+          `),
 
           // ── 2. Dispatch health by destination ───────────────────────────
           db
@@ -305,7 +324,7 @@ export function createDashboardStatsRoute(opts: {
             .groupBy(launches.id, launches.publicId, launches.name, launches.status)
             .limit(20),
 
-          // ── 5. Ad spend (for ROAS) ───────────────────────────────────────
+          // ── 5. Ad spend (for ROAS + avg daily) ──────────────────────────
           db
             .select({
               totalSpend: sql<string>`COALESCE(
@@ -313,6 +332,7 @@ export function createDashboardStatsRoute(opts: {
                 SUM(${adSpendDaily.spendCents}),
                 0
               )::text`,
+              daysWithSpend: sql<number>`COUNT(DISTINCT ${adSpendDaily.date})::int`,
             })
             .from(adSpendDaily)
             .where(
@@ -329,8 +349,9 @@ export function createDashboardStatsRoute(opts: {
       // ── Shape results ──────────────────────────────────────────────────
 
       const f = funnelRows[0];
+      const pageViewsUnique = Number(pageViewRows[0]?.page_views_unique ?? 0);
+      const clickBuyUnique = Number(f?.clickBuyUnique ?? 0);
       const leadsUnique = Number(f?.leadsUnique ?? 0);
-      const icUnique = Number(f?.icUnique ?? 0);
       const buyersUnique = Number(f?.buyersUnique ?? 0);
       const revenue = Number(f?.revenue ?? 0);
 
@@ -363,8 +384,10 @@ export function createDashboardStatsRoute(opts: {
         .slice(0, 10);
 
       const spendCents = Number(spendRows[0]?.totalSpend ?? 0);
-      const roas =
-        spendCents > 0 && revenue > 0 ? revenue / (spendCents / 100) : null;
+      const daysWithSpend = Number(spendRows[0]?.daysWithSpend ?? 0);
+      const spend = spendCents / 100;
+      const roas = spendCents > 0 && revenue > 0 ? revenue / spend : null;
+      const avgDailySpend = daysWithSpend > 0 ? spend / daysWithSpend : null;
 
       const body: DashboardStatsResponse = {
         period: periodParam,
@@ -375,12 +398,10 @@ export function createDashboardStatsRoute(opts: {
           conversion_rate: leadsUnique > 0 ? buyersUnique / leadsUnique : 0,
         },
         funnel: {
+          page_views: pageViewsUnique,
+          click_buy: clickBuyUnique,
           leads: leadsUnique,
-          initiate_checkout: icUnique,
           buyers: buyersUnique,
-          lead_to_checkout_rate:
-            leadsUnique > 0 ? icUnique / leadsUnique : 0,
-          checkout_to_buyer_rate: icUnique > 0 ? buyersUnique / icUnique : 0,
         },
         tracking: {
           dispatch_success_rate: dispatchSuccessRate,
@@ -391,7 +412,8 @@ export function createDashboardStatsRoute(opts: {
             attrTotal > 0 ? leadsWithoutSource / attrTotal : null,
         },
         roas,
-        spend: spendCents / 100,
+        spend,
+        avg_daily_spend: avgDailySpend,
         launches: launchStats,
       };
 
