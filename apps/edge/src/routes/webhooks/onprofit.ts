@@ -11,7 +11,7 @@
  *      validation can run on the exact bytes once OnProfit publishes their
  *      signature spec).
  *   2. Resolve workspace by ?workspace=<slug> (same convention as Hotmart).
- *      TODO: switch to HMAC header validation when OnProfit publishes the spec.
+ *      OnProfit não implementa HMAC — workspace slug é o único mecanismo de auth.
  *   3. Parse JSON body.
  *   4. Call mapper.
  *   5. Skip → 202 (no insert).
@@ -20,7 +20,7 @@
  *   8. Enqueue → 202.
  *
  * BRs applied:
- *   BR-WEBHOOK-001: server-to-server isolation; HMAC TODO until spec confirmed
+ *   BR-WEBHOOK-001: server-to-server isolation; OnProfit não implementa HMAC (confirmado 2026-05-11)
  *   BR-WEBHOOK-002: event_id derived deterministically (in mapper)
  *   BR-WEBHOOK-003: non-mappable / unknown statuses → raw_events failed + 200
  *   BR-WEBHOOK-004: lead_hints hierarchy populated by mapper
@@ -83,10 +83,7 @@ export function createOnprofitWebhookRoute(
       typeof dbOrFactory === 'function' ? dbOrFactory(c.env) : dbOrFactory;
 
     // -----------------------------------------------------------------------
-    // Step 1: Read raw body text BEFORE any parse.
-    // BR-WEBHOOK-001: raw bytes must be consumed first so they remain
-    // available for HMAC validation when OnProfit publishes the signature
-    // header spec. Today no header is checked — see TODO below.
+    // Step 1: Read raw body text BEFORE any parse (BR-WEBHOOK-001).
     // -----------------------------------------------------------------------
     let rawBodyText: string;
     try {
@@ -95,22 +92,20 @@ export function createOnprofitWebhookRoute(
       return c.json({ error: 'bad_request' }, 400);
     }
 
+    // Capture non-sensitive headers for observability.
+    // Note: OnProfit does not implement HMAC/signature headers (confirmed
+    // 2026-05-11 by inspecting real payloads via n8n mirror). Auth is
+    // workspace slug in query string only.
+    const capturedHeaders: Record<string, string> = {};
+    for (const [k, v] of c.req.raw.headers.entries()) {
+      const lower = k.toLowerCase();
+      if (lower === 'authorization' || lower === 'cookie') continue;
+      capturedHeaders[lower] = v;
+    }
+
     // -----------------------------------------------------------------------
     // Step 2: Resolve workspace by ?workspace=<slug>.
-    //
-    // TODO(onprofit-hmac): replace this query-string-only auth with HMAC
-    // header validation as soon as OnProfit publishes their signature spec.
-    // Until then, the integration is protected only by:
-    //   (a) the workspace slug (knowledge of which is workspace-private), and
-    //   (b) the OnProfit dashboard restricting which URLs an account can post to.
-    // This is weaker than what we require for production receipts; once the
-    // spec lands, mirror the Hotmart timingSafeTokenEqual pattern.
     // -----------------------------------------------------------------------
-    safeLog('warn', {
-      event: 'onprofit_webhook_hmac_validation_todo',
-      message:
-        'WARN: HMAC validation TODO until OnProfit signature spec is confirmed',
-    });
 
     const workspaceSlug = c.req.query('workspace');
     if (!workspaceSlug) {
@@ -227,7 +222,7 @@ export function createOnprofitWebhookRoute(
           await db.insert(rawEvents).values({
             workspaceId,
             payload: jsonb(sanitizePayloadForStorage(body)),
-            headersSanitized: jsonb({}),
+            headersSanitized: jsonb(capturedHeaders),
             processingStatus: 'failed',
             processingError: `mapping_failed:${errorCode}`,
           });
@@ -303,7 +298,7 @@ export function createOnprofitWebhookRoute(
           .values({
             workspaceId,
             payload: jsonb(enrichedPayload),
-            headersSanitized: jsonb({}),
+            headersSanitized: jsonb(capturedHeaders),
             processingStatus: 'pending',
           })
           .returning({ id: rawEvents.id });
