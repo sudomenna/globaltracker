@@ -163,6 +163,10 @@ function resolveInternalEventType(
       return 'Chargeback';
     case 'PURCHASE_BILLET_PRINTED':
       return 'InitiateCheckout';
+    // True cart abandonment — buyer entered checkout but left before paying.
+    // Conforms to CartAbandonmentInternalEvent canonical contract (shared/cart-abandonment.ts).
+    case 'PURCHASE_OUT_OF_SHOPPING_CART':
+      return 'InitiateCheckout';
     case 'SUBSCRIPTION_CANCELLATION':
       // Phase 3+ — skip for now (BR-WEBHOOK-003)
       return 'skip';

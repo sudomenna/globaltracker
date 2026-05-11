@@ -20,6 +20,7 @@ export type HotmartEventType =
   | 'PURCHASE_CHARGEBACK'
   | 'PURCHASE_PROTEST'
   | 'PURCHASE_BILLET_PRINTED'
+  | 'PURCHASE_OUT_OF_SHOPPING_CART'
   | 'SUBSCRIPTION_CANCELLATION'
   | (string & NonNullable<unknown>); // allow unknown events for graceful handling
 
