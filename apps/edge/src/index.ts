@@ -393,6 +393,7 @@ app.use(
 );
 
 app.use('/v1/health/*', cpCors);
+app.use('/v1/dashboard/*', cpCors);
 app.use('/v1/onboarding/*', cpCors);
 app.use('/v1/launches/*', cpCors);
 app.use('/v1/funnel-templates/*', cpCors);
