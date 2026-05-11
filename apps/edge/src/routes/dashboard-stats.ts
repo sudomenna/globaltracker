@@ -303,8 +303,7 @@ export function createDashboardStatsRoute(opts: {
               ),
             )
             .groupBy(launches.id, launches.publicId, launches.name, launches.status)
-            .orderBy(sql`revenue DESC NULLS LAST`)
-            .limit(10),
+            .limit(20),
 
           // ── 5. Ad spend (for ROAS) ───────────────────────────────────────
           db
@@ -351,14 +350,17 @@ export function createDashboardStatsRoute(opts: {
       const leadsWithFbclid = Number(a?.leadsWithFbclid ?? 0);
       const leadsWithoutSource = Number(a?.leadsWithoutSource ?? 0);
 
-      const launchStats: LaunchStat[] = launchRows.map((r) => ({
-        public_id: String(r.publicId),
-        name: String(r.name),
-        status: String(r.status),
-        leads: Number(r.leads ?? 0),
-        buyers: Number(r.buyers ?? 0),
-        revenue: Number(r.revenue ?? 0),
-      }));
+      const launchStats: LaunchStat[] = launchRows
+        .map((r) => ({
+          public_id: String(r.publicId),
+          name: String(r.name),
+          status: String(r.status),
+          leads: Number(r.leads ?? 0),
+          buyers: Number(r.buyers ?? 0),
+          revenue: Number(r.revenue ?? 0),
+        }))
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 10);
 
       const spendCents = Number(spendRows[0]?.totalSpend ?? 0);
       const roas =
@@ -402,6 +404,7 @@ export function createDashboardStatsRoute(opts: {
         event: 'dashboard_stats_error',
         request_id: requestId,
         error_type: err instanceof Error ? err.constructor.name : typeof err,
+        error_msg: err instanceof Error ? err.message : String(err),
       });
       return c.json(
         { code: 'internal_error', request_id: requestId },
