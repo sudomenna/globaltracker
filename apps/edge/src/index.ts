@@ -117,6 +117,7 @@ import { createProductsRoute } from './routes/products.js';
 import { createLaunchProductsRoute } from './routes/launch-products.js';
 import { createLaunchLeadsRoute } from './routes/launches-leads.js';
 import { createMetaAudiencesRoute } from './routes/meta-audiences.js';
+import { createDashboardStatsRoute } from './routes/dashboard-stats.js';
 import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
@@ -539,6 +540,13 @@ app.route(
   ),
 );
 app.route('/v1/onboarding', onboardingStateRoute);
+app.route(
+  '/v1/dashboard',
+  createDashboardStatsRoute({
+    getConnStr: (env) =>
+      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Dispatch-replay route — wired with real DB-backed deps.
