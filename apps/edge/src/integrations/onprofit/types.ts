@@ -169,6 +169,80 @@ export type OnProfitCustomFields =
 // Root payload
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cart abandonment payload (object: "cart_abandonment")
+// ---------------------------------------------------------------------------
+
+/**
+ * Customer shape in cart_abandonment webhooks.
+ * DIFFERS from OnProfitCustomer: uses `last_name` (not `lastname`), no `cell`.
+ */
+export interface OnProfitCartAbandonmentCustomer {
+  /** BR-PRIVACY-001: PII */
+  name: string;
+  /** BR-PRIVACY-001: PII */
+  last_name: string;
+  /** BR-PRIVACY-001: PII */
+  email: string;
+  /** BR-PRIVACY-001: PII — not guaranteed E.164 */
+  phone?: string | null;
+  document?: string | null;
+}
+
+export interface OnProfitCartAbandonmentProductDetails {
+  id: number;
+  name: string;
+  hash?: string | null;
+}
+
+export interface OnProfitCartAbandonmentOfferDetails {
+  id: number;
+  name?: string | null;
+  /** CENTAVOS — divide by 100 for currency unit */
+  price: number;
+}
+
+/**
+ * Payload for OnProfit cart abandonment webhooks (object: "cart_abandonment").
+ *
+ * Key structural differences from order payloads:
+ *   - No `status` or `price` at root — offer price is in offer_details.price
+ *   - customer.last_name (not lastname)
+ *   - UTMs are in the `url` query string; utm.* root fields are null
+ *   - No `fbc`/`fbp` cookies; fbclid may be present in `url`
+ *   - No `currency` field — assumed BRL
+ */
+export interface OnProfitCartAbandonmentPayload {
+  object: 'cart_abandonment';
+  id: number;
+  user_id?: number | null;
+  product_id?: number | null;
+  offer_id?: number | null;
+  checkout_id?: number | null;
+  /** Checkout URL — contains UTMs and fbclid in query string */
+  url?: string | null;
+  session?: string | null;
+  /** "YYYY-MM-DD HH:mm:ss" — no timezone, treated as UTC */
+  created_at?: string | null;
+  /** "YYYY-MM-DD HH:mm:ss" — no timezone, treated as UTC */
+  updated_at?: string | null;
+  customer: OnProfitCartAbandonmentCustomer;
+  utm?: {
+    source?: string | null;
+    medium?: string | null;
+    campaign?: string | null;
+    term?: string | null;
+    content?: string | null;
+  } | null;
+  product_details?: OnProfitCartAbandonmentProductDetails | null;
+  offer_details?: OnProfitCartAbandonmentOfferDetails | null;
+  orderbumps?: unknown[];
+}
+
+// ---------------------------------------------------------------------------
+// Root order payload
+// ---------------------------------------------------------------------------
+
 export interface OnProfitWebhookPayload {
   object: 'order' | (string & NonNullable<unknown>);
   /** OnProfit order/transaction id — used as platform_event_id */

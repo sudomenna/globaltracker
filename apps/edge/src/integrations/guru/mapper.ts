@@ -200,6 +200,8 @@ export async function mapGuruTransactionToInternal(
       event_type = 'OrderCanceled';
       break;
     // BR-WEBHOOK-003: abandoned = checkout started but not completed → InitiateCheckout
+    // Conforms to CartAbandonmentInternalEvent canonical contract (shared/cart-abandonment.ts).
+    // amount = payment.total / 100 (intended offer price, not confirmed payment).
     case 'abandoned':
       event_type = 'InitiateCheckout';
       break;

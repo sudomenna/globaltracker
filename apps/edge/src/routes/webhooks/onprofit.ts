@@ -33,9 +33,20 @@
 import type { Db } from '@globaltracker/db';
 import { rawEvents, workspaces } from '@globaltracker/db';
 import { eq } from 'drizzle-orm';
+import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { mapOnProfitToInternal } from '../../integrations/onprofit/mapper.js';
-import type { OnProfitWebhookPayload } from '../../integrations/onprofit/types.js';
+import {
+  mapOnProfitCartAbandonmentToInternal,
+  mapOnProfitToInternal,
+} from '../../integrations/onprofit/mapper.js';
+import type {
+  OnProfitCartAbandonmentPayload,
+  OnProfitWebhookPayload,
+} from '../../integrations/onprofit/types.js';
+import {
+  buildFbcFromFbclid,
+  extractUtmsFromUrl,
+} from '../../integrations/shared/cart-abandonment.js';
 import { jsonb } from '../../lib/jsonb-cast.js';
 import { resolveLaunchForOnProfitEvent } from '../../lib/onprofit-launch-resolver.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
@@ -140,12 +151,40 @@ export function createOnprofitWebhookRoute(
     // -----------------------------------------------------------------------
     // Step 3: Parse JSON body.
     // -----------------------------------------------------------------------
-    let body: OnProfitWebhookPayload;
+    let rawBody: unknown;
     try {
-      body = JSON.parse(rawBodyText) as OnProfitWebhookPayload;
+      rawBody = JSON.parse(rawBodyText);
     } catch {
       return c.json({ error: 'invalid_json' }, 400);
     }
+
+    // -----------------------------------------------------------------------
+    // Step 3.5: Branch by object type.
+    //
+    // OnProfit sends two distinct webhook shapes:
+    //   - object: "order"            → order lifecycle (PAID, WAITING, …)
+    //   - object: "cart_abandonment" → buyer left checkout before paying
+    //
+    // Cart abandonment is handled first because it has a completely different
+    // field layout (no status, no price at root, customer.last_name, UTMs in URL).
+    // -----------------------------------------------------------------------
+    const objectType =
+      typeof rawBody === 'object' &&
+      rawBody !== null &&
+      'object' in (rawBody as Record<string, unknown>)
+        ? (rawBody as Record<string, unknown>).object
+        : undefined;
+
+    if (objectType === 'cart_abandonment') {
+      return handleCartAbandonment(
+        rawBody as OnProfitCartAbandonmentPayload,
+        workspaceId,
+        db,
+        c,
+      );
+    }
+
+    const body = rawBody as OnProfitWebhookPayload;
 
     // -----------------------------------------------------------------------
     // Step 4: Map payload.
@@ -220,9 +259,8 @@ export function createOnprofitWebhookRoute(
     let resolvedLaunchId: string | null = null;
     let resolvedFunnelRole: string | null = null;
     if (db) {
-      const productId = body.product?.id != null
-        ? String(body.product.id)
-        : null;
+      const productId =
+        body.product?.id != null ? String(body.product.id) : null;
       try {
         const resolved = await resolveLaunchForOnProfitEvent({
           workspaceId,
@@ -342,6 +380,174 @@ function sanitizePayloadForStorage(
   body: OnProfitWebhookPayload,
 ): Record<string, unknown> {
   return body as unknown as Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Cart abandonment handler
+//
+// Extracted as a named function so the main route handler stays readable.
+// Mirrors the order flow but with field normalization so the existing
+// onprofit-raw-events-processor can consume the payload without changes:
+//   - `price`       ← offer_details.price   (centavos, processor divides by 100)
+//   - `currency`    ← 'BRL'                 (not present in abandonment payload)
+//   - `status`      ← 'CART_ABANDONED'       (synthetic; processor stores as-is)
+//   - `customer.lastname` ← customer.last_name (field rename)
+//   - `utm_source/…`      ← parsed from url query string
+//   - `fbc`               ← derived from fbclid when present
+//   - `purchase_date`     ← created_at
+//   - `product`           ← from product_details / product_id
+//   - `offer_hash`        ← from product_details.hash (for transaction_group_id)
+//   - `item_type`         ← 'product' (no order bumps on abandonment)
+// ---------------------------------------------------------------------------
+
+async function handleCartAbandonment(
+  body: OnProfitCartAbandonmentPayload,
+  workspaceId: string,
+  db: Db | undefined,
+  c: Context<AppEnv>,
+): Promise<Response> {
+  const mapResult = await mapOnProfitCartAbandonmentToInternal(body);
+
+  if (!mapResult.ok) {
+    if ('skip' in mapResult && mapResult.skip) {
+      safeLog('info', {
+        event: 'onprofit_cart_abandonment_skipped',
+        workspace_id: workspaceId,
+        reason: mapResult.reason,
+      });
+      return c.json({ received: true }, 202);
+    }
+
+    safeLog('warn', {
+      event: 'onprofit_cart_abandonment_mapping_failed',
+      workspace_id: workspaceId,
+      error_code: mapResult.error.code,
+    });
+
+    if (db) {
+      try {
+        await db.insert(rawEvents).values({
+          workspaceId,
+          payload: jsonb(body as unknown as Record<string, unknown>),
+          headersSanitized: jsonb({}),
+          processingStatus: 'failed',
+          processingError: `cart_abandonment_mapping_failed:${mapResult.error.code}`,
+        });
+      } catch {
+        // best-effort
+      }
+    }
+    return c.json({ received: true }, 200);
+  }
+
+  const internalEvent = mapResult.value;
+
+  // Resolve launch_id the same way the order flow does (product_id lookup)
+  let resolvedLaunchId: string | null = null;
+  let resolvedFunnelRole: string | null = null;
+  if (db) {
+    const productId =
+      body.product_details?.id != null
+        ? String(body.product_details.id)
+        : body.product_id != null
+          ? String(body.product_id)
+          : null;
+    try {
+      const resolved = await resolveLaunchForOnProfitEvent({
+        workspaceId,
+        productId,
+        leadHints: {
+          email: internalEvent.lead_hints.email,
+          phone: internalEvent.lead_hints.phone,
+          visitorId: null,
+        },
+        db,
+      });
+      resolvedLaunchId = resolved.launch_id;
+      resolvedFunnelRole = resolved.funnel_role;
+    } catch (err) {
+      safeLog('warn', {
+        event: 'onprofit_cart_abandonment_launch_resolution_failed',
+        workspace_id: workspaceId,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+    }
+  }
+
+  // Normalize into the shape the existing processor expects
+  const urlUtms = extractUtmsFromUrl(body.url);
+  const fbc =
+    internalEvent.meta_cookies?.fbc ??
+    (urlUtms.fbclid
+      ? buildFbcFromFbclid(urlUtms.fbclid, internalEvent.occurred_at)
+      : null);
+
+  const enrichedPayload: Record<string, unknown> = {
+    ...(body as unknown as Record<string, unknown>),
+    // Processor-compatibility normalization
+    status: 'CART_ABANDONED',
+    price: body.offer_details?.price ?? 0,
+    currency: 'BRL',
+    purchase_date: body.created_at ?? null,
+    confirmation_purchase_date: null,
+    // Normalize customer field names to match order payload shape
+    customer: {
+      ...body.customer,
+      lastname: body.customer.last_name,
+      cell: null,
+    },
+    // Flattened UTMs (parsed from URL)
+    utm_source: urlUtms.utm_source,
+    utm_medium: urlUtms.utm_medium,
+    utm_campaign: urlUtms.utm_campaign,
+    utm_content: urlUtms.utm_content,
+    utm_term: urlUtms.utm_term,
+    // Meta cookies
+    fbc,
+    fbp: null,
+    // Product/offer fields mirroring order payload shape
+    product:
+      body.product_details != null
+        ? { id: body.product_details.id, name: body.product_details.name }
+        : body.product_id != null
+          ? { id: body.product_id, name: null }
+          : null,
+    offer_hash: body.product_details?.hash ?? null,
+    offer_name: body.offer_details?.name ?? null,
+    offer_id: body.offer_details?.id ?? body.offer_id ?? null,
+    item_type: 'product', // no order bumps on cart abandonment
+    // Derived event metadata (read by processor)
+    _onprofit_event_type: 'InitiateCheckout',
+    _onprofit_event_id: internalEvent.event_id,
+    ...(resolvedLaunchId !== null && { launch_id: resolvedLaunchId }),
+    ...(resolvedFunnelRole !== null && { funnel_role: resolvedFunnelRole }),
+  };
+
+  if (db) {
+    try {
+      await db.insert(rawEvents).values({
+        workspaceId,
+        payload: jsonb(enrichedPayload),
+        headersSanitized: jsonb({}),
+        processingStatus: 'pending',
+      });
+    } catch (err) {
+      safeLog('error', {
+        event: 'onprofit_cart_abandonment_insert_failed',
+        workspace_id: workspaceId,
+        event_id: internalEvent.event_id,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+    }
+  }
+
+  safeLog('info', {
+    event: 'onprofit_cart_abandonment_received',
+    workspace_id: workspaceId,
+    event_id: internalEvent.event_id,
+  });
+
+  return c.json({ received: true }, 202);
 }
 
 // ---------------------------------------------------------------------------

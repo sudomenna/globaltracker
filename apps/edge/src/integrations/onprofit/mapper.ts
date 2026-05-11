@@ -15,7 +15,16 @@
  *                   in the lead-resolver / pii-enrich layer, NOT here.
  */
 
-import type { OnProfitStatus, OnProfitWebhookPayload } from './types.js';
+import type { CartAbandonmentMapResult } from '../shared/cart-abandonment.js';
+import {
+  buildFbcFromFbclid,
+  extractUtmsFromUrl,
+} from '../shared/cart-abandonment.js';
+import type {
+  OnProfitCartAbandonmentPayload,
+  OnProfitStatus,
+  OnProfitWebhookPayload,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Result type (mirrors hotmart/mapper.ts for consistency)
@@ -140,6 +149,136 @@ export async function deriveOnProfitEventId(
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   const hex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
   return hex.slice(0, 32);
+}
+
+// ---------------------------------------------------------------------------
+// Cart abandonment mapper (canonical contract: CartAbandonmentInternalEvent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derives a deterministic 32-char hex event_id for cart abandonment events.
+ *
+ * BR-WEBHOOK-002: event_id = sha256("onprofit:cart_abandonment:" + id)[:32]
+ *
+ * Does NOT include a status component (cart abandonment has no status field).
+ * The id is stable — retries for the same abandonment produce the same key,
+ * ensuring idempotent ingestion.
+ */
+export async function deriveOnProfitCartAbandonmentEventId(
+  id: number,
+): Promise<string> {
+  const input = `onprofit:cart_abandonment:${id}`;
+  const encoded = new TextEncoder().encode(input);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 32);
+}
+
+/**
+ * Maps an OnProfit cart_abandonment webhook payload to CartAbandonmentInternalEvent.
+ *
+ * Structural differences handled vs order payloads:
+ *   - No `status` / `price` at root → offer price from offer_details.price (centavos ÷ 100)
+ *   - customer.last_name (not lastname)
+ *   - UTMs embedded in `url` query string — utm.* root fields are null
+ *   - No fbc/fbp cookies; fbclid extracted from `url`, fbc derived via buildFbcFromFbclid
+ *
+ * BR-WEBHOOK-002: deterministic event_id from id only
+ * BR-WEBHOOK-004: lead_hints = email > phone (no pptc available at abandonment)
+ * BR-PRIVACY-001: PII raw strings; processor hashes before persisting
+ */
+export async function mapOnProfitCartAbandonmentToInternal(
+  payload: OnProfitCartAbandonmentPayload,
+): Promise<CartAbandonmentMapResult> {
+  if (!payload.customer?.email) {
+    return {
+      ok: false,
+      error: { code: 'missing_required_field', field: 'customer.email' },
+    };
+  }
+
+  const event_id = await deriveOnProfitCartAbandonmentEventId(payload.id);
+
+  const occurred_at = parseOnProfitCartAbandonmentTimestamp(payload.created_at);
+
+  // Offer price in centavos → base currency unit
+  const amount =
+    typeof payload.offer_details?.price === 'number'
+      ? payload.offer_details.price / 100
+      : null;
+
+  // UTMs and fbclid live in the checkout URL query string, not root fields
+  const urlUtms = extractUtmsFromUrl(payload.url);
+
+  // Derive fbc from fbclid when present (no fbc cookie at abandonment)
+  const fbc = urlUtms.fbclid
+    ? buildFbcFromFbclid(urlUtms.fbclid, occurred_at)
+    : null;
+
+  const fullName = [payload.customer.name, payload.customer.last_name]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
+  return {
+    ok: true,
+    value: {
+      event_id,
+      event_type: 'InitiateCheckout',
+      platform: 'onprofit',
+      platform_event_id: String(payload.id),
+      occurred_at,
+      amount,
+      currency: 'BRL',
+      product: {
+        id:
+          payload.product_details?.id != null
+            ? String(payload.product_details.id)
+            : payload.product_id != null
+              ? String(payload.product_id)
+              : null,
+        name: payload.product_details?.name ?? null,
+        offer_id:
+          payload.offer_details?.id != null
+            ? String(payload.offer_details.id)
+            : payload.offer_id != null
+              ? String(payload.offer_id)
+              : null,
+        offer_name: payload.offer_details?.name ?? null,
+      },
+      lead_hints: {
+        lead_public_id: null, // pptc not available at abandonment time
+        email: payload.customer.email,
+        phone: payload.customer.phone ?? null,
+        name: fullName.length > 0 ? fullName : null,
+      },
+      attribution: {
+        utm_source: urlUtms.utm_source,
+        utm_medium: urlUtms.utm_medium,
+        utm_campaign: urlUtms.utm_campaign,
+        utm_content: urlUtms.utm_content,
+        utm_term: urlUtms.utm_term,
+        fbclid: urlUtms.fbclid,
+      },
+      meta_cookies: fbc ? { fbc, fbp: null } : null,
+    },
+  };
+}
+
+function parseOnProfitCartAbandonmentTimestamp(
+  raw: string | null | undefined,
+): string {
+  if (!raw) return new Date().toISOString();
+  const isoLike = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const withZ =
+    isoLike.endsWith('Z') || /[+-]\d\d:?\d\d$/.test(isoLike)
+      ? isoLike
+      : `${isoLike}Z`;
+  const d = new Date(withZ);
+  return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
 
 // ---------------------------------------------------------------------------
