@@ -158,16 +158,26 @@ export async function deriveOnProfitEventId(
 /**
  * Derives a deterministic 32-char hex event_id for cart abandonment events.
  *
- * BR-WEBHOOK-002: event_id = sha256("onprofit:cart_abandonment:" + id)[:32]
+ * BR-WEBHOOK-002:
+ *   When offer_hash is present: sha256("onprofit:cart_abandonment:" + offer_hash + ":" + email)[:32]
+ *   Fallback (no offer_hash):   sha256("onprofit:cart_abandonment:id:" + id)[:32]
  *
- * Does NOT include a status component (cart abandonment has no status field).
- * The id is stable — retries for the same abandonment produce the same key,
- * ensuring idempotent ingestion.
+ * Using offer_hash + email as the key ensures that all order-bump cart_abandonment
+ * webhooks fired for the same checkout session (which share the same offer_hash
+ * and buyer email) produce the same event_id. The unique constraint on
+ * (workspace_id, event_id) in the events table then deduplicates them
+ * automatically — only one dispatch is enqueued per session.
+ *
+ * The fallback to id preserves uniqueness when offer_hash is absent.
  */
 export async function deriveOnProfitCartAbandonmentEventId(
   id: number,
+  offerHash: string | null | undefined,
+  email: string,
 ): Promise<string> {
-  const input = `onprofit:cart_abandonment:${id}`;
+  const input = offerHash
+    ? `onprofit:cart_abandonment:${offerHash}:${email}`
+    : `onprofit:cart_abandonment:id:${id}`;
   const encoded = new TextEncoder().encode(input);
   const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -186,7 +196,7 @@ export async function deriveOnProfitCartAbandonmentEventId(
  *   - UTMs embedded in `url` query string — utm.* root fields are null
  *   - No fbc/fbp cookies; fbclid extracted from `url`, fbc derived via buildFbcFromFbclid
  *
- * BR-WEBHOOK-002: deterministic event_id from id only
+ * BR-WEBHOOK-002: deterministic event_id from offer_hash+email (dedup across order bumps)
  * BR-WEBHOOK-004: lead_hints = email > phone (no pptc available at abandonment)
  * BR-PRIVACY-001: PII raw strings; processor hashes before persisting
  */
@@ -200,7 +210,11 @@ export async function mapOnProfitCartAbandonmentToInternal(
     };
   }
 
-  const event_id = await deriveOnProfitCartAbandonmentEventId(payload.id);
+  const event_id = await deriveOnProfitCartAbandonmentEventId(
+    payload.id,
+    payload.product_details?.hash,
+    payload.customer.email,
+  );
 
   const occurred_at = parseOnProfitCartAbandonmentTimestamp(payload.created_at);
 
@@ -414,8 +428,19 @@ export async function mapOnProfitToInternal(
   const event_type = resolved;
   const orderId = String(payload.id);
 
-  // BR-WEBHOOK-002: deterministic event_id
-  const event_id = await deriveOnProfitEventId(orderId, payload.status);
+  // BR-WEBHOOK-002: deterministic event_id.
+  // For InitiateCheckout (WAITING): use offer_hash+email so that all order-bump
+  // webhooks from the same checkout session share one event_id — same dedup
+  // strategy as cart_abandonment. Falls back to orderId+status when offer_hash
+  // is absent (no order bumps, or OnProfit omits the field).
+  const event_id =
+    event_type === 'InitiateCheckout' && payload.offer_hash
+      ? await deriveOnProfitCartAbandonmentEventId(
+          payload.id,
+          payload.offer_hash,
+          payload.customer.email,
+        )
+      : await deriveOnProfitEventId(orderId, payload.status);
 
   // Prefer confirmation_purchase_date for PAID/AUTHORIZED; fall back to purchase_date
   // for WAITING (no confirmation yet) and as last resort to "now".

@@ -10,14 +10,15 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: OnProfit Consolidated Dispatch — Waves 1–8 **deployadas e validadas** (2026-05-10). Compra real OnProfit (R$2 + order bump R$1) executada e confirmada: evento Purchase consolidado correto no edge, dispatches Meta CAPI + GA4 disparados.
-- **Branch**: `main`. Commits desta sessão (7 commits à frente de `origin/main` — ainda NÃO pushedados):
+- **Sprint ativo**: OnProfit InitiateCheckout dedup — deployado e validado (2026-05-11). Cart abandonment + WAITING order bumps agora deduplicados por `offer_hash + email`.
+- **Branch**: `main`. Commits pendentes de push (7+ commits à frente de `origin/main`):
   - `28859ea` feat(jornada): background colorido por tipo de evento nos cards
   - `2646ae5` feat(jornada): agrupa Purchase OnProfit com order bumps na timeline
   - `3242f77` feat(onprofit): consolidated Purchase dispatch com order bumps (Waves 1–8)
   - `a523991` + anteriores: doc-sync + ADR-043 + BR-TRACKER-002 + FLOW-11 + contatos UX
+  - (sem commit desta sessão — mudanças só no deploy edge, sem git commit feito)
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`8668652c`** (OnProfit Waves 1–8 consolidadas + event_id fix). Comando: **`pnpm deploy:edge`**.
+- **Edge prod**: deploy atual **`6dac7119`** (InitiateCheckout dedup cart_abandonment + WAITING). Comando: **`pnpm deploy:edge`**.
 - **Jornada UX — novidades desta sessão**:
   - Purchase OnProfit com `transaction_group_id` compartilhado → agrupados em 1 card: produto principal visível + OBs indentados abaixo sem click.
   - Expanded "Dados do evento": tabela item-a-item (produto principal + cada OB com valor) + caixa "Total consolidado despachado".
@@ -44,6 +45,20 @@
 **Padrão `transaction_group_id`**: `sha256(workspaceId:emailNorm:offerHash:bucket5min)[:32]`. Todos os webhooks da mesma compra (main + OBs) compartilham o mesmo hash. Dispatcher espera 80s (CF Queue `delaySeconds`) para OBs chegarem, depois soma `custom_data.amount` de todos os events do grupo.
 
 **Dívida futura Guru**: documentada em `memory/project_dispatch_consolidation_pattern.md` cross-session. Guru tem `is_order_bump` no payload — quando OBs ficarem comuns lá, replicar o mesmo padrão em `guru-raw-events-processor.ts`.
+
+### Entregas 2026-05-11 (esta sessão)
+
+| # | Tema | Deploy |
+|---|---|---|
+| 1 | Contrato canônico `CartAbandonmentInternalEvent` em `shared/cart-abandonment.ts` | — |
+| 2 | Cart abandonment OnProfit (`object: 'cart_abandonment'`) — novo endpoint + mapper | `7787c9fd` |
+| 3 | Hotmart `PURCHASE_OUT_OF_SHOPPING_CART` → `InitiateCheckout` | `7787c9fd` |
+| 4 | Guru `abandoned` → formalizado no contrato canônico | `7787c9fd` |
+| 5 | Dedup InitiateCheckout: `event_id` = `sha256(offer_hash+email)` para `cart_abandonment` | `c03384b3` |
+| 6 | Dedup InitiateCheckout: mesmo padrão para `WAITING` (order bumps) | `6dac7119` |
+| 7 | 5 raw_events históricos cart_abandonment re-postados e processados | — |
+
+**Sem migration nova** — dedup usa unique constraint existente em `events(workspace_id, event_id)`.
 
 ### Onde começar a próxima sessão
 
