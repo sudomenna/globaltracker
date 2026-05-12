@@ -31,8 +31,8 @@
  */
 
 import type { Db } from '@globaltracker/db';
-import { rawEvents, workspaces } from '@globaltracker/db';
-import { eq } from 'drizzle-orm';
+import { events, leadAliases, rawEvents, workspaces } from '@globaltracker/db';
+import { and, eq, gt } from 'drizzle-orm';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import {
@@ -49,6 +49,7 @@ import {
 } from '../../integrations/shared/cart-abandonment.js';
 import { jsonb } from '../../lib/jsonb-cast.js';
 import { resolveLaunchForOnProfitEvent } from '../../lib/onprofit-launch-resolver.js';
+import { hashPii } from '../../lib/pii.js';
 import { safeLog } from '../../middleware/sanitize-logs.js';
 
 // ---------------------------------------------------------------------------
@@ -469,6 +470,40 @@ async function handleCartAbandonment(
     }
   }
 
+  // Suppress dispatch when a Purchase already exists for this email+launch in the
+  // last 6h — the user already converted; firing InitiateCheckout would distort ROAS.
+  // Best-effort: suppression failure is non-fatal and proceeds to normal processing.
+  let suppressedByPurchase = false;
+  if (db && internalEvent.lead_hints.email) {
+    try {
+      const emailHash = await hashPii(
+        internalEvent.lead_hints.email.toLowerCase().trim(),
+        workspaceId,
+      );
+      const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      const existing = await db
+        .select({ id: events.id })
+        .from(events)
+        .innerJoin(leadAliases, eq(leadAliases.leadId, events.leadId))
+        .where(
+          and(
+            eq(events.workspaceId, workspaceId),
+            eq(events.eventName, 'Purchase'),
+            gt(events.eventTime, sixHoursAgo),
+            eq(leadAliases.workspaceId, workspaceId),
+            eq(leadAliases.identifierType, 'email_hash'),
+            eq(leadAliases.identifierHash, emailHash),
+            eq(leadAliases.status, 'active'),
+            ...(resolvedLaunchId ? [eq(events.launchId, resolvedLaunchId)] : []),
+          ),
+        )
+        .limit(1);
+      suppressedByPurchase = existing.length > 0;
+    } catch {
+      // suppression check failure → proceed normally
+    }
+  }
+
   // Normalize into the shape the existing processor expects
   const urlUtms = extractUtmsFromUrl(body.url);
   const fbc =
@@ -519,16 +554,58 @@ async function handleCartAbandonment(
   };
 
   if (db) {
-    try {
-      await db.insert(rawEvents).values({
-        workspaceId,
-        payload: jsonb(enrichedPayload),
-        headersSanitized: jsonb({}),
-        processingStatus: 'pending',
+    if (suppressedByPurchase) {
+      try {
+        await db.insert(rawEvents).values({
+          workspaceId,
+          payload: jsonb(enrichedPayload),
+          headersSanitized: jsonb({}),
+          processingStatus: 'discarded',
+          processingError: 'suppressed_by_purchase',
+        });
+      } catch {
+        // best-effort audit trail
+      }
+      safeLog('info', {
+        event: 'onprofit_cart_abandonment_suppressed',
+        workspace_id: workspaceId,
+        event_id: internalEvent.event_id,
       });
+      return c.json({ received: true }, 202);
+    }
+
+    let rawEventId: string | undefined;
+    try {
+      const inserted = await db
+        .insert(rawEvents)
+        .values({
+          workspaceId,
+          payload: jsonb(enrichedPayload),
+          headersSanitized: jsonb({}),
+          processingStatus: 'pending',
+        })
+        .returning({ id: rawEvents.id });
+      rawEventId = inserted[0]?.id;
     } catch (err) {
       safeLog('error', {
         event: 'onprofit_cart_abandonment_insert_failed',
+        workspace_id: workspaceId,
+        event_id: internalEvent.event_id,
+        error_type: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+    }
+
+    try {
+      await c.env.QUEUE_EVENTS.send({
+        raw_event_id: rawEventId,
+        workspace_id: workspaceId,
+        event_id: internalEvent.event_id,
+        event_type: internalEvent.event_type,
+        platform: 'onprofit',
+      });
+    } catch (err) {
+      safeLog('error', {
+        event: 'onprofit_cart_abandonment_enqueue_failed',
         workspace_id: workspaceId,
         event_id: internalEvent.event_id,
         error_type: err instanceof Error ? err.constructor.name : 'unknown',
