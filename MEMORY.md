@@ -10,15 +10,31 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: OnProfit InitiateCheckout dedup — deployado e validado (2026-05-11). Cart abandonment + WAITING order bumps agora deduplicados por `offer_hash + email`.
-- **Branch**: `main`. Commits pendentes de push (7+ commits à frente de `origin/main`):
+- **Sprint ativo**: InitiateCheckout server-side — deployado (2026-05-12, version `680f729c`).
+- **Branch**: `main`. Commits pendentes de push (8+ commits à frente de `origin/main`):
+  - `1700514` feat(ic): InitiateCheckout server-side apenas via webhook ← **novo (2026-05-12)**
   - `28859ea` feat(jornada): background colorido por tipo de evento nos cards
   - `2646ae5` feat(jornada): agrupa Purchase OnProfit com order bumps na timeline
   - `3242f77` feat(onprofit): consolidated Purchase dispatch com order bumps (Waves 1–8)
   - `a523991` + anteriores: doc-sync + ADR-043 + BR-TRACKER-002 + FLOW-11 + contatos UX
-  - (sem commit desta sessão — mudanças só no deploy edge, sem git commit feito)
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`11d94a7c`** (dashboard stats + cost-backfill + upsert fix). Comando: **`pnpm deploy:edge`**.
+- **Edge prod**: deploy atual **`680f729c`** (IC server-side). Comando: **`pnpm deploy:edge`**.
+
+### Entregas 2026-05-12 (esta sessão)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 1 | Guru `waiting_payment` → `InitiateCheckout` (era SKIP) — PIX/boleto gera IC com PII completo | `1700514` | `680f729c` |
+| 2 | `custom:click_buy_workshop` + `custom:click_buy_main` → `INTERNAL_ONLY_EVENT_NAMES` — não geram mais `dispatch_jobs` para nenhum destino | `1700514` | `680f729c` |
+| 3 | Mappers Meta CAPI + GA4 limpos (entradas click_buy_* removidas) | `1700514` | `680f729c` |
+| 4 | Docs: `00-event-name-mapping.md` + `13-digitalmanager-guru-webhook.md` atualizados | `1700514` | — |
+
+**Impacto esperado no Event Manager Meta**: count de IC cai (191 → apenas ICs com origem real em webhook), coverage de em/ph/fn/ln sobe de 17.56% → próximo de 100%.
+
+**IC server-side ativo**:
+- Guru `waiting_payment` (PIX/boleto) → `InitiateCheckout` ✓ novo
+- Guru `abandoned` (carrinho abandonado) → `InitiateCheckout` ✓ existente
+- OnProfit `WAITING` (PIX/boleto) → `InitiateCheckout` ✓ existente
 - **Jornada UX — novidades desta sessão**:
   - Purchase OnProfit com `transaction_group_id` compartilhado → agrupados em 1 card: produto principal visível + OBs indentados abaixo sem click.
   - Expanded "Dados do evento": tabela item-a-item (produto principal + cada OB com valor) + caixa "Total consolidado despachado".
@@ -75,7 +91,7 @@
 
 **Playwright MCP**: não carrega em algumas sessões. Matar processo: `pkill -f "user-data-dir=/Users/tiagomenna/Library/Caches/ms-playwright/mcp-chrome-1ead15c"`. Se não resolver, zerar contexto.
 
-**Edge prod**: deploy atual **`11d94a7c`** (dashboard + upsert fix + backfill endpoint).
+**Edge prod**: deploy atual **`680f729c`** (IC server-side, 2026-05-12).
 
 ### Onde começar a próxima sessão
 
@@ -231,7 +247,7 @@ Tracking: criar issue futura quando o assunto voltar.
 ### Bloqueios e TODOs de código
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07** — TODO Sprint 16. 6 specs faltando:
-  1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_buy_workshop`/`click_buy_main` → `InitiateCheckout`, `custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`).
+  1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`). **Nota**: `click_buy_*` removidos do mapper em 2026-05-12 (commit `1700514`) — não testar mais mapeamento deles para IC.
   2. `tests/unit/dispatchers/ga4-mp/mapper.test.ts` — `begin_checkout`, `join_group`, `view_item` + `params.group_id` extraído de `cd.group_id` ou `cd.campaign_id`.
   3. `tests/unit/dispatchers/ga4-mp/client-id-resolver.test.ts` — `extractClientIdFromGaCookie` parse de `GA1.1.<n>.<n>`.
   4. `tests/unit/lib/raw-events-processor.test.ts` — `UserDataSchema` aceita `_ga`/`fvid` nullish e rejeita keys desconhecidas (`.strict`).
