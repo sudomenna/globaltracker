@@ -99,7 +99,7 @@ function fmtCount(n: number): string {
 // ─── Period selector ──────────────────────────────────────────────────────────
 
 const PERIODS = [
-  { value: 'today', label: '24h' },
+  { value: 'today', label: 'Hoje' },
   { value: '7d', label: '7 dias' },
   { value: '30d', label: '30 dias' },
 ] as const;
@@ -380,7 +380,13 @@ export default function DashboardPage() {
               <KpiCard
                 title="Investimento"
                 value={fmtCurrency(stats.spend)}
-                sub={stats.avg_daily_spend != null ? `${fmtCurrency(stats.avg_daily_spend)}/dia` : 'Sem dados de custo'}
+                sub={
+                  period === 'today'
+                    ? stats.spend > 0 ? 'Hoje' : 'Sem dados de custo'
+                    : stats.avg_daily_spend != null
+                      ? `${fmtCurrency(stats.avg_daily_spend)}/dia`
+                      : 'Sem dados de custo'
+                }
               />
               <KpiCard
                 title="Ticket médio"

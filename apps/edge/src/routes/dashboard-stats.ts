@@ -102,7 +102,14 @@ export type DashboardStatsResponse = {
 function periodToCutoff(period: string): Date {
   const now = new Date();
   if (period === 'today') {
-    return new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    // Start of today in BRT (UTC-3): midnight BRT = 03:00 UTC
+    const brtNow = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+    return new Date(Date.UTC(
+      brtNow.getUTCFullYear(),
+      brtNow.getUTCMonth(),
+      brtNow.getUTCDate(),
+      3, 0, 0, 0,
+    ));
   }
   if (period === '30d') {
     const d = new Date(now);
