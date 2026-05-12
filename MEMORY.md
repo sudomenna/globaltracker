@@ -10,17 +10,27 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: cart_abandonment pipeline fix + IC consolidation — deployado (2026-05-12, version `b0b8c0e5`).
-- **Branch**: `main`. Commits pendentes de push (12+ commits à frente de `origin/main`):
-  - `3b257cc` chore(maintenance): add replay-cart-abandonment script ← **novo (sessão 2)**
-  - `9c6f804` fix(onprofit): enqueue cart_abandonment events + suppress when PAID ← **novo**
-  - `183eaf1` feat(ic): consolida valor IC por transaction_group_id (mesmo padrão Purchase) ← **novo**
-  - `31029d6` fix(dashboard): period hoje usa meia-noite BRT em vez de janela rolante 24h ← **novo**
-  - `2964743` chore(memory) + `1700514` feat(ic) + anteriores
-- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`b0b8c0e5`** (cart_abandonment fix, 2026-05-12 sessão 2). Comando: **`pnpm deploy:edge`**.
+- **Sprint ativo**: manutenção + melhorias Meta CAPI — deployado (2026-05-12 sessão 3, version `6dbb2223`).
+- **Branch**: `main`. Commits pendentes de push (13+ commits à frente de `origin/main`):
+  - `731f74a` feat(meta-capi): add event_source_url to CAPI payload ← **novo (sessão 3)**
+  - `3b257cc` chore(maintenance): add replay-cart-abandonment script
+  - `9c6f804` fix(onprofit): enqueue cart_abandonment events + suppress when PAID
+  - `183eaf1` feat(ic): consolida valor IC por transaction_group_id
+  - `31029d6` fix(dashboard): period hoje usa meia-noite BRT
+  - anteriores
+- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Explorar quando voltar à IDE do cockpit.
+- **Edge prod**: deploy atual **`6dbb2223`** (event_source_url Meta CAPI, 2026-05-12 sessão 3). Comando: **`pnpm deploy:edge`**.
 
-### Entregas 2026-05-12 sessão 2 (esta sessão)
+### Entregas 2026-05-12 sessão 3 (esta sessão)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 1 | **Verificação**: 32 raw_events cart_abandonment confirmados `processed`. 5 `failed` pré-fix com payload sem email — não recuperáveis, descartados | — | — |
+| 2 | **Meta CAPI `event_source_url`**: adicionado ao mapper e ao `buildMetaCapiDispatchFn`. Prioridade: `event.pageId` → lookup direto da page URL; fallback: primeira `role='sales'` com URL não-nula do launch. Query params stripados. DEBT documentada para múltiplas sales pages | `731f74a` | `6dbb2223` |
+
+---
+
+### Entregas 2026-05-12 sessão 2
 
 | # | Tema | Commit | Deploy |
 |---|---|---|---|
