@@ -10,17 +10,45 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: InitiateCheckout server-side — deployado (2026-05-12, version `680f729c`).
-- **Branch**: `main`. Commits pendentes de push (8+ commits à frente de `origin/main`):
-  - `1700514` feat(ic): InitiateCheckout server-side apenas via webhook ← **novo (2026-05-12)**
-  - `28859ea` feat(jornada): background colorido por tipo de evento nos cards
-  - `2646ae5` feat(jornada): agrupa Purchase OnProfit com order bumps na timeline
-  - `3242f77` feat(onprofit): consolidated Purchase dispatch com order bumps (Waves 1–8)
-  - `a523991` + anteriores: doc-sync + ADR-043 + BR-TRACKER-002 + FLOW-11 + contatos UX
+- **Sprint ativo**: cart_abandonment pipeline fix + IC consolidation — deployado (2026-05-12, version `b0b8c0e5`).
+- **Branch**: `main`. Commits pendentes de push (12+ commits à frente de `origin/main`):
+  - `3b257cc` chore(maintenance): add replay-cart-abandonment script ← **novo (sessão 2)**
+  - `9c6f804` fix(onprofit): enqueue cart_abandonment events + suppress when PAID ← **novo**
+  - `183eaf1` feat(ic): consolida valor IC por transaction_group_id (mesmo padrão Purchase) ← **novo**
+  - `31029d6` fix(dashboard): period hoje usa meia-noite BRT em vez de janela rolante 24h ← **novo**
+  - `2964743` chore(memory) + `1700514` feat(ic) + anteriores
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 (packages/traffic-db + apps/traffic-cockpit + /v1/traffic/health) + TC-2 (computeHealth, campaigns endpoint, tela React). Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`680f729c`** (IC server-side). Comando: **`pnpm deploy:edge`**.
+- **Edge prod**: deploy atual **`b0b8c0e5`** (cart_abandonment fix, 2026-05-12 sessão 2). Comando: **`pnpm deploy:edge`**.
 
-### Entregas 2026-05-12 (esta sessão)
+### Entregas 2026-05-12 sessão 2 (esta sessão)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 1 | Dashboard "Hoje" usa meia-noite BRT em vez de janela rolante 24h. Label "24h" → "Hoje". Sub-text Investimento: "Hoje" em vez de `R$/dia` no período hoje | `31029d6` | `b0b8c0e5` |
+| 2 | IC consolidation: `aggregatePurchaseValueByGroup` estendido com `eventName` param — agora agrupa InitiateCheckout da mesma compra além de Purchase | `183eaf1` | `b0b8c0e5` |
+| 3 | IC consolidation nos 4 dispatchers (Meta CAPI, GA4, GAds conv, Enhanced) — condição `eventName === 'Purchase' OR eventName === 'InitiateCheckout'` | `183eaf1` | `b0b8c0e5` |
+| 4 | Timeline UI (`journey-tab.tsx`): `mergePurchaseGroups` agrupa também InitiateCheckout com `GROUPABLE_EVENT_NAMES = Set(['Purchase','InitiateCheckout'])`. Group key = `${tgId}:${name}` separa os dois tipos | `183eaf1` | — |
+| 5 | **BUG FIX**: `handleCartAbandonment` nunca chamava `QUEUE_EVENTS.send()` — 32 raw_events ficaram presos como `failed`. Fix: `.returning({id})` + `QUEUE_EVENTS.send({ platform:'onprofit' })` | `9c6f804` | `b0b8c0e5` |
+| 6 | **Suppression**: dispatch de cart_abandonment suprimido quando Purchase existe para mesmo `email_hash` + `launch_id` nos últimos 6h. Insere como `discarded/suppressed_by_purchase`. Cobre 3 casos observados de CA pós-PAID (27–125 min) | `9c6f804` | `b0b8c0e5` |
+| 7 | **Replay**: 32 raw_events (status `failed`) do cart_abandonment re-enfileirados via CF Queue REST API com `platform:'onprofit'` — processados por `processOnprofitRawEvent` (não genérico). Script: `scripts/maintenance/replay-cart-abandonment.ts` | `3b257cc` | — (script) |
+
+**Cart abandonment fix — resumo técnico**:
+- **Causa raiz**: `handleCartAbandonment` não enfileirava com `platform:'onprofit'` → outbox poller enfileirava sem `platform` → consumer caía no `processRawEvent` genérico → Zod validation error em `event_id/event_name/event_time` (ausentes no payload OnProfit).
+- **Supressão**: `leadAliases JOIN events` por `identifier_type='email_hash'` + `event_name='Purchase'` + `event_time > now()-6h`. Não bloqueia CA sem PAID prévio.
+- **32 replays**: todos em launch `d0a4e10e` (wkshop-cs-jun26). Sem migration necessária.
+
+**IC server-side ativo**:
+- Guru `waiting_payment` (PIX/boleto) → `InitiateCheckout` ✓
+- Guru `abandoned` (carrinho abandonado) → `InitiateCheckout` ✓
+- OnProfit `WAITING` (PIX/boleto/cada OB) → `InitiateCheckout` ✓ (cada webhook = event_id único, agrega value)
+- OnProfit `cart_abandonment` → `InitiateCheckout` ✓ (agora enfileira corretamente + suprime se PAID)
+- **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
+- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas. **Sem migration nova** nesta sessão.
+- **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
+- **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
+- **Match score Meta CAPI**: 7/8 → **8/8 alcançável** (validado: 15 Purchases em score 8 nos últimos 7 dias).
+
+### Entregas 2026-05-12 sessão 1
 
 | # | Tema | Commit | Deploy |
 |---|---|---|---|
@@ -28,22 +56,9 @@
 | 2 | `custom:click_buy_workshop` + `custom:click_buy_main` → `INTERNAL_ONLY_EVENT_NAMES` — não geram mais `dispatch_jobs` para nenhum destino | `1700514` | `680f729c` |
 | 3 | Mappers Meta CAPI + GA4 limpos (entradas click_buy_* removidas) | `1700514` | `680f729c` |
 | 4 | Docs: `00-event-name-mapping.md` + `13-digitalmanager-guru-webhook.md` atualizados | `1700514` | — |
+| 5 | Dashboard home CP (`page.tsx`) + `GET /v1/dashboard/stats` | anterior | `11d94a7c` |
 
 **Impacto esperado no Event Manager Meta**: count de IC cai (191 → apenas ICs com origem real em webhook), coverage de em/ph/fn/ln sobe de 17.56% → próximo de 100%.
-
-**IC server-side ativo**:
-- Guru `waiting_payment` (PIX/boleto) → `InitiateCheckout` ✓ novo
-- Guru `abandoned` (carrinho abandonado) → `InitiateCheckout` ✓ existente
-- OnProfit `WAITING` (PIX/boleto) → `InitiateCheckout` ✓ existente
-- **Jornada UX — novidades desta sessão**:
-  - Purchase OnProfit com `transaction_group_id` compartilhado → agrupados em 1 card: produto principal visível + OBs indentados abaixo sem click.
-  - Expanded "Dados do evento": tabela item-a-item (produto principal + cada OB com valor) + caixa "Total consolidado despachado".
-  - Cards com background colorido por tipo: Purchase=emerald-50, Lead=blue-50, LeadIdentify=violet-50, PageView=slate-50, InitiateCheckout=amber-50, ViewContent=sky-50, demais=gray-50.
-- **CDN tracker.js**: R2 `gt-tracker-cdn` etag `991734d4`, 9466 bytes (race fix).
-- **DB Supabase**: `kaxcmhfaqrxwnpftkslj` (sa-east-1, org CNE Ltda). Migrations 0000–**0050** aplicadas. **Sem migration nova** nas Waves 1–8 (tudo em custom_data JSONB livre + SQL seeds + UPDATE blueprint).
-- **Cloudflare plan**: Workers Paid ativo desde 2026-05-09 17:05 UTC ($5/mês). KV quota agora mensal (~1M writes/mês), não daily. Padrão canônico (ADR-040): TODO `kv.put()` é best-effort.
-- **DEV_WORKSPACE**: `74860330-a528-4951-bf49-90f0b5c72521` (Outsiders Digital → slug=`outsiders`).
-- **Match score Meta CAPI**: 7/8 → **8/8 alcançável** (validado: 15 Purchases em score 8 nos últimos 7 dias).
 
 ### OnProfit Consolidated Dispatch — o que foi entregue (2026-05-10, Waves 1–8)
 
@@ -95,7 +110,16 @@
 
 ### Onde começar a próxima sessão
 
-**Push pendente**: `git push origin main` — 7 commits locais à frente de `origin/main`. Nenhum bloqueio, push pode ocorrer quando quiser.
+**Push pendente**: `git push origin main` — 12+ commits locais à frente de `origin/main`. Nenhum bloqueio, push pode ocorrer quando quiser.
+
+**Verificar replay**: confirmar que os 32 raw_events de cart_abandonment (replayed 2026-05-12) foram processados:
+```sql
+SELECT processing_status, COUNT(*) FROM raw_events
+WHERE payload->>'_onprofit_event_type'='InitiateCheckout'
+  AND payload->>'status'='CART_ABANDONED'
+GROUP BY processing_status;
+-- Esperado: 32 'processed' (ou mix processed+discarded para os 3 com PAID prévio)
+```
 
 **Pendências críticas restantes**: TODAS resolvidas. Nenhum P0 aberto.
 
