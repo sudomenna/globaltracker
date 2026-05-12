@@ -41,7 +41,7 @@ import {
   rawEvents,
   workspaces,
 } from '@globaltracker/db';
-import { and, desc, eq, lt, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
@@ -1158,6 +1158,52 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
       launchConfig = (launch?.config as typeof launchConfig) ?? null;
     }
 
+    // 3b. Resolve event_source_url for Meta CAPI.
+    // Priority: event.pageId (exact page) → first sales page with URL (launch fallback).
+    // Query params are stripped — Meta expects a clean URL.
+    //
+    // DEBT: when a launch has multiple sales pages (e.g. main offer + downsell),
+    // webhook events (Purchase) land here with pageId=null and always get the
+    // first sales page URL. Fix: propagate page_id through the webhook processor
+    // using the offer's associated page, or store a default page per launch role.
+    let eventSourceUrl: string | null = null;
+    {
+      let rawUrl: string | null = null;
+
+      if (event.pageId) {
+        const [pg] = await db
+          .select({ url: pages.url })
+          .from(pages)
+          .where(and(eq(pages.id, event.pageId), isNotNull(pages.url)))
+          .limit(1);
+        rawUrl = pg?.url ?? null;
+      }
+
+      if (!rawUrl && event.launchId) {
+        const [pg] = await db
+          .select({ url: pages.url })
+          .from(pages)
+          .where(
+            and(
+              eq(pages.launchId, event.launchId),
+              eq(pages.role, 'sales'),
+              isNotNull(pages.url),
+            ),
+          )
+          .limit(1);
+        rawUrl = pg?.url ?? null;
+      }
+
+      if (rawUrl) {
+        try {
+          const u = new URL(rawUrl);
+          eventSourceUrl = `${u.origin}${u.pathname}`;
+        } catch {
+          // malformed URL stored in pages.url — skip
+        }
+      }
+    }
+
     // T-13-013: rows pré-deploy ed9a490d têm event.userData / event.consentSnapshot
     // como string (jsonb-string bug). Parse defensivo aceita string OU object.
     const parseUd = (raw: unknown): Record<string, unknown> => {
@@ -1396,6 +1442,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
         custom_data: parsedCustomData as Parameters<
           typeof mapEventToMetaPayload
         >[0]['custom_data'],
+        event_source_url: eventSourceUrl,
       },
       lead
         ? {

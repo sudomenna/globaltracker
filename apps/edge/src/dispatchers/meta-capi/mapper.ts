@@ -35,6 +35,8 @@ export interface DispatchableEvent {
     country?: string | null;
   } | null;
   custom_data?: Record<string, unknown> | null;
+  /** Clean page URL (no query params) for Meta event_source_url. */
+  event_source_url?: string | null;
 }
 
 /** Minimal shape of a lead row as consumed by this dispatcher. */
@@ -110,6 +112,8 @@ export interface MetaCapiPayload {
   event_id: string;
   user_data: MetaUserData;
   custom_data?: MetaCustomData;
+  /** URL of the page where the event originated (no query params). */
+  event_source_url?: string;
   /** Optional — only present in dev/test with META_CAPI_TEST_EVENT_CODE. */
   test_event_code?: string;
 }
@@ -245,6 +249,10 @@ export function mapEventToMetaPayload(
 
   if (customData !== null) {
     payload.custom_data = customData;
+  }
+
+  if (event.event_source_url) {
+    payload.event_source_url = event.event_source_url;
   }
 
   // Append test_event_code when running in dev/test mode.
