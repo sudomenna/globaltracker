@@ -435,6 +435,9 @@ const PURCHASE_EVENT_NAMES = new Set(['Purchase']);
  */
 const INTERNAL_ONLY_EVENT_NAMES = new Set([
   'lead_identify',
+  // Click intent events — purely internal funnel signals; IC server-side via webhook.
+  'custom:click_buy_workshop',
+  'custom:click_buy_main',
   'event_duplicate_accepted',
 ]);
 

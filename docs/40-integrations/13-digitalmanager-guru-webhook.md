@@ -11,7 +11,8 @@ Receber notificações de transações, assinaturas e e-tickets do Digital Manag
 | `transaction` | `refunded` | `RefundProcessed` | `sha256("guru:transaction:" + id + ":refunded")[:32]` |
 | `transaction` | `chargedback` | `Chargeback` | `sha256("guru:transaction:" + id + ":chargedback")[:32]` |
 | `transaction` | `canceled` | `OrderCanceled` | `sha256("guru:transaction:" + id + ":canceled")[:32]` |
-| `transaction` | `abandoned` | `InitiateCheckout` | `sha256("guru:transaction:" + id + ":abandoned")[:32]` |
+| `transaction` | `waiting_payment` | `InitiateCheckout` (PIX gerado / boleto emitido) | `sha256("guru:transaction:" + id + ":waiting_payment")[:32]` |
+| `transaction` | `abandoned` | `InitiateCheckout` (checkout abandonado) | `sha256("guru:transaction:" + id + ":abandoned")[:32]` |
 | `subscription` | `active` | `SubscriptionActivated` | `sha256("guru:subscription:" + id + ":active")[:32]` |
 | `subscription` | `canceled` | `SubscriptionCanceled` | `sha256("guru:subscription:" + id + ":canceled")[:32]` |
 | `eticket` | qualquer | *(Fase 4+, ignorar por ora)* | — |
@@ -161,7 +162,7 @@ confirmed_at → ordered_at → created_at (last resort)
 
 // MapResult é uma union de três variantes:
 //   { ok: true; value: InternalEvent }
-//   { ok: false; skip: true; reason: string }          — status ignorável (waiting_payment, expired, overdue)
+//   { ok: false; skip: true; reason: string }          — status ignorável (expired, overdue)
 //   { ok: false; skip?: false; error: MappingError }   — erro real (campo ausente, status desconhecido)
 
 mapGuruTransactionToInternal(payload: GuruTransactionPayload): Promise<MapResult>
@@ -240,7 +241,7 @@ Para `subscription`: `id` = campo `id` da assinatura (ex: `sub_BOAEj2WTKoclmg4X`
 | `chargedback` | Processar como `Chargeback` |
 | `canceled` | Processar como `OrderCanceled` |
 | `abandoned` | Processar como `InitiateCheckout` (recuperação de checkout iniciado e não finalizado — Sprint 14, T-RECOVERY-001) |
-| `waiting_payment` | Ignorar (pedido pendente) |
+| `waiting_payment` | Processar como `InitiateCheckout` (PIX gerado / boleto emitido) |
 | `expired` | Ignorar |
 | outros | DLQ com `processing_status='failed'` |
 

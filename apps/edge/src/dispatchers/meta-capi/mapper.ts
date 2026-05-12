@@ -150,8 +150,9 @@ const INTERNAL_TO_META_EVENT_NAME: Record<string, string> = {
   'custom:click_wpp_join': 'Contact',
   'custom:wpp_joined': 'Contact',
   'custom:wpp_joined_vip_main': 'Contact',
-  'custom:click_buy_workshop': 'InitiateCheckout',
-  'custom:click_buy_main': 'InitiateCheckout',
+  // custom:click_buy_* removed — click intent events are INTERNAL_ONLY in raw-events-processor;
+  // InitiateCheckout now comes exclusively from server-side webhooks (Guru waiting_payment/abandoned,
+  // OnProfit WAITING) with full PII coverage.
   'custom:watched_workshop': 'ViewContent',
 };
 

@@ -157,8 +157,7 @@ const INTERNAL_TO_GA4_EVENT_NAME: Record<string, string | null> = {
   'custom:click_wpp_join': 'join_group',
   'custom:wpp_joined': 'join_group',
   'custom:wpp_joined_vip_main': 'join_group',
-  'custom:click_buy_workshop': 'begin_checkout',
-  'custom:click_buy_main': 'begin_checkout',
+  // custom:click_buy_* removed — INTERNAL_ONLY events; begin_checkout comes from server-side webhooks.
   'custom:watched_workshop': 'view_item',
 };
 

@@ -58,14 +58,16 @@ e o snippet browser dispara `fbq` com o mesmo nome standard.
 
 | Interno (tracker) | Meta (CAPI + Pixel) | GA4 MP | Origem | Stage típico |
 |---|---|---|---|---|
-| `custom:click_buy_workshop` | `InitiateCheckout` | `begin_checkout` | Click CTA "comprar workshop" | `clicked_buy_workshop` |
-| `custom:click_buy_main` | `InitiateCheckout` | `begin_checkout` | Click CTA "comprar oferta principal" | `clicked_buy_main` |
+| `custom:click_buy_workshop` | *(internal-only — não despachado)* | *(internal-only)* | Click CTA "comprar workshop" | `clicked_buy_workshop` |
+| `custom:click_buy_main` | *(internal-only — não despachado)* | *(internal-only)* | Click CTA "comprar oferta principal" | `clicked_buy_main` |
 | `custom:click_wpp_join` | `Contact` | `join_group` | Click no link "entrar no grupo WhatsApp" | `clicked_wpp_join` |
 | `custom:wpp_joined` | `Contact` | `join_group` | Webhook SendFlow `members.added` (compradores) | `wpp_joined` |
 | `custom:wpp_joined_vip_main` | `Contact` | `join_group` | Webhook SendFlow `members.added` (grupo VIP) | `wpp_joined_vip_main` |
 | `custom:wpp_left` | *(blocklist — analítico interno)* | *(blocklist)* | Webhook SendFlow `members.removed` | *(sem stage)* |
 | `custom:watched_workshop` | `ViewContent` | `view_item` | Click "já assisti" na aula gravada | `watched_workshop` |
 | `custom:survey_responded` | *(sem mapeamento)* | *(sem mapeamento)* | Submit do formulário de pesquisa pós-workshop | `survey_responded` |
+
+> **`custom:click_buy_*` são INTERNAL_ONLY** — registrados em `events` para análise de funil (stage `clicked_buy_*`) mas não geram `dispatch_jobs`. `InitiateCheckout` é produzido exclusivamente pelo lado do servidor via webhooks de plataformas de pagamento (Guru `waiting_payment`/`abandoned`, OnProfit `WAITING`), garantindo cobertura de PII completa (email/phone do comprador).
 
 ### Como adicionar um novo custom event
 

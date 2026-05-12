@@ -104,8 +104,7 @@ export type MappingError =
   | { code: 'invalid_payload'; reason: string };
 
 /**
- * Skip result — returned for statuses that are deliberately ignored
- * (waiting_payment, expired, overdue).
+ * Skip result — returned for statuses that are deliberately ignored (expired, overdue).
  * BR-WEBHOOK-003: these do NOT become failed raw_events; the handler
  * returns 202 without inserting anything.
  */
@@ -152,7 +151,7 @@ export async function deriveGuruEventId(
 /**
  * Maps a Guru `transaction` webhook payload to an internal event.
  *
- * BR-WEBHOOK-003: waiting_payment and expired return skip result.
+ * BR-WEBHOOK-003: expired returns skip result; waiting_payment → InitiateCheckout (server-side IC).
  * BR-WEBHOOK-004: lead_hints populated in priority order.
  * BR-PRIVACY-001: PII fields passed as raw strings for processor to hash.
  */
@@ -176,7 +175,7 @@ export async function mapGuruTransactionToInternal(
   const status = payload.status;
 
   // BR-WEBHOOK-003: explicitly skippable statuses — do not insert raw_event
-  if (status === 'waiting_payment' || status === 'expired') {
+  if (status === 'expired') {
     return {
       ok: false,
       skip: true,
@@ -199,9 +198,12 @@ export async function mapGuruTransactionToInternal(
     case 'canceled':
       event_type = 'OrderCanceled';
       break;
-    // BR-WEBHOOK-003: abandoned = checkout started but not completed → InitiateCheckout
-    // Conforms to CartAbandonmentInternalEvent canonical contract (shared/cart-abandonment.ts).
-    // amount = payment.total / 100 (intended offer price, not confirmed payment).
+    // waiting_payment = PIX gerado ou boleto emitido — comprador entrou no checkout
+    // mas ainda não pagou. Tem PII completo (email/phone de contact). Server-side IC.
+    case 'waiting_payment':
+      event_type = 'InitiateCheckout';
+      break;
+    // abandoned = checkout iniciado mas não completado — CartAbandonmentInternalEvent.
     case 'abandoned':
       event_type = 'InitiateCheckout';
       break;
