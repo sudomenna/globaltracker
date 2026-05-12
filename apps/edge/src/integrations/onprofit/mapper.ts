@@ -426,19 +426,14 @@ export async function mapOnProfitToInternal(
   const event_type = resolved;
   const orderId = String(payload.id);
 
-  // BR-WEBHOOK-002: deterministic event_id.
-  // For InitiateCheckout (WAITING): use offer_hash+email so that all order-bump
-  // webhooks from the same checkout session share one event_id — same dedup
-  // strategy as cart_abandonment. Falls back to orderId+status when offer_hash
-  // is absent (no order bumps, or OnProfit omits the field).
-  const event_id =
-    event_type === 'InitiateCheckout' && payload.offer_hash
-      ? await deriveOnProfitCartAbandonmentEventId(
-          payload.id,
-          payload.offer_hash,
-          payload.customer.email,
-        )
-      : await deriveOnProfitEventId(orderId, payload.status);
+  // BR-WEBHOOK-002: deterministic event_id — unique per webhook (orderId+status).
+  // Both Purchase and InitiateCheckout (WAITING) fan out as N webhooks per
+  // checkout (1 main + N order_bumps). Each gets its own event row; the
+  // dispatcher consolidates value via transaction_group_id and skips OB
+  // dispatch (BR-DISPATCH-007). Previous cart_abandonment dedup collapsed all
+  // WAITINGs into one event with the first webhook's value (main only),
+  // under-reporting potential checkout value to Meta/GA4.
+  const event_id = await deriveOnProfitEventId(orderId, payload.status);
 
   // Prefer confirmation_purchase_date for PAID/AUTHORIZED; fall back to purchase_date
   // for WAITING (no confirmation yet) and as last resort to "now".

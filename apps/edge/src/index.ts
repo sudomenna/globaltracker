@@ -1204,7 +1204,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           : 0;
 
       if (
-        event.eventName === 'Purchase' &&
+        (event.eventName === 'Purchase' || event.eventName === 'InitiateCheckout') &&
         tgid &&
         (itemType === 'product' || itemType === null)
       ) {
@@ -1212,6 +1212,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
           db,
           workspaceId: event.workspaceId,
           transactionGroupId: tgid,
+          eventName: event.eventName,
           currentEventAmount: currentAmount,
         });
 
@@ -1223,6 +1224,7 @@ function buildMetaCapiDispatchFn(env: Bindings, db: Db): DispatchFn {
             event: 'meta_capi_value_aggregated',
             dispatch_job_id: job.id,
             transaction_group_id: tgid,
+            event_name: event.eventName,
             event_count_in_group: agg.eventCount,
             aggregated_amount: agg.aggregatedAmount,
             original_event_amount: currentAmount,
@@ -1680,7 +1682,7 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
           ? ga4ParsedCustomData.amount
           : 0;
       if (
-        event.eventName === 'Purchase' &&
+        (event.eventName === 'Purchase' || event.eventName === 'InitiateCheckout') &&
         tgid &&
         (itemType === 'product' || itemType === null)
       ) {
@@ -1688,6 +1690,7 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
           db,
           workspaceId: event.workspaceId,
           transactionGroupId: tgid,
+          eventName: event.eventName,
           currentEventAmount: currentAmount,
         });
         if (agg.isAggregated) {
@@ -1696,6 +1699,7 @@ function buildGa4DispatchFn(env: Bindings, db: Db): DispatchFn {
             event: 'ga4_value_aggregated',
             dispatch_job_id: job.id,
             transaction_group_id: tgid,
+            event_name: event.eventName,
             event_count_in_group: agg.eventCount,
             aggregated_amount: agg.aggregatedAmount,
           });
@@ -1917,7 +1921,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           ? gadsConvParsedCustomData.amount
           : 0;
       if (
-        event.eventName === 'Purchase' &&
+        (event.eventName === 'Purchase' || event.eventName === 'InitiateCheckout') &&
         tgid &&
         (itemType === 'product' || itemType === null)
       ) {
@@ -1925,6 +1929,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           db,
           workspaceId: event.workspaceId,
           transactionGroupId: tgid,
+          eventName: event.eventName,
           currentEventAmount: currentAmount,
         });
         if (agg.isAggregated) {
@@ -1933,6 +1938,7 @@ function buildGoogleAdsConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
             event: 'gads_conversion_value_aggregated',
             dispatch_job_id: job.id,
             transaction_group_id: tgid,
+            event_name: event.eventName,
             event_count_in_group: agg.eventCount,
             aggregated_amount: agg.aggregatedAmount,
           });
@@ -2111,7 +2117,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           ? enhParsedCustomData.amount
           : 0;
       if (
-        event.eventName === 'Purchase' &&
+        (event.eventName === 'Purchase' || event.eventName === 'InitiateCheckout') &&
         tgid &&
         (itemType === 'product' || itemType === null)
       ) {
@@ -2119,6 +2125,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
           db,
           workspaceId: event.workspaceId,
           transactionGroupId: tgid,
+          eventName: event.eventName,
           currentEventAmount: currentAmount,
         });
         if (agg.isAggregated) {
@@ -2127,6 +2134,7 @@ function buildEnhancedConversionDispatchFn(env: Bindings, db: Db): DispatchFn {
             event: 'enhanced_conversion_value_aggregated',
             dispatch_job_id: job.id,
             transaction_group_id: tgid,
+            event_name: event.eventName,
             event_count_in_group: agg.eventCount,
             aggregated_amount: agg.aggregatedAmount,
           });

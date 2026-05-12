@@ -162,10 +162,16 @@ function groupNodes(nodes: TimelineNode[]): GroupedItem[] {
 }
 
 /**
- * Agrupa eventos Purchase do OnProfit que compartilham o mesmo
- * transaction_group_id. Apenas webhook:onprofit com transaction_group_id
- * não-nulo são elegíveis — Guru e demais sources ficam intocados.
+ * Agrupa eventos Purchase ou InitiateCheckout do OnProfit que compartilham o
+ * mesmo transaction_group_id + event_name. Apenas webhook:onprofit com
+ * transaction_group_id não-nulo são elegíveis — Guru e demais sources ficam
+ * intocados.
+ *
+ * Group key = `${transaction_group_id}:${event_name}` — separa Purchase e
+ * InitiateCheckout mesmo quando coincidem no mesmo bucket de 5min.
  */
+const GROUPABLE_EVENT_NAMES = new Set(['Purchase', 'InitiateCheckout']);
+
 function mergePurchaseGroups(items: GroupedItem[]): TimelineItem[] {
   const grouped = new Map<string, EventItem[]>();
 
@@ -175,10 +181,11 @@ function mergePurchaseGroups(items: GroupedItem[]): TimelineItem[] {
     const tgId = cd?.transaction_group_id as string | undefined;
     const source = item.event.payload.event_source as string | undefined;
     const name = item.event.payload.event_name as string | undefined;
-    if (tgId && source === 'webhook:onprofit' && name === 'Purchase') {
-      const bucket = grouped.get(tgId) ?? [];
+    if (tgId && source === 'webhook:onprofit' && name && GROUPABLE_EVENT_NAMES.has(name)) {
+      const groupKey = `${tgId}:${name}`;
+      const bucket = grouped.get(groupKey) ?? [];
       bucket.push(item);
-      grouped.set(tgId, bucket);
+      grouped.set(groupKey, bucket);
     }
   }
 
@@ -202,15 +209,17 @@ function mergePurchaseGroups(items: GroupedItem[]): TimelineItem[] {
     }
     const cd = item.event.payload.custom_data as Record<string, unknown> | undefined;
     const tgId = cd?.transaction_group_id as string;
+    const name = item.event.payload.event_name as string;
+    const groupKey = `${tgId}:${name}`;
     // Só insere o grupo na primeira ocorrência (primary = item_type 'product')
-    if (!result.some((r) => r.kind === 'purchase_group' && r.key === `pg-${tgId}`)) {
-      const bucket = toMerge.get(tgId)!;
+    if (!result.some((r) => r.kind === 'purchase_group' && r.key === `pg-${groupKey}`)) {
+      const bucket = toMerge.get(groupKey)!;
       const primary = (bucket.find((it) => {
         const c = it.event.payload.custom_data as Record<string, unknown> | undefined;
         return (c?.item_type as string | undefined) !== 'order_bump';
       }) ?? bucket[0]) as EventItem;
       const orderBumps = bucket.filter((it) => it.key !== primary.key);
-      result.push({ kind: 'purchase_group', key: `pg-${tgId}`, primary, orderBumps });
+      result.push({ kind: 'purchase_group', key: `pg-${groupKey}`, primary, orderBumps });
     }
   }
   return result;

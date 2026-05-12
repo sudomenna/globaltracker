@@ -29,18 +29,23 @@ export type AggregateResult = {
 
 /**
  * Soma `custom_data.amount` de todos os events com mesmo
- * (workspace_id, transaction_group_id, event_name='Purchase').
+ * (workspace_id, transaction_group_id, event_name).
  *
  * Quando `transactionGroupId` é null/empty ou nenhum event é encontrado,
  * retorna `currentEventAmount` (degrada graciosamente — nunca falha o dispatch).
  *
- * BR-DISPATCH-007: agregação por transaction_group_id consolida ROAS.
+ * Aplica-se a Purchase e InitiateCheckout (ambos fan-out N webhooks por
+ * checkout via OnProfit — 1 main + N order_bumps).
+ *
+ * BR-DISPATCH-007: agregação por transaction_group_id consolida ROAS / IC value.
  * BR-PRIVACY-001: nenhum log de PII; apenas IDs internos e contadores.
  */
 export async function aggregatePurchaseValueByGroup(args: {
   db: Db;
   workspaceId: string;
   transactionGroupId: string | null | undefined;
+  /** Nome do evento canônico — 'Purchase' ou 'InitiateCheckout'. */
+  eventName: string;
   /** Valor do event corrente — usado como fallback. */
   currentEventAmount: number;
 }): Promise<AggregateResult> {
@@ -71,7 +76,7 @@ export async function aggregatePurchaseValueByGroup(args: {
       .where(
         and(
           eq(events.workspaceId, args.workspaceId),
-          eq(events.eventName, 'Purchase'),
+          eq(events.eventName, args.eventName),
           sql`(${events.customData} ->> 'transaction_group_id') = ${args.transactionGroupId}`,
         ),
       );
