@@ -1492,6 +1492,65 @@ A preocupação histórica ("orphan downstream decryption") era sobre rotação 
 
 ---
 
+## ADR-045 — `event_id` de OnProfit `cart_abandonment` deriva apenas de `id` (não `offer_hash + email`) (2026-05-13)
+
+### Status
+Aceito.
+
+### Contexto
+
+`apps/edge/src/integrations/onprofit/mapper.ts:deriveOnProfitCartAbandonmentEventId` derivava o `event_id` canônico via:
+```
+sha256("onprofit:cart_abandonment:" + offer_hash + ":" + email)[:32]
+```
+com fallback `sha256("onprofit:cart_abandonment:id:" + id)[:32]` quando `offer_hash` estava ausente.
+
+A escolha de `(offer_hash, email)` foi feita assumindo que OnProfit enviaria múltiplos webhooks de cart_abandonment por checkout (um por linha de order bump), e a fórmula consolidaria todos numa única event row.
+
+Auditoria em 2026-05-13 (caso lead "Bruna") revelou:
+
+1. **OnProfit envia 1 webhook por cart**, com order bumps como array inline (`payload.orderbumps: unknown[]`) — confirmado no schema [`integrations/onprofit/types.ts:239`](../../apps/edge/src/integrations/onprofit/types.ts). A consolidação de order bumps acontece naturalmente no nível de payload, sem precisar de dedup por event_id.
+
+2. **A fórmula causa false-positive de dedup** quando o mesmo lead abre múltiplos checkouts da mesma offer em momentos diferentes — todos os carts colidem no mesmo `event_id`, e apenas o primeiro vira event row. Subsequentes são marcados `onprofit_webhook_duplicate_skipped` no processor.
+
+   Caso real: Bruna abandonou cart em 11/05 16:33 UTC e novamente em 12/05 23:51 UTC, mesma offer (`fvOsQjDO`) e mesmo email (`bruna.siagino@gmail.com`). Apenas o de 11/05 virou event row. O de 12/05 atualizou `leads.last_seen_at` (porque side-effects do processor rodam antes da dedup check) mas não criou row — gerando drift de 31h entre `last_seen_at` e `MAX(events.event_time)`.
+
+3. **Auditoria workspace `outsiders`**: 42 cart_abandonment raw_events nos últimos 3 dias, 42 `payload.id` distintos, **zero re-deliveries** com mesmo id. OnProfit não re-envia o mesmo cart — cada cart tem id auto-incremental único.
+
+### Decisão
+
+`event_id` de OnProfit cart_abandonment deriva apenas do `payload.id` (OnProfit cart ID interno, sempre presente per schema):
+```
+event_id = sha256("onprofit:cart_abandonment:" + id)[:32]
+```
+
+Isso é literalmente o caminho de fallback original — agora promovido a caminho principal. `offer_hash` e `email` permanecem disponíveis no payload pra outras finalidades (transaction_group_id, dispatch payload), mas não são mais usados pra derivar dedup key.
+
+### Alternativas consideradas
+
+- **`session`**: campo `payload.session` (sha-like 64-char) também é único por checkout. Pros: mais semântico ("este checkout"). Contras: campo nullable no schema (`session?: string | null`), enquanto `id` é required. Escolhi `id` por robustez.
+- **`(id, session, email)` composto**: defensivo demais. `id` sozinho é suficiente — `id` único garante uniqueness do hash.
+- **Manter formula atual + reordenar processor** (mover dedup check antes dos side-effects): cirurgia mais invasiva, afeta pipeline pra Guru/SendFlow/Hotmart também (cada um com sua semântica de dedup). Custo desproporcional.
+- **Aceitar drift e documentar (Opção D do diagnóstico inicial)**: rejeitado porque há fix simples e cirúrgico disponível.
+
+### Consequências
+
+- (+) Cart abandonments distintos do mesmo (lead, offer) viram event rows distintos — timeline da `/contatos/[id]` reflete cada visita ao checkout.
+- (+) `leads.last_seen_at` deixa de divergir do `MAX(events.event_time)` no caminho cart_abandonment.
+- (+) Continua idempotente contra re-deliveries da plataforma (mesmo `id` → mesmo `event_id`).
+- (+) Order bumps ainda viram 1 event row por cart (continuam inline no payload, comportamento inalterado).
+- (–) Event rows pré-fix (anteriores a este deploy) ficam com `event_id` no formato antigo. Não causa inconsistência operacional (cada row tem seu próprio event_id válido), só inconsistência de formato entre rows antigas e novas — esperado durante migration de fórmula.
+- (–) Cart abandonments dedup-skipados pré-fix (Bruna 12/05, possíveis outros) podem ser recuperados via backfill one-shot: re-derivar event_id com fórmula nova, re-processar via raw-events-processor. Quando aplicável.
+
+### Invariante derivada
+
+Atende BR-WEBHOOK-002 (`event_id = sha256(platform || ':' || platform_event_id)[:32]`) com `platform_event_id = "cart_abandonment:" + id` — mais alinhado com o spirit canônico do que a fórmula composta anterior.
+
+### Impacta
+[`apps/edge/src/integrations/onprofit/mapper.ts`](../../apps/edge/src/integrations/onprofit/mapper.ts), [`tests/unit/integrations/onprofit/mapper.test.ts`](../../tests/unit/integrations/onprofit/mapper.test.ts) (novo), backfill opcional pra cart_abandonments dedup-skipados.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
