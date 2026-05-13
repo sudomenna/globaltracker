@@ -40,10 +40,12 @@ Scenario: aliases em workspaces diferentes não conflitam
 
 Scenario: re-submit com email corrigido marca o anterior como superseded (anti cross-contamination)
   Given lead L ativo com aliases (email_hash=H_typo) + (phone_hash=H_phone)
+        e leads.email_enc = encrypt(plaintext_typo)
   When form submit chega com (email=H_correto, phone=H_phone)
   Then resolver bate por phone, reusa lead L
   And UPDATE lead_aliases SET status='superseded' WHERE lead_id=L AND identifier_type='email_hash' AND status='active'
   And INSERT lead_aliases (email_hash=H_correto, status='active')
+  And UPDATE leads SET email_enc=encrypt(plaintext_correto), email_hash=H_correto (ADR-044 — espelha identifier ativo)
   And visitante futuro digitando exatamente H_typo NÃO é mergeado em L
 ```
 

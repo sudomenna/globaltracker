@@ -1435,6 +1435,63 @@ Quatro call sites corrigidos simultaneamente:
 
 ---
 
+## ADR-044 — `leads.{email,phone,name}_enc` espelham o identifier ativo, não o primeiro capturado (2026-05-13)
+
+### Status
+Aceito.
+
+### Contexto
+
+Auditoria em 2026-05-13 revelou drift entre `leads.email_enc / phone_enc / name_enc` e os aliases ativos do mesmo lead. Em 281 leads ativos do workspace `outsiders`: 7 com `hash(decrypt(email_enc)) ≠ leads.email_hash`, 9 com drift equivalente em phone. Total ~16 leads (5.7%) com inconsistência.
+
+Causa raiz: [`apps/edge/src/lib/pii-enrich.ts`](../../apps/edge/src/lib/pii-enrich.ts) tem UPDATE com cláusula `WHERE … OR isNull(email_enc) OR isNull(phone_enc) OR isNull(name_enc)`. Comentário no código justifica: *"never overwrite existing ciphertexts (would orphan downstream decryption that uses an older `pii_key_version`)"*. O cuidado é legítimo para **rotação de master key** (BR-PRIVACY-004), mas foi aplicado largo demais: bloqueia também o caso de **identifier mudou** (cenário 4 de BR-IDENTITY-001 — re-submit com email corrigido / troca de telefone).
+
+Resultado: após primeira inserção, `*_enc` torna-se efetivamente imutável. Quando o lead troca de email/phone (cenário spec'ado e suportado em `lead_aliases`), `email_hash` é atualizado pelo resolver (INV-IDENTITY-008), mas `email_enc` fica congelado no plaintext original.
+
+Impactos observados:
+- **UI (`/contatos`):** mostra plaintext antigo (decriptado de `email_enc`), confundindo operador que tenta contatar o lead.
+- **DSAR/erasure export:** exporta plaintext antigo, divergindo do `email_hash` que dispatchers usam.
+- **Dispatchers (Meta/Google):** intactos — usam `email_hash` (já correto). Sem impacto externo.
+
+Caso paradigma: lead "Bruna" — registrou em 06/05 com `bruna@sgm.adv.br`, re-submeteu em 11/05 com `bruna.siagino@gmail.com`. `lead_aliases` corretamente superseded o primeiro, ativou o segundo. `leads.email_hash` apontando pro segundo. Mas `leads.email_enc` ainda decripta pro primeiro.
+
+### Decisão
+
+`leads.email_enc / phone_enc / name_enc` **DEVEM** refletir o plaintext do identifier ativo no momento do último write, não o primeiro capturado. Re-encriptar quando o input difere do plaintext atual decriptado (não basta NULL-check).
+
+Algoritmo em `enrichLeadPii`:
+
+1. Se `*_enc` IS NULL → encripta e escreve (comportamento atual mantido).
+2. Se `*_enc` IS NOT NULL → decripta usando `pii_key_version` corrente, compara plaintext com input:
+   - Se igual → noop (idempotente).
+   - Se diferente → encripta o novo input com `pii_key_version` corrente, sobrescreve.
+3. `pii_key_version` é sempre o **atual**, nunca mantém versão antiga ao sobrescrever (mesmo ciclo da rotação canônica BR-PRIVACY-004).
+
+A preocupação histórica ("orphan downstream decryption") era sobre rotação de master key — cenário em que `email_enc` foi escrito com V1 e o sistema migra pra V2. Esse cenário continua **preservado**: cada lead tem `pii_key_version` por row; lazy re-encryption on read continua funcionando. O bug era confundir "preservar versão de chave" com "preservar plaintext antigo", coisas independentes.
+
+### Alternativas consideradas
+
+- **Manter `email_enc` imutável + adicionar coluna histórica `email_enc_history JSONB`**: preserva todos plaintexts capturados. Custo: schema change, complexidade no decrypt path, decriptação O(N) em DSAR. Ganho: nenhum (`lead_aliases` já guarda histórico em forma de hash; raw_events guardam o plaintext fonte). **Rejeitado** — over-engineering.
+- **Apagar `email_enc` quando identifier muda + repopular do raw_event**: viável mas inverte a responsabilidade pra outro lugar. **Rejeitado** — fix mais limpo no próprio `enrichLeadPii`.
+- **UI exibir plaintext do alias ativo (não de `email_enc`)**: resolve UX mas não DSAR e mantém divergência interna. **Rejeitado** — fix de sintoma, não de raiz.
+
+### Consequências
+
+- (+) UI, DSAR, audit log e dispatchers passam a ver a mesma versão do identifier.
+- (+) Comportamento alinha com cenário 4 de BR-IDENTITY-001 que já era spec'ado.
+- (+) `pii_key_version` continua respeitando rotação de master key.
+- (–) Plaintext antigo é perdido em re-write (recuperável de `raw_events.payload` se necessário audit forense; e `lead_aliases` ainda tem o hash do antigo).
+- (–) Cada write em `enrichLeadPii` agora faz 3 decrypts (email/phone/name) antes do compare. Custo médio: ~1-2ms por write — desprezível no caminho da API e webhooks.
+
+### Invariante derivada
+
+**INV-IDENTITY-008** ampliada — ver [`docs/20-domain/04-mod-identity.md`](../../docs/20-domain/04-mod-identity.md). `leads.email_enc / phone_enc / name_enc` passam a ser denormalizações do alias ativo (espelham o identifier corrente), não snapshots imutáveis.
+
+### Impacta
+[`apps/edge/src/lib/pii-enrich.ts`](../../apps/edge/src/lib/pii-enrich.ts), [`docs/50-business-rules/BR-IDENTITY.md`](../../docs/50-business-rules/BR-IDENTITY.md) (BR-IDENTITY-001 cenário 4), [`docs/20-domain/04-mod-identity.md`](../../docs/20-domain/04-mod-identity.md) (INV-IDENTITY-008), [`tests/unit/identity/pii-enrich.test.ts`](../../tests/unit/identity/pii-enrich.test.ts) (novos casos), backfill one-shot pra ~16 leads afetados.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
