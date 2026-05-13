@@ -158,26 +158,33 @@ export async function deriveOnProfitEventId(
 /**
  * Derives a deterministic 32-char hex event_id for cart abandonment events.
  *
- * BR-WEBHOOK-002:
- *   When offer_hash is present: sha256("onprofit:cart_abandonment:" + offer_hash + ":" + email)[:32]
- *   Fallback (no offer_hash):   sha256("onprofit:cart_abandonment:id:" + id)[:32]
+ * BR-WEBHOOK-002 / ADR-045:
+ *   event_id = sha256("onprofit:cart_abandonment:" + id)[:32]
  *
- * Using offer_hash + email as the key ensures that all order-bump cart_abandonment
- * webhooks fired for the same checkout session (which share the same offer_hash
- * and buyer email) produce the same event_id. The unique constraint on
- * (workspace_id, event_id) in the events table then deduplicates them
- * automatically — only one dispatch is enqueued per session.
+ * `id` is OnProfit's internal cart ID (`payload.id`, auto-incremental integer,
+ * required by schema). Auditing live data showed 100% uniqueness per cart
+ * instance — OnProfit does not re-deliver the same cart, and each distinct
+ * checkout attempt has a distinct id. This guarantees:
  *
- * The fallback to id preserves uniqueness when offer_hash is absent.
+ *   - Two carts from the same (lead, offer) at different times → distinct
+ *     event_ids → distinct event rows (timeline reflects each visit).
+ *   - Re-deliveries by OnProfit of the same cart (if they happen in the
+ *     future) collapse to one event row via the `unique (workspace_id,
+ *     event_id)` constraint.
+ *   - Order bumps already arrive as `payload.orderbumps[]` inline within
+ *     a single webhook — consolidation happens at the payload layer, not
+ *     via dedup key.
+ *
+ * The previous formula combined `offer_hash + email`, which incorrectly
+ * collapsed legitimately-distinct carts (same lead, same offer, different
+ * sessions) into one event row, causing `leads.last_seen_at` to drift past
+ * `MAX(events.event_time)` whenever side-effects in the raw-events-processor
+ * ran before the dedup check.
  */
 export async function deriveOnProfitCartAbandonmentEventId(
   id: number,
-  offerHash: string | null | undefined,
-  email: string,
 ): Promise<string> {
-  const input = offerHash
-    ? `onprofit:cart_abandonment:${offerHash}:${email}`
-    : `onprofit:cart_abandonment:id:${id}`;
+  const input = `onprofit:cart_abandonment:${id}`;
   const encoded = new TextEncoder().encode(input);
   const hashBuffer = await crypto.subtle.digest('SHA-256', encoded);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -196,7 +203,7 @@ export async function deriveOnProfitCartAbandonmentEventId(
  *   - UTMs embedded in `url` query string — utm.* root fields are null
  *   - No fbc/fbp cookies; fbclid extracted from `url`, fbc derived via buildFbcFromFbclid
  *
- * BR-WEBHOOK-002: deterministic event_id from offer_hash+email (dedup across order bumps)
+ * BR-WEBHOOK-002 / ADR-045: deterministic event_id from OnProfit `id` (unique per cart)
  * BR-WEBHOOK-004: lead_hints = email > phone (no pptc available at abandonment)
  * BR-PRIVACY-001: PII raw strings; processor hashes before persisting
  */
@@ -210,11 +217,7 @@ export async function mapOnProfitCartAbandonmentToInternal(
     };
   }
 
-  const event_id = await deriveOnProfitCartAbandonmentEventId(
-    payload.id,
-    payload.product_details?.hash,
-    payload.customer.email,
-  );
+  const event_id = await deriveOnProfitCartAbandonmentEventId(payload.id);
 
   const occurred_at = parseOnProfitCartAbandonmentTimestamp(payload.created_at);
 
