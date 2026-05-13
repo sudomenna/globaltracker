@@ -73,5 +73,12 @@ test-results/
 # Playwright MCP runtime (snapshots, console logs)
 .playwright-mcp/
 
+# Scripts de diagnóstico local — `.mjs` na pasta de manutenção contêm connection
+# strings com senha e dumps de PII. Scripts de produção devem ser `.ts`.
+scripts/maintenance/*.mjs
+
+# Screenshots de debug do CP (contêm PII em claro)
+cp-*.png
+
 # OS
 Thumbs.db
