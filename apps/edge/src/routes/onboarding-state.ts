@@ -320,7 +320,7 @@ export function createOnboardingStateRoute(deps?: {
 
     if (!deps?.getState) {
       // Inline DB path (dev shortcut — auth-cp.ts + injected deps in prod)
-      const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+      const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
       const rows = await db
         .select({ onboardingState: workspaces.onboardingState })
         .from(workspaces)
@@ -503,7 +503,7 @@ export function createOnboardingStateRoute(deps?: {
       // Inline DB path: fetch started_at from workspaces table
       // _inlineDb is intentionally undefined here — set below if no deps on mergeState too
       try {
-        const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+        const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
         const rows = await db
           .select({ onboardingState: workspaces.onboardingState })
           .from(workspaces)
@@ -547,7 +547,7 @@ export function createOnboardingStateRoute(deps?: {
       // Inline DB path: fetch current state, merge in JS, update
       // (avoids JSONB || SQL parameter encoding issues in CF Workers local dev)
       try {
-        const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+        const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
         const rows = await db
           .select({ onboardingState: workspaces.onboardingState })
           .from(workspaces)

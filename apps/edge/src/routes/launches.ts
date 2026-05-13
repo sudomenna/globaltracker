@@ -725,5 +725,5 @@ export function createLaunchesRoute(
 }
 
 export const launchesRoute = createLaunchesRoute((c) =>
-  createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? ''),
+  createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL ?? ''),
 );

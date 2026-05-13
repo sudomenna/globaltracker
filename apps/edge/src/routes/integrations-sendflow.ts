@@ -429,7 +429,7 @@ export function createIntegrationsSendflowRoute(deps?: {
 export const integrationsSendflowRoute = createIntegrationsSendflowRoute({
   getDb: (c) => {
     const connString =
-      c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString;
+      c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
     if (!connString) return undefined;
     return createDb(connString);
   },

@@ -114,7 +114,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     const effectiveDb: Db | undefined =
       db ??
       (c.env.DATABASE_URL || c.env.HYPERDRIVE
-        ? createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString)
+        ? createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL)
         : undefined);
 
     // Defensive check: workspace_id must be set by auth-public-token middleware
@@ -501,7 +501,7 @@ export function createLeadRoute(db?: Db): Hono<AppEnv> {
     let rawEventIdForQueue: string | undefined;
     try {
       const connString =
-        c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+        c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
       const db = createDb(connString);
       const [inserted] = await db
         .insert(rawEvents)

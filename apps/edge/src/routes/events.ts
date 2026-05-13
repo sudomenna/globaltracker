@@ -199,7 +199,7 @@ export function createEventsRoute(
 
     const { launch_id: launchId, limit, cursor } = parsed.data;
 
-    const connString = c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+    const connString = c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
     const dbConn = createDb(connString);
 
     // Workspace isolation: resolve public_id slug → internal UUID and verify workspace ownership
@@ -544,7 +544,7 @@ export function createEventsRoute(
       // No external insertRawEvent injected — use inline DB (INV-EVENT-005).
       try {
         const connString =
-          c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+          c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
         const db = createDb(connString);
         const [inserted] = await db
           .insert(rawEvents)
@@ -575,7 +575,7 @@ export function createEventsRoute(
       const promotePromise = (async () => {
         try {
           const connString =
-            c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString;
+            c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
           const dbForLaunch = createDb(connString);
           await dbForLaunch.execute(sql`
             UPDATE launches SET status = 'live'

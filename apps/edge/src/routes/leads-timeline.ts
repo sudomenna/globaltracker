@@ -826,7 +826,7 @@ export function createLeadsTimelineRoute(opts?: {
     return async (userId: string) => {
       const connStr = opts?.getConnStr
         ? opts.getConnStr(env)
-        : (env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '');
+        : (env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '');
       if (!connStr) return null;
       const db = createDb(connStr);
       const rows = await db
@@ -1311,7 +1311,7 @@ export function createLeadsTimelineRoute(opts?: {
       // Even denied attempts are audited (AUTHZ-001 spec).
       const connStr = opts?.getConnStr
         ? opts.getConnStr(c.env)
-        : (c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? '');
+        : (c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL ?? '');
       if (connStr) {
         try {
           const db = createDb(connStr);
@@ -1361,7 +1361,7 @@ export function createLeadsTimelineRoute(opts?: {
     // Audit BEFORE returning the plaintext.
     const connStr = opts?.getConnStr
       ? opts.getConnStr(c.env)
-      : (c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? '');
+      : (c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL ?? '');
     if (connStr) {
       try {
         const db = createDb(connStr);

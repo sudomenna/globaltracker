@@ -236,7 +236,7 @@ app.get('/health', (c) => {
  */
 const lookupPageToken: LookupPageTokenFn = async (tokenHash, bindings) => {
   const env = bindings as Bindings;
-  const connString = env.DATABASE_URL ?? env.HYPERDRIVE.connectionString;
+  const connString = env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL;
   const db = createDb(connString);
   const rows = await db
     .select({
@@ -273,7 +273,7 @@ const getAllowedDomains: GetAllowedDomainsFn = async (_pageId) => {
  */
 const getPageConfig: GetPageConfigFn = async (_workspaceId, pageId, env) => {
   const e = env as Bindings;
-  const connString = e.DATABASE_URL ?? e.HYPERDRIVE.connectionString;
+  const connString = e.HYPERDRIVE?.connectionString ?? e.DATABASE_URL;
   const db = createDb(connString);
   const rows = await db
     .select({
@@ -425,7 +425,7 @@ app.route('/v1/config', createConfigRoute(getPageConfig));
 app.route('/r', redirectRoute);
 app.route('/v1/admin/leads', adminLeadsEraseRoute);
 app.route('/v1/admin/cost-backfill', createCostBackfillRoute({
-  buildDb: (env) => createDb(env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? ''),
+  buildDb: (env) => createDb(env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? ''),
 }));
 
 // Guru webhook — server-to-server; no authPublicToken, no corsMiddleware
@@ -476,7 +476,7 @@ app.route(
   '/v1/pages',
   createPagesStatusRoute({
     getDb: (env) =>
-      createDb(env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? ''),
+      createDb(env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? ''),
   }),
 );
 app.route('/v1/health', healthCpRoute);
@@ -497,7 +497,7 @@ app.route(
   '/v1/launches/:launch_public_id/products',
   createLaunchProductsRoute({
     getConnStr: (env) =>
-      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+      env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 // Recovery route (T-RECOVERY-004): /v1/launches/:public_id/recovery
@@ -508,7 +508,7 @@ app.route(
   '/v1/launches',
   createRecoveryRoute({
     getConnStr: (env) =>
-      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+      env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
     getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
   }),
 );
@@ -521,7 +521,7 @@ app.route(
   '/v1/launches',
   createLaunchLeadsRoute({
     getConnStr: (env) =>
-      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+      env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
     getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
   }),
 );
@@ -534,14 +534,14 @@ app.route(
   '/v1/launches',
   createMetaAudiencesRoute({
     getConnStr: (env) =>
-      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+      env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 app.route('/v1/launches', launchesRoute);
 app.route(
   '/v1/funnel-templates',
   createFunnelTemplatesRoute((c) =>
-    createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString),
+    createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL),
   ),
 );
 app.route('/v1/onboarding', onboardingStateRoute);
@@ -549,7 +549,7 @@ app.route(
   '/v1/dashboard',
   createDashboardStatsRoute({
     getConnStr: (env) =>
-      env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+      env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 
@@ -690,7 +690,7 @@ function buildDispatchReplayRoute(db: Db) {
 // without forcing a `getDb` parameter into the route factory.
 app.all('/v1/dispatch-jobs/:id/replay', async (c) => {
   const db = createDb(
-    c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString,
+    c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL,
   );
   const innerRoute = buildDispatchReplayRoute(db);
   const wrapper = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -704,7 +704,7 @@ app.route('/v1/help', helpRoute);
 app.route(
   '/v1/leads',
   createLeadsPurchasesRoute({
-    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 // Leads summary route (T-17-007) — mounted BEFORE leads-timeline so the more
@@ -713,13 +713,13 @@ app.route(
 app.route(
   '/v1/leads',
   createLeadsSummaryRoute({
-    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 app.route(
   '/v1/leads',
   createLeadsTimelineRoute({
-    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
     getMasterKey: (env) => env.PII_MASTER_KEY_V1 ?? '',
   }),
 );
@@ -735,7 +735,7 @@ app.route('/v1/workspace', workspaceConfigRoute);
 app.route(
   '/v1/products',
   createProductsRoute({
-    getConnStr: (env) => env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '',
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
 
@@ -753,7 +753,7 @@ async function queueHandler(
   batch: MessageBatch<AnyQueueMessage>,
   env: Bindings,
 ): Promise<void> {
-  const db = createDb(env.DATABASE_URL ?? env.HYPERDRIVE.connectionString);
+  const db = createDb(env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL);
 
   // gt-events-dlq: messages that exhausted max_retries on gt-events.
   // Mark the raw_event as 'failed' with the retry count so it surfaces in
@@ -2279,7 +2279,7 @@ async function scheduledHandler(
   env: Bindings,
   _ctx: ExecutionContext,
 ): Promise<void> {
-  const db = createDb(env.DATABASE_URL ?? env.HYPERDRIVE.connectionString);
+  const db = createDb(env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL);
   const cron = event.cron;
 
   // ---------------------------------------------------------------------------

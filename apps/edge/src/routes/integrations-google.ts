@@ -1280,7 +1280,7 @@ export function createIntegrationsGoogleRoute(deps?: {
 export const integrationsGoogleRoute = createIntegrationsGoogleRoute({
   getDb: (c) => {
     const connString =
-      c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString;
+      c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
     if (!connString) return undefined;
     return createDb(connString);
   },

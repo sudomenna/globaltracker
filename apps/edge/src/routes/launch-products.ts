@@ -69,7 +69,7 @@ export function createLaunchProductsRoute(opts?: {
 
   function resolveConnStr(env: AppBindings): string {
     if (opts?.getConnStr) return opts.getConnStr(env);
-    return env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString ?? '';
+    return env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '';
   }
 
   function resolveDb(env: AppBindings): Db | null {

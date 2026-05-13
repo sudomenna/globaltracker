@@ -91,7 +91,7 @@ pagesRoute.post('/', async (c) => {
 
   const { name, public_id, launch_public_id, domains, mode, capture_pageview, capture_lead } = parsed.data;
 
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   // Resolve launch UUID from public_id
   const launchRows = await db
@@ -211,7 +211,7 @@ pagesRoute.get('/', async (c) => {
     'placeholder-workspace-id';
 
   const launchPublicId = c.req.query('launch_public_id');
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   type PageRow = {
     publicId: string;
@@ -314,7 +314,7 @@ pagesRoute.patch('/:page_public_id', async (c) => {
     );
   }
 
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   const launchRows = await db
     .select({ id: launches.id })
@@ -388,7 +388,7 @@ pagesRoute.delete('/:page_public_id', async (c) => {
     );
   }
 
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   const launchRows = await db
     .select({ id: launches.id })
@@ -441,7 +441,7 @@ pagesRoute.post('/:page_public_id/tokens', async (c) => {
     'placeholder-workspace-id';
 
   const pagePublicId = c.req.param('page_public_id');
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   const pageRows = await db
     .select({ id: pages.id })
@@ -489,7 +489,7 @@ pagesRoute.post('/:page_public_id/rotate-token', async (c) => {
     'placeholder-workspace-id';
 
   const pagePublicId = c.req.param('page_public_id');
-  const db = createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE.connectionString);
+  const db = createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL);
 
   const pageRows = await db
     .select({ id: pages.id })

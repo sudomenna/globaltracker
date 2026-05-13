@@ -55,7 +55,7 @@ export function createCostBackfillRoute(opts?: {
 
     const db = opts?.buildDb
       ? opts.buildDb(c.env)
-      : createDb(c.env.DATABASE_URL ?? c.env.HYPERDRIVE?.connectionString ?? '');
+      : createDb(c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL ?? '');
 
     safeLog('info', { event: 'cost_backfill_start', date, request_id: requestId });
 
