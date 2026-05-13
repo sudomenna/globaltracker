@@ -1,20 +1,23 @@
 /**
  * pii-enrich.ts — Populate `leads.email_enc / phone_enc / name_enc` ciphertexts.
  *
- * T-13-015. Wires `encryptPii` from `pii.ts` into the lead-creation pipeline so
+ * T-13-015 (initial). ADR-044 (2026-05-13) made the ciphertexts mirror the
+ * **active identifier**, not just the first one captured.
+ *
+ * Wires `encryptPii` from `pii.ts` into the lead-creation pipeline so
  * admin recovery, DSAR (LGPD/GDPR right to access), and operational support
  * (looking up a lead by phone/email outside the hashed lookup path) work as
  * intended by BR-PRIVACY-004.
  *
- * Why a helper instead of patching `resolveLeadByAliases` directly: the resolver
- * is shared by /v1/lead, /v1/events, and webhook processors. Threading a
- * MasterKeyRegistry through every caller's signature is invasive. This helper
- * runs as a follow-up UPDATE after the resolver returns, isolated to callers
- * that have plaintext PII in scope and a master key configured.
- *
- * Idempotent: only writes columns currently NULL — never overwrites existing
- * ciphertexts (which would invalidate `pii_key_version` for downstream
- * decryption attempts).
+ * Behavior (INV-IDENTITY-008, ADR-044):
+ *   - If `*_enc` IS NULL → encrypt with current `pii_key_version` and write.
+ *   - If `*_enc` IS NOT NULL → decrypt with the row's stored `pii_key_version`,
+ *     compare plaintext to input. If equal → noop (idempotent). If different
+ *     (re-identification: typo fix, email change, phone rotation) → re-encrypt
+ *     with current `pii_key_version` and overwrite, updating `pii_key_version`
+ *     to the current one.
+ *   - If decrypt of the existing ciphertext fails (key gap, corruption) →
+ *     skip overwrite to avoid losing recoverable plaintext. Logged.
  *
  * Failure mode (INV-PRIVACY-006-soft): if encryption fails or the master key
  * is missing, the lead row stays without ciphertext but with hashes — the
@@ -24,11 +27,12 @@
 
 import type { Db } from '@globaltracker/db';
 import { leads } from '@globaltracker/db';
-import { and, eq, isNull, or } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { safeLog } from '../middleware/sanitize-logs.js';
 import {
   type MasterKeyRegistry,
   type PiiKeyVersion,
+  decryptPii,
   encryptPii,
   hashPiiExternal,
   splitName,
@@ -49,10 +53,12 @@ export type EnrichLeadPiiOptions = {
   requestId?: string; // for log correlation
 };
 
-/**
- * Encrypt provided plaintexts and UPDATE only the *_enc columns that are still
- * NULL on the row. Hashes (`*_hash`) are not touched.
- */
+type EncField = {
+  field: 'email' | 'phone' | 'name';
+  plaintext: string | undefined;
+  encColumn: 'emailEnc' | 'phoneEnc' | 'nameEnc';
+};
+
 export async function enrichLeadPii(
   input: EnrichLeadPiiInput,
   opts: EnrichLeadPiiOptions,
@@ -64,7 +70,6 @@ export async function enrichLeadPii(
   }
 
   if (!opts.masterKeyHex) {
-    // No key configured → soft-fail. Pipeline continues with hashes only.
     safeLog('warn', {
       event: 'enrich_lead_pii_skipped_no_key',
       request_id: opts.requestId,
@@ -75,21 +80,80 @@ export async function enrichLeadPii(
   }
 
   const registry: MasterKeyRegistry = { 1: opts.masterKeyHex };
-  const version: PiiKeyVersion = opts.currentVersion ?? 1;
+  const currentVersion: PiiKeyVersion = opts.currentVersion ?? 1;
+
+  // Fetch current ciphertexts + the row's pii_key_version. Required to decide
+  // whether to re-encrypt (ADR-044: ciphertexts mirror active identifier).
+  const currentRows = await opts.db
+    .select({
+      emailEnc: leads.emailEnc,
+      phoneEnc: leads.phoneEnc,
+      nameEnc: leads.nameEnc,
+      piiKeyVersion: leads.piiKeyVersion,
+    })
+    .from(leads)
+    .where(
+      and(eq(leads.id, opts.leadId), eq(leads.workspaceId, opts.workspaceId)),
+    )
+    .limit(1);
+
+  if (currentRows.length === 0) {
+    safeLog('error', {
+      event: 'enrich_lead_pii_lead_not_found',
+      request_id: opts.requestId,
+      lead_id: opts.leadId,
+    });
+    return { ok: false, updated_columns: [] };
+  }
+  const current = currentRows[0]!;
+  const rowVersion: PiiKeyVersion = current.piiKeyVersion ?? currentVersion;
 
   const updates: Record<string, unknown> = {};
 
-  for (const [field, plaintext, encColumn] of [
-    ['email', input.email, 'emailEnc' as const],
-    ['phone', input.phone, 'phoneEnc' as const],
-    ['name', input.name, 'nameEnc' as const],
-  ] as const) {
+  const fields: EncField[] = [
+    { field: 'email', plaintext: input.email, encColumn: 'emailEnc' },
+    { field: 'phone', plaintext: input.phone, encColumn: 'phoneEnc' },
+    { field: 'name', plaintext: input.name, encColumn: 'nameEnc' },
+  ];
+
+  for (const { field, plaintext, encColumn } of fields) {
     if (!plaintext) continue;
+    const currentCiphertext = current[encColumn];
+
+    // INV-IDENTITY-008 / ADR-044: if a ciphertext already exists, decrypt and
+    // compare. Skip write when plaintext matches (idempotent re-run). Re-encrypt
+    // only when plaintext diverges (active identifier changed).
+    if (currentCiphertext) {
+      const decrypted = await decryptPii(
+        currentCiphertext,
+        opts.workspaceId,
+        registry,
+        rowVersion,
+      );
+      if (decrypted.ok && decrypted.value === plaintext) {
+        continue; // no-op: ciphertext already matches input
+      }
+      if (!decrypted.ok) {
+        // Conservative: do not overwrite recoverable plaintext with a value we
+        // cannot compare against. Operator must rotate master key or backfill
+        // before this field can be re-encrypted.
+        safeLog('warn', {
+          event: 'enrich_lead_pii_decrypt_failed_skip_overwrite',
+          request_id: opts.requestId,
+          lead_id: opts.leadId,
+          field,
+          error_code: decrypted.error.code,
+        });
+        continue;
+      }
+      // decrypted.ok === true && decrypted.value !== plaintext → proceed
+    }
+
     const result = await encryptPii(
       plaintext,
       opts.workspaceId,
       registry,
-      version,
+      currentVersion,
     );
     if (!result.ok) {
       safeLog('error', {
@@ -99,38 +163,30 @@ export async function enrichLeadPii(
         field,
         error_code: result.error.code,
       });
-      continue; // try the others; one failure shouldn't block the rest
+      continue; // one failure shouldn't block the rest
     }
     updates[encColumn] = result.value.ciphertext;
     updatedColumns.push(encColumn);
   }
 
-  if (updatedColumns.length === 0) {
-    return { ok: false, updated_columns: [] };
-  }
+  if (Object.keys(updates).length > 0) {
+    // Always set pii_key_version to the current one when writing — the new
+    // ciphertexts were encrypted with `currentVersion`. Mixed-version rows
+    // (some columns at v1, some at v2 within the same row) are not supported.
+    updates.piiKeyVersion = currentVersion;
 
-  // Always set pii_key_version so future decrypts know which master key applied.
-  updates.piiKeyVersion = version;
-
-  // Only write columns that are currently NULL — never overwrite existing
-  // ciphertexts (would orphan downstream decryption that uses an older
-  // pii_key_version).
-  // BR-IDENTITY-005 (workspace scope) + BR-PRIVACY-004 (versioned encryption).
-  await opts.db
-    .update(leads)
-    .set(updates)
-    .where(
-      and(
-        eq(leads.id, opts.leadId),
-        eq(leads.workspaceId, opts.workspaceId),
-        // Skip if all relevant columns already encrypted (idempotent re-runs).
-        or(
-          isNull(leads.emailEnc),
-          isNull(leads.phoneEnc),
-          isNull(leads.nameEnc),
+    // BR-IDENTITY-005 (workspace scope) + BR-PRIVACY-004 (versioned encryption)
+    // + ADR-044 (ciphertext mirrors active identifier).
+    await opts.db
+      .update(leads)
+      .set(updates)
+      .where(
+        and(
+          eq(leads.id, opts.leadId),
+          eq(leads.workspaceId, opts.workspaceId),
         ),
-      ),
-    );
+      );
+  }
 
   // T-OPB-003b: Populate fn_hash / ln_hash from plaintext name (pure SHA-256 for Meta/Google).
   // ADR-034: also populate `leads.name` plaintext for ILIKE search.
@@ -154,10 +210,17 @@ export async function enrichLeadPii(
           eq(leads.workspaceId, opts.workspaceId),
         ),
       );
-    updatedColumns.push('name');
-    if (fnHashVal) updatedColumns.push('fnHash');
-    if (lnHashVal) updatedColumns.push('lnHash');
+    if (!updatedColumns.includes('name')) updatedColumns.push('name');
+    if (fnHashVal && !updatedColumns.includes('fnHash')) {
+      updatedColumns.push('fnHash');
+    }
+    if (lnHashVal && !updatedColumns.includes('lnHash')) {
+      updatedColumns.push('lnHash');
+    }
   }
 
+  // `ok: true` even when updatedColumns is empty — that means an idempotent
+  // no-op (plaintext already matches current ciphertext). `ok: false` only on
+  // fatal errors (no key, lead not found), surfaced above with explicit returns.
   return { ok: true, updated_columns: updatedColumns };
 }
