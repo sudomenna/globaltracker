@@ -10,18 +10,67 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: manutenção + melhorias Meta CAPI — deployado (2026-05-12 sessão 3, version `6dbb2223`).
-- **Branch**: `main`. Commits pendentes de push (13+ commits à frente de `origin/main`):
-  - `731f74a` feat(meta-capi): add event_source_url to CAPI payload ← **novo (sessão 3)**
-  - `3b257cc` chore(maintenance): add replay-cart-abandonment script
-  - `9c6f804` fix(onprofit): enqueue cart_abandonment events + suppress when PAID
-  - `183eaf1` feat(ic): consolida valor IC por transaction_group_id
-  - `31029d6` fix(dashboard): period hoje usa meia-noite BRT
+- **Sprint ativo**: manutenção (infra Hyperdrive + PII identity hardening) — deployado (2026-05-13 sessão 1, version `aae05007`).
+- **Branch**: `main`. **20+ commits à frente de `origin/main`** pendentes de push:
+  - `0937ae4` fix(webhook): cart_abandonment event_id derives from id alone (ADR-045) ← **novo**
+  - `10f14b9` docs(webhook): ADR-045 — OnProfit cart_abandonment event_id derives from id only ← **novo**
+  - `4fc0928` fix(identity): enrichLeadPii overwrites *_enc when plaintext diverges (ADR-044) ← **novo**
+  - `a1b0768` docs(identity): ADR-044 — leads.{email,phone,name}_enc mirror active identifier ← **novo**
+  - `246ce83` feat(infra): prefer Hyperdrive over DATABASE_URL secret for DB connections ← **novo**
+  - `cbb4c2c` fix(infra): migrate Hyperdrive config to Supavisor pooler + sanitize conn string ← **novo**
+  - `8b9f449` chore(gitignore): exclude local diagnostic scripts and debug screenshots ← **novo**
+  - `731f74a` feat(meta-capi): add event_source_url to CAPI payload (sessão anterior)
   - anteriores
-- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Explorar quando voltar à IDE do cockpit.
-- **Edge prod**: deploy atual **`6dbb2223`** (event_source_url Meta CAPI, 2026-05-12 sessão 3). Comando: **`pnpm deploy:edge`**.
+- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Não tocado nesta sessão.
+- **Edge prod**: deploy atual **`aae05007`** (cart_abandonment dedup-by-id, 2026-05-13). Comando: **`pnpm deploy:edge`**.
+- **Hyperdrive prod**: agora ativo — binding `34681cabdb954437ba6db304a235da87`, aponta para Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode), user `postgres.kaxcmhfaqrxwnpftkslj`. Worker prefere Hyperdrive sobre `DATABASE_URL` secret. Cache 60s no edge + 15s stale-while-revalidate. **Rollback path**: `wrangler rollback` se Hyperdrive der incident — `DATABASE_URL` secret está válido (verificado: 762 raw_events processed hoje passaram por ele pré-swap).
 
-### Entregas 2026-05-12 sessão 3 (esta sessão)
+### Entregas 2026-05-13 sessão 1 (esta sessão) — Infra Hyperdrive + PII identity hardening
+
+#### Bloco 1 — Recuperação PII master key + Hyperdrive em prod (manhã)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 1 | **Diagnóstico**: UI `/contatos` mostrava `—` em vez de email/telefone. Root cause: `apps/edge/.dev.vars` tinha `PII_MASTER_KEY_V1` em **base64** mas código `hexToBytes()` esperava **hex** → chave de 22 bytes lixo → decrypt silenciosamente falhava. Prod tinha hex correto no CF secret. Provado via round-trip local — script reencrypta com chave lixo, decripta OK; mas não decripta o ciphertext de prod | — | — |
+| 2 | **Recovery**: endpoint admin temporário `/v1/admin/recover-secret` (POST + Bearer token timing-safe) deployado, secret `ADMIN_PII_RECOVERY_TOKEN` posto via wrangler. User executou curl, salvou hex `e630e2b1...2dd2` em vault + `.dev.vars` + `.env.local`. Endpoint + secret removidos imediatamente após (versão `1d25838e`). Pattern de "admin endpoint temporário" estabelecido — usável de novo se necessário | (route via deploy) | `ef74bb42` → `1d25838e` |
+| 3 | **Hyperdrive WIP da sessão anterior commitado**: `wrangler.toml` Hyperdrive ID `39156b9...` → `34681c...` (config refeita pelo user com host Supavisor `aws-1-sa-east-1.pooler.supabase.com:5432`). `packages/db/src/index.ts` ganhou `sanitizeConnStr()` (workerd retorna `/` raw na senha, postgres.js rejeita). `apps/edge/package.json` pinou `wrangler@^4.90.1` devDep | `cbb4c2c` | `88d2be68` |
+| 4 | **Priorizar Hyperdrive sobre DATABASE_URL** — 43 substituições em 15 arquivos `apps/edge/src/**` via codemod. Padrão `env.DATABASE_URL ?? env.HYPERDRIVE?.connectionString` → `env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL`. `DATABASE_URL` agora é fallback se Hyperdrive cair (mas `??` não pega exceção em runtime — rollback necessário se Hyperdrive incident) | `246ce83` | `404d4fea` |
+
+#### Bloco 2 — Bug 1 (`pii_enc drift`) — ADR-044 (tarde)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 5 | **Diagnóstico**: lead "Bruna" mostrava email `bruna@sgm.adv.br` na UI, mas `lead_aliases` tinha esse email **superseded** e `bruna.siagino@gmail.com` ativo. Causa: `pii-enrich.ts` tinha cláusula `WHERE … OR isNull(email_enc) OR …` — só escrevia em campo NULL. Após primeira escrita, `email_enc` ficava efetivamente imutável, mesmo com identifier mudando (cenário 4 do BR-IDENTITY-001) | — | — |
+| 6 | **Auditoria workspace `outsiders`**: 16 leads com drift (7 email, 9 phone) — 5.7% do total. Casos legítimos: Pedro (typo fix `.con` → `.com`), Bruna (novo gmail), 9 phones (provavelmente reconciliação do "9" extra brasileiro) | — | — |
+| 7 | **ADR-044** + extensão BR-IDENTITY-001 cenário 4 + ampliação INV-IDENTITY-008 — `*_enc` espelha identifier ativo, não snapshot imutável | `a1b0768` | (doc only) |
+| 8 | **Fix em `pii-enrich.ts`** — agora decripta `*_enc` atual com `pii_key_version` da row, compara com input plaintext: igual → noop; diferente → re-encripta com `currentVersion` e overwrite; decrypt fail → skip (preserva ciphertext recuperável). Idempotente. 6 testes unit cobrindo todos os paths | `4fc0928` | `e2c3be30` |
+| 9 | **Backfill** dos 16 leads em drift via `scripts/maintenance/backfill_pii_enc_drift.mjs` — varre `raw_events.payload` procurando plaintext que bate com `leads.email_hash`/`phone_hash` atual, re-encripta. 16/16 resolvíveis, aplicados. Re-audit: drift = 0 | — (script gitignored) | (DB-only update) |
+| 10 | **Validação E2E**: UI da Bruna mostra agora `bruna.siagino@gmail.com` (correto). Bug 1 fechado | — | — |
+
+#### Bloco 3 — Bug 2 (`last_seen_at` drift) — ADR-045 (noite)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 11 | **Diagnóstico**: Bruna's `leads.last_seen_at = 12/05 20:51 BRT` mas `MAX(events.event_time) = 11/05 13:33 BRT` — drift de 31h. Causa: `event_id` de cart_abandonment usa `sha256(onprofit:cart_abandonment:offer_hash:email)` — dois carts da Bruna na mesma offer colidiram → dedup-skip no `raw-events-processor` Step 7 → mas `resolveLeadByAliases` (Step 3) já tinha bumpado `last_seen_at` via GREATEST. **Side-effects rodam antes da dedup check** | — | — |
+| 12 | **Auditoria**: 281 leads ativos, 251 em sync, 22 com drift (>5s), apenas **2 com drift > 1h** (Bruna, Teste). Confirmado pela auditoria de raw_events: 42 cart_abandonments em 3 dias, 42 `payload.id` distintos, **zero re-deliveries pelo OnProfit**. Order bumps já vêm inline em `payload.orderbumps[]` — não precisa dedup-by-key | — | — |
+| 13 | **ADR-045** documentando decisão de mudar dedup key de `(offer_hash, email)` para `id` apenas. Mais alinhado com BR-WEBHOOK-002 canônico | `10f14b9` | (doc only) |
+| 14 | **Fix em `onprofit/mapper.ts`** — `deriveOnProfitCartAbandonmentEventId(id)` (signature reduzida de 3 args pra 1). Single caller atualizado. 8 testes unit cobrindo idempotência, distinção, regression do bug | `0937ae4` | `aae05007` |
+| 15 | **Decisão consciente de NÃO backfillar 35 cart_abandonments dedup-skipados pré-fix** — risco de re-disparar Meta CAPI / Google Ads como conversões falsas. Aceitar drift histórico (impacto: ~2 leads visivelmente afetados, ROAS intacto). Documentado em ADR-045 §Consequências | — | — |
+
+#### Resumo Edge prod 2026-05-13
+
+| Deploy | O quê | Reversível |
+|---|---|---|
+| `ef74bb42` | admin recover endpoint | ✅ removido em `1d25838e` |
+| `1d25838e` | admin endpoint removido | — |
+| `88d2be68` | Hyperdrive ID `34681c...` + sanitizeConnStr | rollback possível mas Hyperdrive antigo `39156b9...` foi deletado em CF |
+| `404d4fea` | Hyperdrive prioritized over DATABASE_URL | `wrangler rollback` se Hyperdrive der incident |
+| `e2c3be30` | pii-enrich overwrite semantics | `wrangler rollback` reverte comportamento |
+| `aae05007` | cart_abandonment dedup-by-id | `wrangler rollback` reverte fórmula |
+
+---
+
+### Entregas 2026-05-12 sessão 3 (sessão anterior)
 
 | # | Tema | Commit | Deploy |
 |---|---|---|---|
@@ -120,9 +169,21 @@
 
 ### Onde começar a próxima sessão
 
-**Push pendente**: `git push origin main` — 12+ commits locais à frente de `origin/main`. Nenhum bloqueio, push pode ocorrer quando quiser.
+**Push pendente**: `git push origin main` — **20+ commits** locais à frente de `origin/main` (7 novos hoje). Nenhum bloqueio.
 
-**Verificar replay**: confirmar que os 32 raw_events de cart_abandonment (replayed 2026-05-12) foram processados:
+**Pendências da sessão 2026-05-13:**
+
+1. **Bruno do Nascimento (lead OnProfit `bn56289@gmail.com`)** — comprou 12/05 22:17 BRT, webhook OnProfit nunca chegou no edge (verificado: 0 raw_events). Caso isolado. Recovery: dashboard OnProfit → reenviar webhook OU `POST` manual do JSON em `/v1/webhooks/onprofit` (token `sendflowSendtok` da workspace). Padrão Guru recovery em `memory/project_guru_api_recovery.md` cross-session.
+
+2. **27 testes pré-existentes falhando em `tests/unit`** — confirmado pré-existente (não causado por mudanças hoje). Áreas: guru-raw-events-processor (4), raw-events-processor (1), is-test-propagation (3), workspace-config deep merge (1), launch-resolver (4), BR-WEBHOOK-003 waiting_payment (1), processor-creates-dispatch-jobs (1), T-FUNIL-012 blueprints (4), is-test events INSERT (3), flow-08 merge (5). Listar com `pnpm vitest run tests/unit 2>&1 | grep "FAIL\s"`. Não bloqueia deploy mas vale revisar.
+
+3. **`INV-IDENTITY-008` duplicada** — uma em `docs/50-business-rules/BR-IDENTITY.md:80` (formato canônico do phone) e outra em `docs/20-domain/04-mod-identity.md:133` (denormalização). Renumerar uma sem quebrar refs.
+
+4. **Item 2 antigo do ADR-044 §Impacta**: Backfill de pii_enc drift foi feito (16 leads). Listar como entregue.
+
+5. **35 cart_abandonments dedup-skipados pré-ADR-045** — decisão consciente de não backfillar (risco de duplicar conversões em Meta/Google). Aceitar drift histórico. Se quiser visualizar timeline completa desses 35 leads no futuro: backfill cirúrgico via insert direto em `events` table pulando `dispatch_jobs` (opção B do diagnóstico de hoje).
+
+**Verificar replay** (sessão anterior): confirmar que os 32 raw_events de cart_abandonment (replayed 2026-05-12) foram processados:
 ```sql
 SELECT processing_status, COUNT(*) FROM raw_events
 WHERE payload->>'_onprofit_event_type'='InitiateCheckout'
