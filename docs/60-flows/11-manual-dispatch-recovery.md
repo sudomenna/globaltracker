@@ -240,6 +240,85 @@ done
 
 ---
 
+## Parte D — Recovery via mirror N8N (gap de webhook inbound)
+
+Use quando um provedor (SendFlow, OnProfit, etc.) pausou nosso webhook após falhas consecutivas (proteção anti-loop padrão) e os events do gap **nunca chegaram em `raw_events`** — mas existem em um workflow N8N paralelo que espelha o mesmo webhook.
+
+### Quando isto se aplica
+
+- Outage do nosso edge (Hyperdrive, deploy ruim, etc.) → provedor recebeu 5xx → desativou webhook.
+- "Resend failed events" do painel do provedor não está disponível ou não cobre o período.
+- Existe um workflow N8N de Tiago (`https://mennaworks.app.n8n.cloud`) registrado como endpoint paralelo do mesmo provedor.
+
+### D1. Descobrir workflow espelho
+
+```bash
+curl -sS "https://mennaworks.app.n8n.cloud/api/v1/workflows?limit=250&active=true" \
+  -H "X-N8N-API-KEY: <JWT>" \
+  | jq '.data[] | {id, name, paths: [.nodes[]?.parameters?.path // empty]}'
+```
+Procurar o workflow cujo node Webhook tem `parameters.path` casando com a URL configurada no provedor.
+
+### D2. Confirmar tamanho do gap
+
+```sql
+SELECT MAX(received_at) AS last_received
+FROM raw_events
+WHERE payload->>'_provider' = '<provider>';
+```
+Comparar com o `startedAt` mais recente das execuções do workflow N8N:
+
+```bash
+curl -sS "https://mennaworks.app.n8n.cloud/api/v1/executions?workflowId=<wid>&limit=10" \
+  -H "X-N8N-API-KEY: <JWT>" | jq '.data[] | {id, startedAt, status}'
+```
+
+### D3. Rodar script de replay
+
+Script-base: `scripts/maintenance/sendflow_n8n_replay.mjs` (gitignored — `.mjs` em `scripts/maintenance/` contêm conn-string com senha; ver `.gitignore`). Reconstruir localmente seguindo os passos D1-D4 desta seção. Pontos a ajustar:
+
+- `WORKFLOW_ID` — id do workflow descoberto em D1.
+- `CUTOFF` — `MAX(received_at)` da query D2.
+- `WEBHOOK_BASE` e header `sendtok` (ou auth equivalente) — endpoint do provedor.
+- **Chave de dedup** — varia por provedor. Validar com sanity check antes do replay:
+  - **SendFlow**: `truncSec(data.createdAt) + data.number + data.groupId`. NÃO usar `body.id` (regerado por delivery).
+  - Outros providers: assumir o mesmo padrão "id regenerado por delivery" e dedupar por conteúdo (timestamp truncado + chave natural do evento).
+
+Sanity gate antes de replay real: amostra de 8 execuções **anteriores** ao cutoff deve dar 8/8 `OK` (presentes em `raw_events`). Se houver `MISSING`, refinar a chave de dedup (drift de ms, formato de timestamp diferente, etc.).
+
+```bash
+# Preview
+DRY_RUN=1 N8N_API_KEY=<key> SENDFLOW_SENDTOK=<token> \
+  node scripts/maintenance/sendflow_n8n_replay.mjs
+
+# Real
+N8N_API_KEY=<key> SENDFLOW_SENDTOK=<token> \
+  node scripts/maintenance/sendflow_n8n_replay.mjs
+```
+
+### D4. Validação
+
+```sql
+SELECT processing_status, COUNT(*)
+FROM raw_events
+WHERE payload->>'_provider' = '<provider>'
+  AND received_at > NOW() - INTERVAL '30 minutes'
+GROUP BY processing_status;
+```
+Esperado: total = `sent` do script. `pending` é normal — outbox poller processa em ≤10min.
+
+### D5. Reativar webhook no painel do provedor
+
+Recovery via N8N preenche o gap, mas **não conserta o webhook original**. User deve reativar no painel do provedor para fluxo normal voltar.
+
+### Quirks descobertos por provedor
+
+| Provedor | Quirk |
+|---|---|
+| SendFlow | `body.id` único por delivery → não dedup por id. `data.createdAt` drift ~1ms entre destinos → truncar para segundo. Header auth (`sendtok`), não query string. |
+
+---
+
 ## Checklist pós-recovery
 
 - [ ] `dispatch_jobs` finais com `status='succeeded'` e `events_received: 1`
@@ -255,3 +334,4 @@ done
 | Data | Leads | Evento | Causa | Resultado |
 |---|---|---|---|---|
 | 2026-05-10 | b238a9af, 0cecf516, 8edc5512 | `Lead` | Race bug snippet workshop (`attribution: {}` + redirect fora do `withTracker`). Fix: commit `5b32b5b`. | 3/3 `succeeded` no Meta CAPI |
+| 2026-05-15 | 41 (`group.updated.members.added`) | `custom:wpp_joined` / `custom:wpp_joined_vip_main` | SendFlow pausou webhook após 16h outage Hyperdrive (12-13/05). Gap: 13/05 00:20 UTC → 15/05 02:10 UTC. | Recovery via mirror N8N (Parte D) — 41/41 raw_events inseridos, 47 dups corretamente pulados. Sanity 8/8 pré-cutoff. |

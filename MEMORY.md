@@ -367,7 +367,7 @@ Tracking: criar issue futura quando o assunto voltar.
 ### Bloqueios e TODOs de código
 
 - **GOOGLE-ADS-OAUTH-REFRESH-401** — Cron de cost ingestor reporta `google_ads_fetch_failed: OAuth token exchange failed with HTTP 401` em todas as datas. Refresh token expirado. Resultado: investimento Google Ads = R$ 0 no dashboard. Não bloqueia Meta. Fix: reconectar OAuth no CP (Settings → Integrations → Google Ads).
-- **SENDFLOW-WEBHOOK-PAUSED-NO-RETURN** — SendFlow não envia eventos desde 2026-05-13 00:20 UTC (último). Endpoint nosso está saudável (smoke test 401 = OK). Hipótese: SendFlow pausou o webhook automaticamente após N falhas durante o outage Hyperdrive (proteção anti-loop). Ação requerida: user precisa entrar no painel SendFlow → reativar webhook.
+- ~~**SENDFLOW-WEBHOOK-PAUSED-NO-RETURN**~~ — Resolvido 2026-05-15: (a) 41 events do gap recuperados via mirror N8N (workflow `ExuNm1Nm64Xud0uX` em `mennaworks.app.n8n.cloud`) usando script novo `scripts/maintenance/sendflow_n8n_replay.mjs` — dedup por conteúdo `truncSec(data.createdAt)+number+groupId` (SendFlow regera `body.id` por delivery, não serve cross-source); (b) user reativou webhook no painel SendFlow. Padrão de recovery via N8N documentado em [`docs/60-flows/11-manual-dispatch-recovery.md`](docs/60-flows/11-manual-dispatch-recovery.md) Parte D.
 
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07** — TODO Sprint 16. 6 specs faltando:
   1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`). **Nota**: `click_buy_*` removidos do mapper em 2026-05-12 (commit `1700514`) — não testar mais mapeamento deles para IC.
