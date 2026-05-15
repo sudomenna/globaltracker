@@ -69,6 +69,32 @@ export type LaunchStat = {
   revenue: number;
 };
 
+export type InboundWebhookHealth = {
+  provider: 'guru' | 'onprofit' | 'sendflow' | 'hotmart' | 'kiwify' | 'stripe';
+  last_received_at: string | null;
+  minutes_since_last: number | null;
+  count_1h: number;
+  count_24h: number;
+  /**
+   * Health bucket. Thresholds:
+   *   - ok:   last_received < 2h
+   *   - warn: last_received in [2h, 6h)
+   *   - down: last_received >= 6h AND count_7d >= 5 (had regular activity recently)
+   * Providers with count_7d < 5 are omitted from response (never active enough to flag).
+   */
+  state: 'ok' | 'warn' | 'down';
+};
+
+export type DispatchHealthByDestination = {
+  destination: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  dead_letter: number;
+  success_rate: number | null;
+  state: 'ok' | 'warn' | 'down';
+};
+
 export type DashboardStatsResponse = {
   period: string;
   business: {
@@ -88,6 +114,14 @@ export type DashboardStatsResponse = {
     dead_letter_count: number;
     leads_with_fbclid_pct: number | null;
     leads_without_source_pct: number | null;
+  };
+  /**
+   * Inbound/outbound integration health snapshot.
+   * Used by the "Saúde Integrações" card on the dashboard home (ADR-046 follow-up).
+   */
+  integrations: {
+    inbound: InboundWebhookHealth[];
+    outbound: DispatchHealthByDestination[];
   };
   roas: number | null;
   spend: number;
@@ -203,7 +237,16 @@ export function createDashboardStatsRoute(opts: {
 
     try {
       // Run all queries in parallel — independent DB reads.
-      const [funnelRows, pageViewRows, dispatchRows, attrRows, launchRows, spendRows] =
+      const [
+        funnelRows,
+        pageViewRows,
+        dispatchRows,
+        attrRows,
+        launchRows,
+        spendRows,
+        inboundRows,
+        dispatchAllDestRows,
+      ] =
         await Promise.all([
           // ── 1. Funnel (identified events) ────────────────────────────────
           db
@@ -351,6 +394,73 @@ export function createDashboardStatsRoute(opts: {
                 ),
               ),
             ),
+
+          // ── 6. Inbound webhook heartbeats (always 7d window, period-independent) ──
+          //
+          // Provider classified via payload marker injected by each webhook handler:
+          //   - Guru:     payload._guru_event_id     (apps/edge/src/routes/webhooks/guru.ts)
+          //   - OnProfit: payload._onprofit_event_type (apps/edge/src/routes/webhooks/onprofit.ts)
+          //   - SendFlow: payload._provider = 'sendflow'
+          //   - Hotmart:  payload._hotmart_event_type
+          //
+          // Window is fixed at 7d regardless of selected dashboard period because
+          // integration health is operational state, not business window.
+          db.execute<{
+            provider: string;
+            last_received_at: string | null;
+            count_24h: number;
+            count_1h: number;
+            count_7d: number;
+          }>(sql`
+            WITH classified AS (
+              SELECT
+                CASE
+                  WHEN payload ? '_guru_event_id' THEN 'guru'
+                  WHEN payload ? '_onprofit_event_type' THEN 'onprofit'
+                  WHEN payload->>'_provider' = 'sendflow' THEN 'sendflow'
+                  WHEN payload ? '_hotmart_event_type' THEN 'hotmart'
+                  WHEN payload ? '_kiwify_event_type' THEN 'kiwify'
+                  WHEN payload ? '_stripe_event_type' THEN 'stripe'
+                  ELSE NULL
+                END AS provider,
+                received_at
+              FROM raw_events
+              WHERE workspace_id = ${workspaceId}
+                AND received_at >= NOW() - INTERVAL '7 days'
+            )
+            SELECT
+              provider,
+              MAX(received_at) AS last_received_at,
+              COUNT(*) FILTER (WHERE received_at >= NOW() - INTERVAL '24 hours')::int AS count_24h,
+              COUNT(*) FILTER (WHERE received_at >= NOW() - INTERVAL '1 hour')::int AS count_1h,
+              COUNT(*)::int AS count_7d
+            FROM classified
+            WHERE provider IS NOT NULL
+            GROUP BY provider
+          `),
+
+          // ── 7. Dispatch health by destination (last 24h, period-independent) ──
+          // Mirrors the dispatch_jobs aggregation but fixed at 24h window for
+          // operational state (vs business period window).
+          db
+            .select({
+              destination: dispatchJobs.destination,
+              succeeded: sql<number>`COUNT(*) FILTER (WHERE ${dispatchJobs.status} = 'succeeded')::int`,
+              failed: sql<number>`COUNT(*) FILTER (WHERE ${dispatchJobs.status} = 'failed')::int`,
+              deadLetter: sql<number>`COUNT(*) FILTER (WHERE ${dispatchJobs.status} = 'dead_letter')::int`,
+              total: sql<number>`COUNT(*)::int`,
+            })
+            .from(dispatchJobs)
+            .where(
+              and(
+                eq(dispatchJobs.workspaceId, workspaceId),
+                gte(
+                  dispatchJobs.createdAt,
+                  sql`NOW() - INTERVAL '24 hours'`,
+                ),
+              ),
+            )
+            .groupBy(dispatchJobs.destination),
         ]);
 
       // ── Shape results ──────────────────────────────────────────────────
@@ -390,6 +500,72 @@ export function createDashboardStatsRoute(opts: {
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 10);
 
+      // ── Integration health ──────────────────────────────────────────────
+      //
+      // Inbound: classify state by recency, omit providers with too little activity
+      //          (count_7d < 5) — never enough signal to flag confidently.
+      const inboundProviders: InboundWebhookHealth[] = [];
+      const nowMs = Date.now();
+      for (const row of inboundRows) {
+        const count7d = Number(row.count_7d ?? 0);
+        if (count7d < 5) continue; // signal too thin to evaluate
+
+        const lastIso = row.last_received_at;
+        const lastMs = lastIso ? new Date(lastIso).getTime() : null;
+        const minutesSince =
+          lastMs != null ? Math.round((nowMs - lastMs) / 60000) : null;
+
+        let state: InboundWebhookHealth['state'];
+        if (minutesSince == null || minutesSince > 360) state = 'down';
+        else if (minutesSince > 120) state = 'warn';
+        else state = 'ok';
+
+        inboundProviders.push({
+          provider: row.provider as InboundWebhookHealth['provider'],
+          last_received_at: lastIso,
+          minutes_since_last: minutesSince,
+          count_1h: Number(row.count_1h ?? 0),
+          count_24h: Number(row.count_24h ?? 0),
+          state,
+        });
+      }
+      // Stable order: down → warn → ok, alphabetical within bucket.
+      const stateRank = { down: 0, warn: 1, ok: 2 } as const;
+      inboundProviders.sort((a, b) => {
+        const r = stateRank[a.state] - stateRank[b.state];
+        if (r !== 0) return r;
+        return a.provider.localeCompare(b.provider);
+      });
+
+      // Outbound: classify per destination.
+      const outboundDestinations: DispatchHealthByDestination[] = dispatchAllDestRows
+        .map((row) => {
+          const total = Number(row.total ?? 0);
+          const succeeded = Number(row.succeeded ?? 0);
+          const failed = Number(row.failed ?? 0);
+          const deadLetter = Number(row.deadLetter ?? 0);
+          const denom = succeeded + failed;
+          const successRate = denom > 0 ? succeeded / denom : null;
+          let state: DispatchHealthByDestination['state'];
+          if (deadLetter > 0 || (successRate != null && successRate < 0.9)) state = 'down';
+          else if (successRate != null && successRate < 0.98) state = 'warn';
+          else state = 'ok';
+          return {
+            destination: String(row.destination),
+            total,
+            succeeded,
+            failed,
+            dead_letter: deadLetter,
+            success_rate: successRate,
+            state,
+          };
+        })
+        .sort((a, b) => {
+          const r = stateRank[a.state] - stateRank[b.state];
+          if (r !== 0) return r;
+          return a.destination.localeCompare(b.destination);
+        });
+
       const spendCents = Number(spendRows[0]?.totalSpend ?? 0);
       const daysWithSpend = Number(spendRows[0]?.daysWithSpend ?? 0);
       const spend = spendCents / 100;
@@ -417,6 +593,10 @@ export function createDashboardStatsRoute(opts: {
             attrTotal > 0 ? leadsWithFbclid / attrTotal : null,
           leads_without_source_pct:
             attrTotal > 0 ? leadsWithoutSource / attrTotal : null,
+        },
+        integrations: {
+          inbound: inboundProviders,
+          outbound: outboundDestinations,
         },
         roas,
         spend,

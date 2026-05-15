@@ -134,6 +134,8 @@ export function createGuruWebhookRoute(
   router.post('/', async (c) => {
     const db =
       typeof dbOrFactory === 'function' ? dbOrFactory(c.env) : dbOrFactory;
+    const requestId =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
     // -----------------------------------------------------------------------
     // Step 1: Read raw body text BEFORE parse
     // BR-WEBHOOK-001: raw body must be read first (pattern established for

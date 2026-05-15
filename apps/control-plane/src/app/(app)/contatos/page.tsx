@@ -53,9 +53,10 @@ interface LeadItem {
   lifecycle_status?: Lifecycle;
   first_seen_at: string;
   last_seen_at: string;
+  last_purchase_at: string | null;
 }
 
-type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status';
+type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status' | 'last_purchase_at';
 type SortDir = 'asc' | 'desc';
 
 const LIFECYCLE_OPTIONS: Lifecycle[] = [
@@ -360,6 +361,15 @@ export default function LeadsPage() {
                       onSort={handleSort}
                     />
                   </th>
+                  <th className="text-left px-3 py-3 font-normal hidden sm:table-cell w-px whitespace-nowrap">
+                    <SortableHeader
+                      label="Última compra"
+                      field="last_purchase_at"
+                      sortBy={sortBy}
+                      sortDir={sortDir}
+                      onSort={handleSort}
+                    />
+                  </th>
                   <th className="w-8" />
                 </tr>
               </thead>
@@ -410,6 +420,13 @@ export default function LeadsPage() {
                       <Link href={`/contatos/${lead.lead_public_id}`} tabIndex={-1} className="block">
                         <p className="text-xs font-medium tabular-nums">
                           {formatDateTime(lead.last_seen_at)}
+                        </p>
+                      </Link>
+                    </td>
+                    <td className="px-3 py-3 hidden sm:table-cell whitespace-nowrap">
+                      <Link href={`/contatos/${lead.lead_public_id}`} tabIndex={-1} className="block">
+                        <p className="text-xs font-medium tabular-nums">
+                          {lead.last_purchase_at ? formatDateTime(lead.last_purchase_at) : <span className="text-muted-foreground">—</span>}
                         </p>
                       </Link>
                     </td>

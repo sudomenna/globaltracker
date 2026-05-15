@@ -479,7 +479,8 @@ Script que cria retroativamente `dispatch_jobs` para `google_ads_conversion` + `
 
 ## §6 Notas técnicas invariantes
 
-- **DB binding pattern**: `DATABASE_URL ?? HYPERDRIVE.connectionString ?? ''` — obrigatório em todas as rotas.
+- **DB binding pattern**: `HYPERDRIVE?.connectionString ?? DATABASE_URL ?? ''` — **Hyperdrive primeiro, DATABASE_URL é fallback puro**. ADR-046. Não inverter a ordem em hipótese alguma; `DATABASE_URL` secret pode estar divergente do Hyperdrive binding (host direto, senha velha) e quebrar silenciosamente em rotas que o usam primeiro. Tarefa futura: extrair helper `getDbConnStr(env)` em `apps/edge/src/lib/db-conn.ts` e refactorar os ~46 callsites.
+- **Smoke test pós-mudança de credencial DB / Hyperdrive**: rodar `bash scripts/maintenance/webhook-smoke-test.sh` (INV-INFRA-001, ADR-046) **após**: rotação de senha Supabase, reconfiguração Hyperdrive (novo ID ou conn string), `wrangler secret put DATABASE_URL`, codemod que toque DB conn, deploy de rota webhook nova. Saída esperada: todos endpoints 4xx (validation failure é OK). 5xx = DB conn quebrada. Script rodou verde em 2026-05-13 pós-fix do incidente original (deploy `b3dd4cc2`).
 - **Migrations**: duas pastas — `packages/db/migrations/0NNN_*.sql` e `supabase/migrations/20260502000NNN_*.sql`. Manter sincronizadas.
 - **RLS dual-mode**: `NULLIF(current_setting('app.current_workspace_id', true), '')::uuid OR public.auth_workspace_id()`.
 - **JSONB writes**: usar helper `jsonb()` em [`apps/edge/src/lib/jsonb-cast.ts`](apps/edge/src/lib/jsonb-cast.ts) (dollar-quoted via `sql.raw`) para qualquer escrita em coluna jsonb. Driver pg-cloudflare-workers/Hyperdrive serializa params como text com aspas — sem o helper, valores JSON viram jsonb-string.

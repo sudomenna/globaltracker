@@ -42,6 +42,10 @@ const MetaInsightRowSchema = z.object({
   adset_id: z.string().optional(),
   ad_id: z.string().optional(),
   date_start: z.string(),
+  // BR-COST-001: account currency must survive Zod parse so resolveMetaRowCurrency
+  // can read it downstream. Without this field the validated row is stripped to
+  // only the declared keys and currency defaults to USD even for BRL accounts.
+  account_currency: z.string().optional(),
 });
 
 export type MetaInsightRow = z.infer<typeof MetaInsightRowSchema>;

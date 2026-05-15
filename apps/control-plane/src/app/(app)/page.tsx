@@ -48,6 +48,25 @@ type LaunchStat = {
   revenue: number;
 };
 
+type InboundWebhookHealth = {
+  provider: 'guru' | 'onprofit' | 'sendflow' | 'hotmart' | 'kiwify' | 'stripe';
+  last_received_at: string | null;
+  minutes_since_last: number | null;
+  count_1h: number;
+  count_24h: number;
+  state: 'ok' | 'warn' | 'down';
+};
+
+type DispatchHealthByDestination = {
+  destination: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  dead_letter: number;
+  success_rate: number | null;
+  state: 'ok' | 'warn' | 'down';
+};
+
 type DashboardStats = {
   period: string;
   business: {
@@ -67,6 +86,10 @@ type DashboardStats = {
     dead_letter_count: number;
     leads_with_fbclid_pct: number | null;
     leads_without_source_pct: number | null;
+  };
+  integrations: {
+    inbound: InboundWebhookHealth[];
+    outbound: DispatchHealthByDestination[];
   };
   roas: number | null;
   spend: number;
@@ -306,6 +329,166 @@ function LaunchesTable({ data }: { data: LaunchStat[] }) {
   );
 }
 
+// ─── Integration health ──────────────────────────────────────────────────────
+
+const PROVIDER_LABELS: Record<InboundWebhookHealth['provider'], string> = {
+  guru: 'Guru',
+  onprofit: 'OnProfit',
+  sendflow: 'SendFlow',
+  hotmart: 'Hotmart',
+  kiwify: 'Kiwify',
+  stripe: 'Stripe',
+};
+
+const DESTINATION_LABELS: Record<string, string> = {
+  meta_capi: 'Meta CAPI',
+  ga4_mp: 'GA4 MP',
+  google_ads_conversion: 'Google Ads Conv.',
+  google_enhancement: 'Google Enhanced',
+  meta_audiences: 'Meta Audiences',
+};
+
+const STATE_STYLES: Record<'ok' | 'warn' | 'down', { dot: string; text: string }> = {
+  ok: { dot: 'bg-green-500', text: 'text-green-700' },
+  warn: { dot: 'bg-amber-500', text: 'text-amber-700' },
+  down: { dot: 'bg-red-500', text: 'text-red-700' },
+};
+
+function fmtTimeSince(minutes: number | null): string {
+  if (minutes == null) return 'sem dados';
+  if (minutes < 1) return 'agora';
+  if (minutes < 60) return `há ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const remMin = minutes % 60;
+    return remMin > 0 ? `há ${hours}h ${remMin}min` : `há ${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  return `há ${days}d`;
+}
+
+function HealthRow({
+  label,
+  state,
+  detail,
+}: {
+  label: string;
+  state: 'ok' | 'warn' | 'down';
+  detail: string;
+}) {
+  const style = STATE_STYLES[state];
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`h-2 w-2 rounded-full shrink-0 ${style.dot}`} aria-hidden="true" />
+        <span className="font-medium truncate">{label}</span>
+      </div>
+      <span className={`text-xs tabular-nums ${state === 'ok' ? 'text-muted-foreground' : style.text}`}>
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+function IntegrationsHealthCard({
+  inbound,
+  outbound,
+}: {
+  inbound: InboundWebhookHealth[];
+  outbound: DispatchHealthByDestination[];
+}) {
+  const hasInbound = inbound.length > 0;
+  const hasOutbound = outbound.length > 0;
+
+  if (!hasInbound && !hasOutbound) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Saúde Integrações
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Nenhuma atividade nas últimas horas para mostrar.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          Saúde Integrações
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {hasInbound && (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">
+              Webhooks recebidos (inbound)
+            </p>
+            <div className="divide-y">
+              {inbound.map((p) => (
+                <HealthRow
+                  key={p.provider}
+                  label={PROVIDER_LABELS[p.provider] ?? p.provider}
+                  state={p.state}
+                  detail={`${fmtTimeSince(p.minutes_since_last)} · ${p.count_24h} em 24h`}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasOutbound && (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">
+              Dispatchers (outbound, 24h)
+            </p>
+            <div className="divide-y">
+              {outbound.map((d) => (
+                <HealthRow
+                  key={d.destination}
+                  label={DESTINATION_LABELS[d.destination] ?? d.destination}
+                  state={d.state}
+                  detail={`${d.success_rate != null ? fmtPct(d.success_rate) : '—'} · ${d.succeeded}/${d.total}${d.dead_letter > 0 ? ` · ${d.dead_letter} DLQ` : ''}`}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function IntegrationsBanner({ downCount }: { downCount: number }) {
+  if (downCount === 0) return null;
+  return (
+    <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm flex items-start gap-2">
+      <AlertTriangle
+        className="h-4 w-4 text-destructive shrink-0 mt-0.5"
+        aria-hidden="true"
+      />
+      <div className="flex-1">
+        <p className="font-medium text-destructive">
+          {downCount === 1
+            ? '1 integração está sem receber/enviar há mais de 6h'
+            : `${downCount} integrações estão sem receber/enviar há mais de 6h`}
+        </p>
+        <p className="text-xs text-destructive/80 mt-0.5">
+          Veja detalhes no card &quot;Saúde Integrações&quot; abaixo. Verifique
+          status no provedor (Guru/OnProfit) ou rode{' '}
+          <code className="font-mono text-xs">scripts/maintenance/webhook-smoke-test.sh</code>.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
@@ -340,7 +523,18 @@ export default function DashboardPage() {
     return () => { cancelled = true; };
   }, [accessToken, period]);
 
-  const { business, funnel, tracking, launches } = stats ?? {};
+  const { business, funnel, tracking, launches, integrations } = stats ?? {};
+
+  // Funnel gap signal: pessoas chegando ao funil mas zero compradores.
+  // Threshold deliberadamente baixo (5 leads) — em workspaces de baixo volume,
+  // 5 leads + 0 compra já é sinal anômalo. Período relevante é o selecionado.
+  const funnelGap =
+    (funnel?.leads ?? 0) >= 5 && (funnel?.buyers ?? 0) === 0;
+
+  // Banner global: quantas integrações estão "down" agora.
+  const downCount =
+    (integrations?.inbound?.filter((p) => p.state === 'down').length ?? 0) +
+    (integrations?.outbound?.filter((d) => d.state === 'down').length ?? 0);
 
   return (
     <div className="space-y-6">
@@ -368,6 +562,9 @@ export default function DashboardPage() {
 
       {stats && (
         <>
+          {/* Banner global se algum integração está down */}
+          <IntegrationsBanner downCount={downCount} />
+
           {/* Linha 1 — Negócio */}
           <div>
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Negócio</p>
@@ -375,7 +572,14 @@ export default function DashboardPage() {
               <KpiCard
                 title="Faturamento"
                 value={fmtCurrency(business?.revenue ?? 0)}
-                sub={business?.buyers_unique ? `${fmtCount(business.buyers_unique)} compradores únicos` : undefined}
+                sub={
+                  funnelGap
+                    ? `${funnel?.leads ?? 0} leads no período sem nenhuma compra — checkout / webhook?`
+                    : business?.buyers_unique
+                      ? `${fmtCount(business.buyers_unique)} compradores únicos`
+                      : undefined
+                }
+                alert={funnelGap}
               />
               <KpiCard
                 title="Investimento"
@@ -440,7 +644,18 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Linha 4 — Lançamentos */}
+          {/* Linha 4 — Saúde Integrações (inbound webhooks + outbound dispatchers) */}
+          <div>
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
+              Saúde Integrações
+            </p>
+            <IntegrationsHealthCard
+              inbound={integrations?.inbound ?? []}
+              outbound={integrations?.outbound ?? []}
+            />
+          </div>
+
+          {/* Linha 5 — Lançamentos */}
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

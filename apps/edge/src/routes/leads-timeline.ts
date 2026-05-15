@@ -103,7 +103,7 @@ const ListLeadsQuerySchema = z
       .enum(LIFECYCLE_STATUSES as readonly [LifecycleStatus, ...LifecycleStatus[]])
       .optional(),
     sort_by: z
-      .enum(['last_seen_at', 'first_seen_at', 'name', 'lifecycle_status'])
+      .enum(['last_seen_at', 'first_seen_at', 'name', 'lifecycle_status', 'last_purchase_at'])
       .optional(),
     sort_dir: z.enum(['asc', 'desc']).optional(),
   })
@@ -340,6 +340,7 @@ export type ListLeadsFn = (opts: {
     lifecycle_status: LifecycleStatus;
     first_seen_at: string;
     last_seen_at: string;
+    last_purchase_at: string | null;
   }>
 >;
 

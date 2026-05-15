@@ -1551,6 +1551,73 @@ Atende BR-WEBHOOK-002 (`event_id = sha256(platform || ':' || platform_event_id)[
 
 ---
 
+## ADR-046 — Ordem canônica de DB conn (Hyperdrive-first) + smoke test pós-deploy de mudança em credenciais (2026-05-13)
+
+### Status
+Aceito.
+
+### Contexto
+
+Em 2026-05-13 ~21:00 BRT (12/05), webhooks inbound de Guru, OnProfit e SendFlow começaram a retornar HTTP 500 silenciosamente em produção. Sintoma só foi observado ~16h depois, no Meta Events Manager (`Purchase: recebido pela última vez há 16 horas`). Outros endpoints (tracker, dashboard, dispatchers) continuaram funcionando normalmente.
+
+**Cadeia causal**:
+
+1. **Migração Hyperdrive** (deploys `cbb4c2c` → `88d2be68` → `404d4fea`): binding HYPERDRIVE reconfigurado pra Supavisor pooler em session-mode; codemod automatizado trocou a ordem `DATABASE_URL ?? HYPERDRIVE` → `HYPERDRIVE ?? DATABASE_URL` em 43 callsites de 15 arquivos.
+
+2. **Codemod incompleto**: 3 callsites em [`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (linhas 435, 448, 463 — Guru/SendFlow/OnProfit webhook wiring) usavam `(env as unknown as Bindings).DATABASE_URL` com type cast. O regex/AST do codemod não bateu com o pattern por causa do cast — esses 3 callsites mantiveram a ordem antiga (DATABASE_URL primeiro).
+
+3. **`DATABASE_URL` divergente do binding HYPERDRIVE**: o secret CF `DATABASE_URL` em prod estava setado, mas apontava pra credencial / host não-funcional após a migração para Supavisor pooler (provavelmente senha velha ou host direto `db.<ref>.supabase.co` que não resolve de Workers). Os 43 callsites com `HYPERDRIVE first` continuaram funcionando; os 3 webhook callsites foram pra DATABASE_URL primeiro → throw → catch → HTTP 500.
+
+4. **Invisibilidade**: sintoma só visível na Meta Events Manager (sinal externo, lag de horas) e via comparação manual de timestamps em DB. Não havia métrica/alerta interno pra "webhooks pararam de chegar".
+
+5. **Bug secundário (descoberto durante diagnóstico)**: [`apps/edge/src/routes/webhooks/guru.ts`](../../apps/edge/src/routes/webhooks/guru.ts) referenciava variável `requestId` sem declarar — `ReferenceError` em runtime quando body chegava sem `api_token`. Não afetava webhooks reais (que sempre mandam token), mas atrapalhou diagnóstico ao testar com payload junk.
+
+### Decisão
+
+**Ação imediata (já aplicada, deploy `b3dd4cc2`)**:
+- Trocar a ordem nos 3 webhook callsites em `apps/edge/src/index.ts` para `HYPERDRIVE first`.
+- Declarar `requestId` corretamente em `guru.ts`.
+
+**Ação preventiva (esta ADR)**:
+
+1. **Ordem canônica é Hyperdrive-first em TODOS os callsites**. `DATABASE_URL` é fallback puro — não pode ser caminho primário em nenhum lugar do edge. Próximas adições de rota DEVEM seguir esse padrão.
+
+2. **Smoke test obrigatório após mudança em credencial DB**: script [`scripts/maintenance/webhook-smoke-test.sh`](../../scripts/maintenance/webhook-smoke-test.sh) faz POST com payload junk em cada webhook endpoint e falha (exit≠0) se algum retornar 5xx. Rodar após:
+   - Rotação de senha Supabase
+   - Reconfiguração de Hyperdrive binding (novo ID ou nova connection string)
+   - `wrangler secret put DATABASE_URL`
+   - Codemod que toque DB conn ou bindings
+   - Deploy de rota webhook nova
+
+3. **Próximo passo planejado (não bloqueante)**: extrair helper `getDbConnStr(env)` em [`apps/edge/src/lib/db-conn.ts`](../../apps/edge/src/lib/db-conn.ts), refactorar todos os ~46 callsites pra usar o helper único. Próxima mudança de ordem vira 1-linha em 1 arquivo, codemod desnecessário.
+
+### Alternativas consideradas
+
+- **Lint rule custom proibindo `??` inline com DATABASE_URL/HYPERDRIVE**: viável mas eslint+TS já tem ESLint na pipeline; custo de manter rule custom > valor.
+- **Remover `DATABASE_URL` secret completamente e usar só Hyperdrive**: fallback fica zero — se Hyperdrive der incident, todo o edge para. Rejeitado, fallback é proteção operacional.
+- **Apenas documentar em CLAUDE.md/AGENTS.md**: docs sem gatekeeper executável quebram de novo (já aconteceu). Smoke test é a defesa real.
+- **Adicionar métrica/alerta `last_webhook_received_at por provider` no dashboard de saúde**: bom complemento mas não substitui o smoke test (alerta avisa depois do problema; smoke test previne).
+
+### Consequências
+
+- (+) Próxima mudança de credencial Supabase ou Hyperdrive é checada em segundos via `bash scripts/maintenance/webhook-smoke-test.sh`.
+- (+) Inconsistência interna entre arquivos sobre ordem de conn fica visível na review (todo callsite deve estar HYPERDRIVE-first até helper landar).
+- (+) Bug similar no futuro é detectado pré-deploy via curl (smoke test pode rodar contra branch deploy preview também).
+- (–) Smoke test precisa rodar manualmente até virar step de CI/CD post-deploy — primeiro versão é shell script, integração com pipeline fica como tarefa futura.
+- (–) Helper `getDbConnStr` ainda não existe — invariante de "Hyperdrive-first em todos os callsites" depende de disciplina humana até a refactor.
+
+### Invariante derivada
+
+**INV-INFRA-001 (nova)**: Toda mudança em credencial DB ou config Hyperdrive em produção é seguida de execução de `scripts/maintenance/webhook-smoke-test.sh`. Deploy só é considerado completo após smoke test verde.
+
+### Impacta
+
+[`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (linhas 435/448/463 — fix aplicado), [`apps/edge/src/routes/webhooks/guru.ts`](../../apps/edge/src/routes/webhooks/guru.ts) (requestId declarado), [`scripts/maintenance/webhook-smoke-test.sh`](../../scripts/maintenance/webhook-smoke-test.sh) (novo), MEMORY §6 (invariante adicionada).
+
+Tarefa futura: extrair `getDbConnStr` helper e refactorar callsites.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

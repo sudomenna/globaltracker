@@ -434,8 +434,8 @@ app.route(
   '/v1/webhook/guru',
   createGuruWebhookRoute((env) =>
     createDb(
-      (env as unknown as Bindings).DATABASE_URL ??
-        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+      (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        (env as unknown as Bindings).DATABASE_URL ??
         '',
     ),
   ),
@@ -447,8 +447,8 @@ app.route(
   '/v1/webhooks/sendflow',
   createSendflowWebhookRoute((env) =>
     createDb(
-      (env as unknown as Bindings).DATABASE_URL ??
-        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+      (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        (env as unknown as Bindings).DATABASE_URL ??
         '',
     ),
   ),
@@ -462,8 +462,8 @@ app.route(
   '/v1/webhooks/onprofit',
   createOnprofitWebhookRoute((env) =>
     createDb(
-      (env as unknown as Bindings).DATABASE_URL ??
-        (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+      (env as unknown as Bindings).HYPERDRIVE?.connectionString ??
+        (env as unknown as Bindings).DATABASE_URL ??
         '',
     ),
   ),
@@ -2284,20 +2284,37 @@ async function scheduledHandler(
 
   // ---------------------------------------------------------------------------
   // 17:30 UTC — cost ingestor (INV-COST-006: idempotent upsert)
+  //
+  // Ingest BOTH yesterday (definitive, full day in UTC) AND today (partial
+  // snapshot, captures spend up to the moment of fetch). Without ingesting
+  // yesterday again here, a single 17:30 UTC fire would only ever see the
+  // morning portion of each day and never re-fetch the evening hours.
   // ---------------------------------------------------------------------------
   if (cron === '30 17 * * *') {
-    const date = new Date(event.scheduledTime)
+    const scheduledAt = new Date(event.scheduledTime);
+    const yesterday = new Date(scheduledAt.getTime() - 86_400_000)
       .toISOString()
       .split('T')[0] as string;
+    const today = scheduledAt.toISOString().split('T')[0] as string;
 
     // INV-COST-006: idempotent — upsert ON CONFLICT DO UPDATE
-    const result = await ingestDailySpend(date, env, db);
+    const yesterdayResult = await ingestDailySpend(yesterday, env, db);
+    const todayResult = await ingestDailySpend(today, env, db);
 
     // BR-PRIVACY-001: no PII — only counts and error strings logged
     safeLog('info', {
       event: 'cost_ingestor_completed',
-      ingested: result.ingested,
-      error_count: result.errors.length,
+      date: yesterday,
+      scope: 'yesterday_full',
+      ingested: yesterdayResult.ingested,
+      error_count: yesterdayResult.errors.length,
+    });
+    safeLog('info', {
+      event: 'cost_ingestor_completed',
+      date: today,
+      scope: 'today_partial',
+      ingested: todayResult.ingested,
+      error_count: todayResult.errors.length,
     });
     return;
   }

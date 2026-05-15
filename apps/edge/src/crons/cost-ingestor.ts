@@ -136,6 +136,7 @@ async function upsertAdSpend(db: Db, row: UpsertRow): Promise<void> {
       granularity, date
     )
     DO UPDATE SET
+      currency                 = EXCLUDED.currency,
       spend_cents              = EXCLUDED.spend_cents,
       spend_cents_normalized   = EXCLUDED.spend_cents_normalized,
       fx_rate                  = EXCLUDED.fx_rate,
@@ -261,7 +262,21 @@ export async function ingestDailySpend(
 
   // -------------------------------------------------------------------------
   // 2. Process Meta rows
+  //
+  // Meta sometimes omits `account_currency` on aggregated rows even though
+  // the field is stable per account. Scan the batch once and lock in the
+  // first present value so every row in the same batch gets the correct
+  // currency — falling back to USD only when no row exposes the field.
   // -------------------------------------------------------------------------
+  let batchAccountCurrency = 'USD';
+  for (const row of metaRows) {
+    const c = (row as Record<string, unknown>).account_currency;
+    if (typeof c === 'string' && c.length === 3) {
+      batchAccountCurrency = c.toUpperCase();
+      break;
+    }
+  }
+
   for (const row of metaRows) {
     try {
       // INV-COST-002: granularity='ad' for Meta rows
@@ -270,12 +285,10 @@ export async function ingestDailySpend(
       // BR-COST-001: parse spend string → cents integer
       const spendCents = parseMetaSpendCents(row.spend);
 
-      // Resolve currency from raw row (account_currency field may be present).
-      // resolveMetaRowCurrency accepts Record<string,unknown>; MetaInsightRow
-      // is a strict subset so the cast is safe — no PII in this object.
+      // Resolve currency from raw row, with batch-level fallback (above).
       const currency = resolveMetaRowCurrency(
         row as Record<string, unknown>,
-        'USD',
+        batchAccountCurrency,
       );
 
       // INV-COST-003, INV-COST-004: resolve FX for normalization

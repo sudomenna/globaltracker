@@ -19,7 +19,7 @@ import {
   leads,
   pages,
 } from '@globaltracker/db';
-import { and, asc, desc, eq, gt, ilike, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, isNotNull, lt, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { decryptPii, hashPii } from './pii.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
@@ -60,9 +60,10 @@ export type LeadListItem = {
   lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
+  last_purchase_at: string | null;
 };
 
-export type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status';
+export type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status' | 'last_purchase_at';
 export type SortDir = 'asc' | 'desc';
 
 export type ListLeadsOpts = {
@@ -526,6 +527,24 @@ export function createLeadsQueryFns(
       conditions.push(sortDir === 'desc' ? lt(col, cursor) : gt(col, cursor));
     }
 
+    // Derived table: last Purchase event_time per lead in this workspace.
+    // LEFT JOIN avoids correlated subquery issues with Drizzle's dynamic query builder.
+    const purchaseSq = db
+      .select({
+        leadId: events.leadId,
+        lastPurchaseAt: sql<Date | null>`MAX(${events.eventTime})`.as('last_purchase_at'),
+      })
+      .from(events)
+      .where(
+        and(
+          eq(events.workspaceId, workspaceId),
+          eq(events.eventName, 'Purchase'),
+          isNotNull(events.leadId),
+        ),
+      )
+      .groupBy(events.leadId)
+      .as('purchase_sq');
+
     let query = db
       .select({
         id: leads.id,
@@ -538,8 +557,10 @@ export function createLeadsQueryFns(
         piiKeyVersion: leads.piiKeyVersion,
         firstSeenAt: leads.firstSeenAt,
         lastSeenAt: leads.lastSeenAt,
+        lastPurchaseAt: purchaseSq.lastPurchaseAt,
       })
       .from(leads)
+      .leftJoin(purchaseSq, eq(purchaseSq.leadId, leads.id))
       .$dynamic();
 
     if (launchPublicId) {
@@ -561,14 +582,19 @@ export function createLeadsQueryFns(
         );
     }
 
-    const sortColMap = {
-      last_seen_at: leads.lastSeenAt,
-      first_seen_at: leads.firstSeenAt,
-      name: leads.name,
-      lifecycle_status: leads.lifecycleStatus,
-    } as const;
-    const sortCol = sortColMap[sortBy];
-    const orderExpr = sortDir === 'asc' ? asc(sortCol) : desc(sortCol);
+    let orderExpr;
+    if (sortBy === 'last_purchase_at') {
+      orderExpr = sql`${purchaseSq.lastPurchaseAt} ${sql.raw(sortDir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`;
+    } else {
+      const sortColMap = {
+        last_seen_at: leads.lastSeenAt,
+        first_seen_at: leads.firstSeenAt,
+        name: leads.name,
+        lifecycle_status: leads.lifecycleStatus,
+      } as const;
+      const sortCol = sortColMap[sortBy];
+      orderExpr = sortDir === 'asc' ? asc(sortCol) : desc(sortCol);
+    }
 
     const rows = await query
       .where(and(...conditions))
@@ -594,6 +620,12 @@ export function createLeadsQueryFns(
           decryptOrNull(row.phoneEnc, workspaceId, row.piiKeyVersion),
         ]);
 
+        // MAX() from a SQL expression returns a pg timestamp string, not a Date.
+        const rawLpa = row.lastPurchaseAt as Date | string | null;
+        const lastPurchaseAt = rawLpa != null
+          ? (rawLpa instanceof Date ? rawLpa : new Date(rawLpa)).toISOString()
+          : null;
+
         return {
           lead_public_id: row.id,
           display_name: displayName,
@@ -603,6 +635,7 @@ export function createLeadsQueryFns(
           lifecycle_status: row.lifecycleStatus as LifecycleStatus,
           first_seen_at: row.firstSeenAt.toISOString(),
           last_seen_at: row.lastSeenAt.toISOString(),
+          last_purchase_at: lastPurchaseAt,
         };
       }),
     );
