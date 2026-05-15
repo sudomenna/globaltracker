@@ -10,20 +10,45 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: manutenção (infra Hyperdrive + PII identity hardening) — deployado (2026-05-13 sessão 1, version `aae05007`).
-- **Branch**: `main`. **20+ commits à frente de `origin/main`** pendentes de push:
-  - `0937ae4` fix(webhook): cart_abandonment event_id derives from id alone (ADR-045) ← **novo**
-  - `10f14b9` docs(webhook): ADR-045 — OnProfit cart_abandonment event_id derives from id only ← **novo**
-  - `4fc0928` fix(identity): enrichLeadPii overwrites *_enc when plaintext diverges (ADR-044) ← **novo**
-  - `a1b0768` docs(identity): ADR-044 — leads.{email,phone,name}_enc mirror active identifier ← **novo**
-  - `246ce83` feat(infra): prefer Hyperdrive over DATABASE_URL secret for DB connections ← **novo**
-  - `cbb4c2c` fix(infra): migrate Hyperdrive config to Supavisor pooler + sanitize conn string ← **novo**
-  - `8b9f449` chore(gitignore): exclude local diagnostic scripts and debug screenshots ← **novo**
-  - `731f74a` feat(meta-capi): add event_source_url to CAPI payload (sessão anterior)
-  - anteriores
+- **Sprint ativo**: manutenção. Última sessão 2026-05-14 fechou incidente Hyperdrive + observabilidade + Meta cost ingestor.
+- **Branch**: `main`. Sincronizado com `origin/main` — todos os commits da sessão pushed.
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Não tocado nesta sessão.
-- **Edge prod**: deploy atual **`aae05007`** (cart_abandonment dedup-by-id, 2026-05-13). Comando: **`pnpm deploy:edge`**.
-- **Hyperdrive prod**: agora ativo — binding `34681cabdb954437ba6db304a235da87`, aponta para Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode), user `postgres.kaxcmhfaqrxwnpftkslj`. Worker prefere Hyperdrive sobre `DATABASE_URL` secret. Cache 60s no edge + 15s stale-while-revalidate. **Rollback path**: `wrangler rollback` se Hyperdrive der incident — `DATABASE_URL` secret está válido (verificado: 762 raw_events processed hoje passaram por ele pré-swap).
+- **Edge prod**: deploy atual **`6b12d3a7`** (Meta currency fix + cron yesterday+today + observability dashboard, 2026-05-14). Comando: **`pnpm deploy:edge`**.
+- **Hyperdrive prod**: ativo desde 2026-05-13 — binding `34681cabdb954437ba6db304a235da87`, aponta para Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode), user `postgres.kaxcmhfaqrxwnpftkslj`. Worker prefere Hyperdrive sobre `DATABASE_URL` secret (ADR-046 — **HYPERDRIVE first, DATABASE_URL fallback**, nunca inverter). Smoke test pós-mudança: `bash scripts/maintenance/webhook-smoke-test.sh`.
+
+### Entregas 2026-05-14 — Incidente Hyperdrive + observability + Meta cost ingestor
+
+Sessão única, commit `149fbed` (12 arquivos, 654 +/31 −) + doc-sync `c48d345`. Três blocos independentes resolvidos no mesmo dia.
+
+#### Bloco 1 — Incidente Hyperdrive (16h de outage silencioso de webhooks)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 1 | **Diagnóstico**: Meta Events Manager mostrava último Purchase há 16h. Causa: 3 rotas webhook (`/v1/webhook/guru`, `/v1/webhooks/sendflow`, `/v1/webhooks/onprofit`) ficaram com ordem antiga `DATABASE_URL ?? HYPERDRIVE` após codemod do dia 13 — cast `(env as unknown as Bindings)` bloqueou o regex match. `DATABASE_URL` secret estava divergente do Hyperdrive binding → 500 silencioso nas 3 rotas | `149fbed` | `5656a816` |
+| 2 | **Fix**: invertido para HYPERDRIVE first, DATABASE_URL fallback nas 3 rotas. ADR-046 já existia. | (incluso) | (incluso) |
+| 3 | **Bug colateral**: `apps/edge/src/routes/webhooks/guru.ts` referenciava `requestId` sem declarar → ReferenceError em payloads sem api_token. Declarado no entry do handler. | (incluso) | (incluso) |
+| 4 | **Prevenção**: novo `scripts/maintenance/webhook-smoke-test.sh` — POST junk em cada endpoint, espera 4xx. INV-INFRA-001 documentada em ADR-046. Validado verde em prod 2026-05-13 e 14. | (incluso) | (incluso) |
+| 5 | **Recovery de vendas perdidas**: user mandou 50+ payloads via mirror n8n; replay via `POST /v1/webhooks/onprofit` com idempotency `sha256(orderId+status)` — todos OK. Limitação: Meta atribuição prejudicada (eventos chegaram com delay → "Atualidade dos dados: por hora" no Events Manager). Match quality 9.2/10. | (manual) | — |
+
+#### Bloco 2 — Observability (dashboard de saúde de integrações)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 6 | **Endpoint**: `GET /v1/dashboard/stats` ganhou `integrations.{inbound,outbound}`. Provider classificado via marker no `raw_events.payload` (`_guru_event_id`, `_onprofit_event_type`, `_provider='sendflow'`, `_hotmart_event_type`). Thresholds: ok < 2h, warn 2-6h, down > 6h (omit se count_7d < 5). | `149fbed` | `5656a816` |
+| 7 | **UI**: `IntegrationsBanner` (vermelho global se algum provider down) + `IntegrationsHealthCard` (semáforo por provider). KpiCard "Faturamento" pinta vermelho se `leads ≥ 5 && buyers === 0` (funnel-gap signal). | (incluso) | (incluso) |
+| 8 | **"Última compra"** coluna ordenável em `/contatos` — derivada `MAX(events.event_time)` para Purchase, NULLS LAST. `last_purchase_at` em `LeadListItem`. Conversão defensiva `Date` ou `string` (postgres.js retorna agregação como string). | (incluso) | (incluso) |
+
+#### Bloco 3 — Meta cost ingestor (Investimento R$ 7K vs Ads Manager R$ 11.6K)
+
+| # | Tema | Commit | Deploy |
+|---|---|---|---|
+| 9 | **Bug 1**: `MetaInsightRowSchema` strippava `account_currency` → fallback hardcoded `'USD'` mesmo em conta BRL. Adicionado `account_currency: z.string().optional()` ao schema. | `149fbed` | `5656a816` → `6b12d3a7` |
+| 10 | **Bug 2**: Meta API omite `account_currency` em algumas rows agregadas. `cost-ingestor.ts` agora varre o batch e cacheia a primeira currency válida em `batchAccountCurrency`, usada como fallback no resolveMetaRowCurrency. | (incluso) | (incluso) |
+| 11 | **Bug 3**: `upsertAdSpend` ON CONFLICT DO UPDATE não incluía `currency` → re-ingestões deixavam lixo histórico (rows antigas USD permaneciam USD). Adicionado `currency = EXCLUDED.currency`. | (incluso) | (incluso) |
+| 12 | **Bug 4**: cron `30 17 * * *` coletava apenas o dia em andamento → capturava só ~14h iniciais, nunca re-fetchava a noite (perdia 30-90% do gasto diário). Mudado para coletar `yesterday (full UTC) + today (partial snapshot)`. | (incluso) | (incluso) |
+| 13 | **Backfill** 08-14 mai via `POST /v1/admin/cost-backfill?date=YYYY-MM-DD` (rota pré-existente). 76 rows BRL após fix; total R$ 11.638,23 (antes R$ 7.019,03). Match com Ads Manager validado. | (manual) | — |
+
+**Doc-sync** (commit `c48d345`): `docs/30-contracts/05-api-server-actions.md` (dashboard-stats shape + last_purchase_at), `docs/10-architecture/07-observability.md` (Saúde Integrações + smoke test), `docs/40-integrations/12-fx-rates-provider.md` (account_currency authority), `docs/20-domain/10-mod-cost.md` (cron yesterday+today), `docs/90-meta/04-decision-log.md` (ADR-046 follow-up).
 
 ### Entregas 2026-05-13 sessão 1 (esta sessão) — Infra Hyperdrive + PII identity hardening
 
@@ -341,6 +366,9 @@ Tracking: criar issue futura quando o assunto voltar.
 
 ### Bloqueios e TODOs de código
 
+- **GOOGLE-ADS-OAUTH-REFRESH-401** — Cron de cost ingestor reporta `google_ads_fetch_failed: OAuth token exchange failed with HTTP 401` em todas as datas. Refresh token expirado. Resultado: investimento Google Ads = R$ 0 no dashboard. Não bloqueia Meta. Fix: reconectar OAuth no CP (Settings → Integrations → Google Ads).
+- **SENDFLOW-WEBHOOK-PAUSED-NO-RETURN** — SendFlow não envia eventos desde 2026-05-13 00:20 UTC (último). Endpoint nosso está saudável (smoke test 401 = OK). Hipótese: SendFlow pausou o webhook automaticamente após N falhas durante o outage Hyperdrive (proteção anti-loop). Ação requerida: user precisa entrar no painel SendFlow → reativar webhook.
+
 - **MISSING-UNIT-TESTS-SESSION-2026-05-07** — TODO Sprint 16. 6 specs faltando:
   1. `tests/unit/dispatchers/meta-capi/mapper.test.ts` — mapeamento de custom events (`custom:click_wpp_join` → `Contact`, `custom:watched_workshop` → `ViewContent`). **Nota**: `click_buy_*` removidos do mapper em 2026-05-12 (commit `1700514`) — não testar mais mapeamento deles para IC.
   2. `tests/unit/dispatchers/ga4-mp/mapper.test.ts` — `begin_checkout`, `join_group`, `view_item` + `params.group_id` extraído de `cd.group_id` ou `cd.campaign_id`.
@@ -463,7 +491,7 @@ Script que cria retroativamente `dispatch_jobs` para `google_ads_conversion` + `
 | CF KV (prod) | `c92aa85488a44de6bdb5c68597881958` |
 | CF KV (preview) | `59d0cf1570ca499eb4597fc5218504c2` |
 | CF Queues | `gt-events`, `gt-dispatch` |
-| Hyperdrive | config `globaltracker-db`, id `39156b974a274f969ca96d4e0c32bce1` |
+| Hyperdrive | config `globaltracker-db`, id **`34681cabdb954437ba6db304a235da87`** (Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432`, session mode) |
 | Worker prod | `globaltracker-edge.globaltracker.workers.dev` |
 | R2 bucket | `gt-tracker-cdn` (público em `pub-e224c543d78644699af01a135279a5e2.r2.dev`) |
 | Wrangler | **`pnpm deploy:edge`** (wrangler@4; bug CF-10023 resolvido pela CF em 2026-05-09). Token em `.env.local` como `CLOUDFLARE_API_TOKEN` (gitignored). API token "Edit Cloudflare Workers" — **não** OAuth de `wrangler login`. |
@@ -473,7 +501,7 @@ Script que cria retroativamente `dispatch_jobs` para `google_ads_conversion` + `
 
 **DB connect ad-hoc**: `host=db.kaxcmhfaqrxwnpftkslj.supabase.co port=5432 user=postgres database=postgres ssl={rejectUnauthorized:false}` — senha em `~/.zshrc` ou cofre.
 
-**Recovery operacional pós-deploy**: hoje rodando via `DATABASE_URL` secret (fallback do binding HYPERDRIVE stripado pelo wrangler 2.x). Restaurar HYPERDRIVE binding quando descobrirmos como deploy com wrangler 4.x.
+**Recovery operacional pós-deploy**: rodando via Hyperdrive desde 2026-05-13. `DATABASE_URL` secret continua válido como fallback puro (mas não captura exceção em runtime — rollback necessário se Hyperdrive der incident).
 
 ---
 
