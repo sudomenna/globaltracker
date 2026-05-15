@@ -84,3 +84,16 @@ FX_RATES_API_KEY (apenas Wise)
 - `fx_rates_fetch_succeeded_total{provider}`
 - `fx_rates_fetch_failed_total{provider, error}`
 - `ad_spend_daily_using_stale_fx_total` (alerta se > 0)
+
+## Currency de origem — autoridade vem do row Meta (2026-05-14)
+
+A moeda original de cada row Meta vem do campo `account_currency` retornado por `GET /act_{id}/insights`. Esse campo é **autoritativo por conta** e é o input para `resolveMetaRowCurrency` (`apps/edge/src/integrations/meta-insights/client.ts`).
+
+**Risco resolvido em 2026-05-14 (commit `149fbed`):**
+
+- `MetaInsightRowSchema` (Zod) não declarava `account_currency` — o `.strict()` strippava o campo silenciosamente. `resolveMetaRowCurrency` caía sempre no fallback `'USD'` mesmo em contas BRL, e a normalização FX tratava spend BRL como se fosse USD → multiplicava por taxa USD→BRL → inflava ~5× o `spend_cents_normalized`. Após backfill 2026-05-08…14: dashboard "Investimento" passou de `R$ 7.019,03` errado para `R$ 11.638,23` correto.
+- Fix em duas camadas:
+  1. Schema agora declara `account_currency: z.string().optional()`.
+  2. `cost-ingestor.ts` varre o batch antes do loop e cacheia o primeiro `account_currency` válido em `batchAccountCurrency` (Meta às vezes omite em rows agregadas; é estável por conta, então a primeira presença é autoritativa para o batch inteiro).
+
+**Upsert preserva currency atualizada.** O `ON CONFLICT DO UPDATE` em `ad_spend_daily` (`apps/edge/src/crons/cost-ingestor.ts`) inclui `currency = EXCLUDED.currency` desde o fix — re-ingestões sobrescrevem rows legadas USD com a moeda correta da conta. Antes, rows antigas ficavam congeladas com a moeda errada e a re-ingestão só atualizava `spend_cents` / `spend_cents_normalized` / `fx_*`, deixando inconsistência interna na tabela.

@@ -160,6 +160,36 @@ A view recomputa em cada SELECT. Não há materialização nem rollup — chamar
 
 Hoje todos os call sites em `apps/edge/src/lib/dispatch.ts` gravam `{}` literal nessas colunas. Para fechar o gap "o que efetivamente saiu pra Meta?" sem confiar apenas em `v_meta_capi_health`, próxima iteração deve estender `DispatchResult` com `request`/`response` opcionais e popular nos dispatchers (com IP redacted via `sanitizeDispatchPayload`). Tracking em `MEMORY.md §3 / DISPATCH-ATTEMPTS-PAYLOAD-EMPTY`.
 
+## Saúde de integrações na home do Control Plane (ADR-046 follow-up, 2026-05-14)
+
+Como complemento ao alerta externo via Meta Events Manager (que demorou ~16h para evidenciar o incident `2026-05-13` de Hyperdrive), a home do CP renderiza um snapshot operacional sempre visível ao logar:
+
+- **`IntegrationsBanner`** — banner vermelho global no topo da home quando ≥ 1 provider inbound está em `state='down'`. Aponta para o card e sugere rodar `scripts/maintenance/webhook-smoke-test.sh` (INV-INFRA-001).
+- **`IntegrationsHealthCard`** — semáforo por provider inbound (último recebido, count_1h, count_24h, state) + breakdown de outbound por destination (success_rate, state).
+
+Backend em `GET /v1/dashboard/stats` (`apps/edge/src/routes/dashboard-stats.ts`). Classificação por **marker em `raw_events.payload`** que cada handler de webhook injeta:
+
+| Provider | Marker no payload |
+|---|---|
+| Guru | `_guru_event_id` |
+| OnProfit | `_onprofit_event_type` |
+| SendFlow | `_provider = 'sendflow'` |
+| Hotmart | `_hotmart_event_type` |
+| Kiwify | `_kiwify_event_type` |
+| Stripe | `_stripe_event_type` |
+
+**Implicação para novos webhook adapters:** todo handler novo em `apps/edge/src/routes/webhooks/<provider>.ts` **deve** injetar marcador `_<provider>_event_type` (ou equivalente) em `raw_events.payload` antes de persistir — sem o marker, o provider some do dashboard de saúde e a próxima outage só será detectada externamente.
+
+Thresholds (`state` ∈ `ok` / `warn` / `down`) e shape completo: ver `docs/30-contracts/05-api-server-actions.md` § `GET /v1/dashboard/stats`.
+
+### Smoke test pós-deploy
+
+`scripts/maintenance/webhook-smoke-test.sh` posta payload junk em cada endpoint inbound (guru / onprofit / sendflow) e falha em qualquer 5xx. 4xx = OK (validation funciona); 5xx = DB conn quebrada disfarçada.
+
+INV-INFRA-001 (ADR-046): rodar após **rotação de senha Supabase**, **reconfig do Hyperdrive binding**, **`wrangler secret put DATABASE_URL`**, **codemod que toque DB conn ou bindings**, ou **deploy de rota webhook nova**. Deploy só é considerado completo após smoke test verde.
+
+Validado em prática em 2026-05-14 (commit `149fbed`): smoke test capturaria o silencioso 500 que o incidente `2026-05-13` deixou rolar 16h.
+
 ## Tracing (opcional Fase 4+)
 
 OpenTelemetry instrumentation se complexidade justificar. Pontos de instrumentação:

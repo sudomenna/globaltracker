@@ -1616,6 +1616,16 @@ Em 2026-05-13 ~21:00 BRT (12/05), webhooks inbound de Guru, OnProfit e SendFlow 
 
 Tarefa futura: extrair `getDbConnStr` helper e refactorar callsites.
 
+### Follow-up — observabilidade do dashboard (commit `149fbed`, 2026-05-14)
+
+A alternativa "métrica/alerta `last_webhook_received_at` por provider no dashboard de saúde" considerada acima foi implementada como **complemento** ao smoke test (não substituto):
+
+- `GET /v1/dashboard/stats` agora retorna `integrations.inbound[]` com `state ∈ ok|warn|down` por provider (thresholds 2h/6h sobre `last_received_at`) e `integrations.outbound[]` por destination. Detalhamento em [`docs/30-contracts/05-api-server-actions.md` § `GET /v1/dashboard/stats`](../30-contracts/05-api-server-actions.md).
+- Home do Control Plane renderiza `IntegrationsBanner` (banner vermelho global quando `downCount > 0`) + `IntegrationsHealthCard` (semáforo por provider + breakdown outbound).
+- Classificação por marker em `raw_events.payload` (`_guru_event_id`, `_onprofit_event_type`, `_provider='sendflow'`, etc.) — todo webhook handler novo precisa injetar marker correspondente. Documentado em [`docs/10-architecture/07-observability.md` § "Saúde de integrações"](../10-architecture/07-observability.md#saúde-de-integrações-na-home-do-control-plane-adr-046-follow-up-2026-05-14).
+
+INV-INFRA-001 segue valendo — dashboard é detecção pós-fato; smoke test é prevenção pré-deploy.
+
 ---
 
 ## Política de promoção de OQ → ADR

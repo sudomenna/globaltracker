@@ -55,6 +55,12 @@ Sem state machine — `ad_spend_daily` é tabela de fatos append/upsert. Modific
 - Upsert quando provedor da plataforma reporta valor revisado (ex.: Meta atualiza spend de D-2).
 - Reprocessamento de FX retroativo: UPDATE em batch de últimos N dias, atualiza `fx_rate` + `spend_cents_normalized`.
 
+### Janela do cron (`30 17 * * *`)
+
+Cada disparo do cron ingere **dois dias**: (a) `yesterday` (dia completo em UTC) e (b) `today` (snapshot parcial até o instante do fetch). Sem o (a), uma única execução 17:30 UTC pegaria apenas a parte da manhã e nunca re-buscaria a noite — gasto vespertino/noturno ficaria perdido para sempre (30-90% do investimento diário em alguns workspaces). Idempotência (INV-COST-006) é preservada: upsert `ON CONFLICT DO UPDATE` sobrescreve qualquer execução anterior do mesmo dia.
+
+Implementação em `scheduledHandler` em `apps/edge/src/index.ts` (`if (cron === '30 17 * * *')`).
+
 ## 7. Invariantes
 
 - **INV-COST-001 — Unique por `(workspace_id, platform, account_id, coalesce(campaign_id,''), coalesce(adset_id,''), coalesce(ad_id,''), granularity, date)`.** Sem `timezone` no unique. Testável.

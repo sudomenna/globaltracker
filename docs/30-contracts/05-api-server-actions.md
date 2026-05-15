@@ -105,6 +105,106 @@ Atualiza step específico. Idempotente.
 | **Body** | `{ step: 'meta' | 'ga4' | 'launch' | 'page' | 'install', completed_at?, validated?, ... }` |
 | **Response 200** | `{ onboarding_state }` |
 
+### `GET /v1/dashboard/stats`
+
+Métricas agregadas de negócio + funil + tracking + saúde de integrações para a home do Control Plane (`apps/control-plane/src/app/(app)/page.tsx`). Consumida com auto-refresh para alimentar KpiCards, breakdown por launch e o card "Saúde Integrações" (ADR-046 follow-up).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-dashboard-stats-v1` |
+| **Auth** | `supabaseJwtMiddleware` (JWT Supabase ES256 verificado via JWKS); `workspace_id` resolvido por `workspace_members` (BR-RBAC-001) |
+| **Query** | `period?` ∈ `today` \| `7d` \| `30d` (default `7d`). Janela de **inbound webhook health** é sempre 7d fixo (saúde operacional ≠ janela de negócio); janela de **outbound dispatch health** é sempre 24h fixo. |
+| **Cache** | `Cache-Control: private, max-age=60` |
+| **Response 200** | Ver shape abaixo |
+| **Errors** | `401 unauthorized`, `500 internal_error` |
+
+**Response 200:**
+
+```json
+{
+  "period": "7d",
+  "business": {
+    "revenue": 11638.23,
+    "buyers_unique": 67,
+    "avg_ticket": 173.7,
+    "conversion_rate": 0.041
+  },
+  "funnel": {
+    "page_views": 4321,
+    "click_buy": 312,
+    "leads": 1644,
+    "buyers": 67
+  },
+  "tracking": {
+    "dispatch_success_rate": 0.991,
+    "dead_letter_count": 0,
+    "leads_with_fbclid_pct": 0.62,
+    "leads_without_source_pct": 0.04
+  },
+  "integrations": {
+    "inbound": [
+      {
+        "provider": "guru",
+        "last_received_at": "2026-05-14T20:11:32Z",
+        "minutes_since_last": 7,
+        "count_1h": 4,
+        "count_24h": 38,
+        "state": "ok"
+      }
+    ],
+    "outbound": [
+      {
+        "destination": "meta_capi",
+        "total": 412,
+        "succeeded": 410,
+        "failed": 2,
+        "dead_letter": 0,
+        "success_rate": 0.995,
+        "state": "ok"
+      }
+    ]
+  },
+  "roas": 4.12,
+  "spend": 2824.5,
+  "avg_daily_spend": 403.5,
+  "launches": [
+    { "public_id": "wkshop-cs-jun26", "name": "Workshop CS Jun26", "status": "live",
+      "leads": 1644, "buyers": 67, "revenue": 11638.23 }
+  ]
+}
+```
+
+**`integrations.inbound[].provider`** ∈ `guru` \| `onprofit` \| `sendflow` \| `hotmart` \| `kiwify` \| `stripe`. Classificação por **marker no payload de `raw_events`** injetado pelo handler de cada webhook:
+
+| Marker em `raw_events.payload` | Provider |
+|---|---|
+| `_guru_event_id` | `guru` |
+| `_onprofit_event_type` | `onprofit` |
+| `_provider = 'sendflow'` | `sendflow` |
+| `_hotmart_event_type` | `hotmart` |
+| `_kiwify_event_type` | `kiwify` |
+| `_stripe_event_type` | `stripe` |
+
+Providers sem nenhum marker reconhecido são descartados. Providers com `count_7d < 5` são **omitidos** da resposta (sinal fraco demais para flagar com confiança).
+
+**Thresholds de `state`:**
+
+| `inbound.state` | Condição |
+|---|---|
+| `ok` | `minutes_since_last < 120` |
+| `warn` | `120 ≤ minutes_since_last < 360` |
+| `down` | `minutes_since_last ≥ 360` ou `last_received_at IS NULL` |
+
+| `outbound.state` | Condição |
+|---|---|
+| `down` | `dead_letter > 0` ou (`success_rate != null` e `success_rate < 0.9`) |
+| `warn` | `success_rate != null` e `success_rate < 0.98` |
+| `ok` | resto |
+
+Ordenação determinística: `down → warn → ok`, alfabético dentro do bucket. Consumido pelo `IntegrationsBanner` (vermelho global quando `downCount > 0`) e `IntegrationsHealthCard` na home do CP.
+
+**Funnel-gap signal:** quando `funnel.leads ≥ 5 && funnel.buyers === 0`, a UI marca o KpiCard "Faturamento" com `alert=true` (texto "0 vendas com 5+ leads — verifique webhook de checkout").
+
 ### `GET /v1/pages/:public_id/status`
 
 Status vivo de uma page para polling. Implementa A.3 ([70-ux/04-screen-page-registration.md](../70-ux/04-screen-page-registration.md)).
@@ -168,9 +268,9 @@ Lista paginada de leads do workspace com search multi-campo. Implementa CONTRACT
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-list-v1` |
 | **Auth** | JWT Supabase ES256 verificado via JWKS; role resolvido em `workspace_members` (autoritativo) ou fallback `app_metadata.role` |
-| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `lifecycle?` (`contato`\|`lead`\|`cliente`\|`aluno`\|`mentorado` — Sprint 16), `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100) |
+| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `lifecycle?` (`contato`\|`lead`\|`cliente`\|`aluno`\|`mentorado` — Sprint 16), `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100), `sort_by?` ∈ `last_seen_at` \| `first_seen_at` \| `name` \| `lifecycle_status` \| `last_purchase_at`, `sort_dir?` ∈ `asc` \| `desc` |
 | **Search detection** | `q` é UUID → match exato em `leads.id`; email → `hashPii(workspace, normalizedEmail)` match em `email_hash`; phone → `normalizePhone` + `hashPii` match em `phone_hash`; resto → `ILIKE %q%` em `lower(leads.name)` |
-| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, lifecycle_status, first_seen_at, last_seen_at }], next_cursor, role, pii_masked }` — `lifecycle_status` ∈ `LifecycleStatus` (Sprint 16) |
+| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, lifecycle_status, first_seen_at, last_seen_at, last_purchase_at }], next_cursor, role, pii_masked }` — `lifecycle_status` ∈ `LifecycleStatus` (Sprint 16); `last_purchase_at` é `MAX(events.event_time)` para `event_name='Purchase'` do lead (LEFT JOIN — `null` quando lead nunca comprou). Sort `last_purchase_at` aplica `NULLS LAST`. |
 | **Masking (ADR-034)** | `display_email` e `display_phone` mascarados quando `role` ∈ {`operator`, `viewer`}; em claro para `owner`/`admin`/`marketer`/`privacy`. `display_name` sempre em claro (deixou de ser PII protegido). |
 
 ### `GET /v1/leads/:public_id`
