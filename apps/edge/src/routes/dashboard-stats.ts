@@ -126,6 +126,10 @@ export type DashboardStatsResponse = {
   roas: number | null;
   spend: number;
   avg_daily_spend: number | null;
+  /** Number of distinct dates in `ad_spend_daily` matching the period window. */
+  spend_coverage_days: number;
+  /** Calendar days the selected period nominally covers (1 for today, 7 for 7d, 30 for 30d). */
+  period_days: number;
   launches: LaunchStat[];
 };
 
@@ -154,6 +158,12 @@ function periodToCutoff(period: string): Date {
   const d = new Date(now);
   d.setDate(d.getDate() - 7);
   return d;
+}
+
+function periodToDays(period: string): number {
+  if (period === 'today') return 1;
+  if (period === '30d') return 30;
+  return 7;
 }
 
 // Defensive JSONB value extraction reused in SUM aggregates.
@@ -601,6 +611,8 @@ export function createDashboardStatsRoute(opts: {
         roas,
         spend,
         avg_daily_spend: avgDailySpend,
+        spend_coverage_days: daysWithSpend,
+        period_days: periodToDays(periodParam),
         launches: launchStats,
       };
 

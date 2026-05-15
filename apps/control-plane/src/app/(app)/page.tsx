@@ -94,6 +94,8 @@ type DashboardStats = {
   roas: number | null;
   spend: number;
   avg_daily_spend: number | null;
+  spend_coverage_days: number;
+  period_days: number;
   launches: LaunchStat[];
 };
 
@@ -163,11 +165,15 @@ function KpiCard({
   value,
   sub,
   alert,
+  partial,
+  partialTooltip,
 }: {
   title: string;
   value: string;
   sub?: string;
   alert?: boolean;
+  partial?: boolean;
+  partialTooltip?: string;
 }) {
   return (
     <Card className={alert ? 'border-destructive' : undefined}>
@@ -177,6 +183,15 @@ function KpiCard({
             <AlertTriangle className="h-3.5 w-3.5 text-destructive" aria-hidden="true" />
           )}
           {title}
+          {partial && !alert && (
+            <span
+              className="ml-auto rounded-sm bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 dark:bg-amber-900/30 dark:text-amber-200"
+              title={partialTooltip}
+              aria-label={partialTooltip ?? 'Dados parciais'}
+            >
+              parcial
+            </span>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -581,27 +596,58 @@ export default function DashboardPage() {
                 }
                 alert={funnelGap}
               />
-              <KpiCard
-                title="Investimento"
-                value={fmtCurrency(stats.spend)}
-                sub={
-                  period === 'today'
-                    ? stats.spend > 0 ? 'Hoje' : 'Sem dados de custo'
-                    : stats.avg_daily_spend != null
-                      ? `${fmtCurrency(stats.avg_daily_spend)}/dia`
-                      : 'Sem dados de custo'
-                }
-              />
-              <KpiCard
-                title="Ticket médio"
-                value={fmtCurrency(business?.avg_ticket ?? 0)}
-                sub={`Conversão: ${fmtPct(business?.conversion_rate ?? 0)}`}
-              />
-              <KpiCard
-                title="ROAS"
-                value={fmtRoas(stats.roas)}
-                sub={stats.spend > 0 ? `${fmtCurrency(stats.spend)} investido` : 'Sem dados de custo no período'}
-              />
+              {(() => {
+                const isPartial =
+                  period !== 'today' &&
+                  stats.spend_coverage_days > 0 &&
+                  stats.spend_coverage_days < stats.period_days;
+                const partialTooltip = isPartial
+                  ? `Investimento cobre ${stats.spend_coverage_days} de ${stats.period_days} dias do período (Meta começou a coletar em ${stats.spend_coverage_days >= stats.period_days ? '—' : 'data anterior à janela completa'}).`
+                  : undefined;
+                const partialSubInvest = isPartial
+                  ? `${stats.spend_coverage_days}/${stats.period_days} dias cobertos${stats.avg_daily_spend != null ? ` · ${fmtCurrency(stats.avg_daily_spend)}/dia` : ''}`
+                  : null;
+                return (
+                  <>
+                    <KpiCard
+                      title="Investimento"
+                      value={fmtCurrency(stats.spend)}
+                      partial={isPartial}
+                      partialTooltip={partialTooltip}
+                      sub={
+                        partialSubInvest ??
+                        (period === 'today'
+                          ? stats.spend > 0 ? 'Hoje' : 'Sem dados de custo'
+                          : stats.avg_daily_spend != null
+                            ? `${fmtCurrency(stats.avg_daily_spend)}/dia`
+                            : 'Sem dados de custo')
+                      }
+                    />
+                    <KpiCard
+                      title="Ticket médio"
+                      value={fmtCurrency(business?.avg_ticket ?? 0)}
+                      sub={`Conversão: ${fmtPct(business?.conversion_rate ?? 0)}`}
+                    />
+                    <KpiCard
+                      title="ROAS"
+                      value={fmtRoas(stats.roas)}
+                      partial={isPartial}
+                      partialTooltip={
+                        isPartial
+                          ? `ROAS calculado com spend incompleto (${stats.spend_coverage_days}/${stats.period_days} dias). Valor real provavelmente menor.`
+                          : undefined
+                      }
+                      sub={
+                        isPartial
+                          ? `Spend ${stats.spend_coverage_days}/${stats.period_days} dias — valor real pode ser menor`
+                          : stats.spend > 0
+                            ? `${fmtCurrency(stats.spend)} investido`
+                            : 'Sem dados de custo no período'
+                      }
+                    />
+                  </>
+                );
+              })()}
             </div>
           </div>
 
