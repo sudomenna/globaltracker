@@ -96,6 +96,13 @@ type DashboardStats = {
   avg_daily_spend: number | null;
   spend_coverage_days: number;
   period_days: number;
+  ads_meta: {
+    revenue: number;
+    buyers_unique: number;
+    roas: number | null;
+    share_of_revenue: number | null;
+    share_of_buyers: number | null;
+  };
   launches: LaunchStat[];
 };
 
@@ -650,6 +657,75 @@ export default function DashboardPage() {
               })()}
             </div>
           </div>
+
+          {/* Linha 1b — Atribuído a Anúncios (Meta) */}
+          {stats.ads_meta && (
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Atribuído a Anúncios (Meta)
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  Compradores com fbclid ou origem Meta/Instagram
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <KpiCard
+                  title="Faturamento Meta"
+                  value={fmtCurrency(stats.ads_meta.revenue)}
+                  sub={
+                    stats.ads_meta.share_of_revenue != null
+                      ? `${fmtPct(stats.ads_meta.share_of_revenue)} do faturamento total`
+                      : 'Sem dados de atribuição'
+                  }
+                />
+                <KpiCard
+                  title="Compradores Meta"
+                  value={fmtCount(stats.ads_meta.buyers_unique)}
+                  sub={
+                    stats.ads_meta.share_of_buyers != null
+                      ? `${fmtPct(stats.ads_meta.share_of_buyers)} dos compradores únicos`
+                      : 'Sem dados de atribuição'
+                  }
+                />
+                <KpiCard
+                  title="ROAS Meta"
+                  value={fmtRoas(stats.ads_meta.roas)}
+                  partial={
+                    period !== 'today' &&
+                    stats.spend_coverage_days > 0 &&
+                    stats.spend_coverage_days < stats.period_days
+                  }
+                  partialTooltip={
+                    stats.spend_coverage_days < stats.period_days
+                      ? `ROAS Meta calculado com spend incompleto (${stats.spend_coverage_days}/${stats.period_days} dias).`
+                      : undefined
+                  }
+                  sub={
+                    stats.ads_meta.roas != null && stats.ads_meta.roas < 1
+                      ? 'Abaixo do break-even (campanha deficitária)'
+                      : stats.spend > 0
+                        ? `Vs ROAS geral ${fmtRoas(stats.roas)}`
+                        : 'Sem dados de custo'
+                  }
+                  alert={
+                    stats.ads_meta.roas != null && stats.ads_meta.roas < 1
+                  }
+                />
+                <KpiCard
+                  title="Vendas não-Meta"
+                  value={fmtCount(
+                    (business?.buyers_unique ?? 0) - stats.ads_meta.buyers_unique,
+                  )}
+                  sub={
+                    business?.buyers_unique
+                      ? `${fmtPct(1 - (stats.ads_meta.share_of_buyers ?? 0))} dos compradores · orgânico, lista, indicação`
+                      : 'Sem compradores no período'
+                  }
+                />
+              </div>
+            </div>
+          )}
 
           {/* Linha 2 — Funil */}
           <div>

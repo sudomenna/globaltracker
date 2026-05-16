@@ -130,6 +130,18 @@ export type DashboardStatsResponse = {
   spend_coverage_days: number;
   /** Calendar days the selected period nominally covers (1 for today, 7 for 7d, 30 for 30d). */
   period_days: number;
+  /**
+   * Subset of business metrics restricted to Meta-attributable buyers.
+   * A buyer is Meta-attributable if any of their lead_attributions rows has
+   * fbclid OR source IN ('meta','facebook','instagram','ig').
+   */
+  ads_meta: {
+    revenue: number;
+    buyers_unique: number;
+    roas: number | null;
+    share_of_revenue: number | null;
+    share_of_buyers: number | null;
+  };
   launches: LaunchStat[];
 };
 
@@ -256,6 +268,7 @@ export function createDashboardStatsRoute(opts: {
         spendRows,
         inboundRows,
         dispatchAllDestRows,
+        metaAttrRows,
       ] =
         await Promise.all([
           // ── 1. Funnel (identified events) ────────────────────────────────
@@ -471,6 +484,46 @@ export function createDashboardStatsRoute(opts: {
               ),
             )
             .groupBy(dispatchJobs.destination),
+
+          // ── 8. Meta-attributable purchases (any-touch attribution) ────────
+          // Lead is "Meta-atribuível" if it has ≥1 lead_attributions row with
+          // fbclid OR source IN ('meta','facebook','instagram','ig'). Inclusive
+          // model: includes both paid clicks (fbclid) and organic Meta/IG UTM.
+          db.execute<{ buyers_unique: number; revenue: string }>(sql`
+            SELECT
+              COUNT(DISTINCT e.lead_id)::int AS buyers_unique,
+              COALESCE(SUM(
+                (SELECT NULLIF(v, '')::numeric
+                 FROM (
+                   SELECT
+                     CASE
+                       WHEN jsonb_typeof(e.custom_data) = 'object' THEN
+                         COALESCE(e.custom_data ->> 'value', e.custom_data ->> 'amount', NULL)
+                       WHEN jsonb_typeof(e.custom_data) = 'string' THEN
+                         COALESCE(
+                           (e.custom_data #>> '{}')::jsonb ->> 'value',
+                           (e.custom_data #>> '{}')::jsonb ->> 'amount',
+                           NULL
+                         )
+                       ELSE NULL
+                     END AS v
+                 ) sub)
+              ), 0)::text AS revenue
+            FROM events e
+            WHERE e.workspace_id = ${workspaceId}
+              AND e.event_name = 'Purchase'
+              AND e.received_at >= ${cutoff.toISOString()}
+              AND e.is_test = false
+              AND e.lead_id IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM lead_attributions la
+                WHERE la.lead_id = e.lead_id
+                  AND (
+                    la.fbclid IS NOT NULL
+                    OR la.source IN ('meta', 'facebook', 'instagram', 'ig')
+                  )
+              )
+          `),
         ]);
 
       // ── Shape results ──────────────────────────────────────────────────
@@ -582,6 +635,14 @@ export function createDashboardStatsRoute(opts: {
       const roas = spendCents > 0 && revenue > 0 ? revenue / spend : null;
       const avgDailySpend = daysWithSpend > 0 ? spend / daysWithSpend : null;
 
+      // ── Meta-attributable subset ─────────────────────────────────────────
+      const metaRow = (metaAttrRows as unknown as Array<{ buyers_unique: number; revenue: string }>)[0];
+      const metaRevenue = Number(metaRow?.revenue ?? 0);
+      const metaBuyersUnique = Number(metaRow?.buyers_unique ?? 0);
+      const metaRoas = spendCents > 0 && metaRevenue > 0 ? metaRevenue / spend : null;
+      const metaRevenueShare = revenue > 0 ? metaRevenue / revenue : null;
+      const metaBuyersShare = buyersUnique > 0 ? metaBuyersUnique / buyersUnique : null;
+
       const body: DashboardStatsResponse = {
         period: periodParam,
         business: {
@@ -613,6 +674,13 @@ export function createDashboardStatsRoute(opts: {
         avg_daily_spend: avgDailySpend,
         spend_coverage_days: daysWithSpend,
         period_days: periodToDays(periodParam),
+        ads_meta: {
+          revenue: metaRevenue,
+          buyers_unique: metaBuyersUnique,
+          roas: metaRoas,
+          share_of_revenue: metaRevenueShare,
+          share_of_buyers: metaBuyersShare,
+        },
         launches: launchStats,
       };
 
