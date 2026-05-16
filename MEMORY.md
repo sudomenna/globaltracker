@@ -10,11 +10,39 @@
 
 ## §1 Estado atual
 
-- **Sprint ativo**: manutenção. Última sessão 2026-05-14 fechou incidente Hyperdrive + observabilidade + Meta cost ingestor.
-- **Branch**: `main`. Sincronizado com `origin/main` — todos os commits da sessão pushed.
+- **Sprint ativo**: manutenção. Última sessão 2026-05-15/16 fechou recovery SendFlow + ROAS Meta vs ROAS Geral no dashboard.
+- **Branch**: `main`. Sincronizado com `origin/main` — todos os commits da sessão pushed (HEAD `3fef6b5`).
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Não tocado nesta sessão.
-- **Edge prod**: deploy atual **`6b12d3a7`** (Meta currency fix + cron yesterday+today + observability dashboard, 2026-05-14). Comando: **`pnpm deploy:edge`**.
+- **Edge prod**: deploy atual **`6b12d3a7`** (2026-05-14). **PENDENTE deploy** dos 2 commits novos no main (`b1165cd` spend coverage badge + `3fef6b5` ROAS Meta) — rodar `pnpm deploy:edge` para o backend novo refletir em prod. CP é Vercel (auto-deploy via PR/push).
 - **Hyperdrive prod**: ativo desde 2026-05-13 — binding `34681cabdb954437ba6db304a235da87`, aponta para Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode), user `postgres.kaxcmhfaqrxwnpftkslj`. Worker prefere Hyperdrive sobre `DATABASE_URL` secret (ADR-046 — **HYPERDRIVE first, DATABASE_URL fallback**, nunca inverter). Smoke test pós-mudança: `bash scripts/maintenance/webhook-smoke-test.sh`.
+
+### Entregas 2026-05-15/16 (sessão atual)
+
+#### Bloco 1 — Recovery SendFlow via mirror N8N (commit `1473ecb`)
+- SendFlow pausou webhook após outage Hyperdrive (12-13/05). Endpoint nosso saudável, mas provedor desativou após 5xx consecutivos.
+- Workflow N8N paralelo `ExuNm1Nm64Xud0uX` em `mennaworks.app.n8n.cloud` continuou recebendo events normalmente.
+- Script `scripts/maintenance/sendflow_n8n_replay.mjs` (gitignored — tem conn-string com senha) lista execuções do N8N, dedup por `truncSec(data.createdAt) + number + groupId` (SendFlow gera `body.id` único por delivery, inservível para dedup cross-source; `createdAt` tem drift ~1ms entre destinos).
+- 41 events do gap (13/05 00:20 UTC → 15/05 02:10 UTC) replayed com 202 OK. Sanity pré-cutoff 8/8 OK.
+- User reativou webhook no painel SendFlow após replay.
+- Runbook canônico em [`docs/60-flows/11-manual-dispatch-recovery.md`](docs/60-flows/11-manual-dispatch-recovery.md) **Parte D — Recovery via mirror N8N** (passos D1-D5 + tabela de quirks por provedor).
+
+#### Bloco 2 — Dashboard: spend coverage parcial (commit `b1165cd`)
+- Bug reportado: 30d e 7d mostravam mesmo investimento (R$ 11,6K). Causa: `ad_spend_daily` só tem rows desde 08/05 (ingestor Meta começou nessa data + bugs do ingestor corrigidos só em 14/05). Backfill tentado para 15/04→07/05 retornou `ingested: 0` em todos os dias — Meta API não tem dados anteriores (campanha real começou 09/05).
+- Fix: API `/v1/dashboard/stats` agora expõe `spend_coverage_days` + `period_days`.
+- KpiCard ganhou props `partial` + `partialTooltip`. Badge âmbar "parcial" aparece nos cards Investimento e ROAS quando `coverage < period_days` (ex: 30d mostra "8/30 dias cobertos").
+
+#### Bloco 3 — Dashboard: ROAS Meta vs ROAS Geral (commit `3fef6b5`)
+- Bug reportado pelo user: revenue varia entre 7d e 30d, mas investimento não — incoerente. Investigação revelou:
+  - Existem 54 buyers reais no gap 05-08/05 (pré-campanha) com **100% sem atribuição** (source `(none)`, fbclid `no`).
+  - Padrão típico de venda por lista de email/WhatsApp/indicação direta (link sem UTM).
+  - Buyers da campanha 09-15/05: 108 com fbclid Meta, 18 Instagram, 19 direto, etc.
+- Solução: split de visão "geral" vs "atribuída a anúncios". Nova seção `ATRIBUÍDO A ANÚNCIOS (META)` com 4 cards:
+  - Faturamento Meta + share % do total
+  - Compradores Meta + share % do total
+  - **ROAS Meta** (vermelho + ⚠️ quando < 1) com sub "Abaixo do break-even (campanha deficitária)"
+  - Vendas não-Meta (orgânico/lista/indicação)
+- Definição de "Meta-atribuível": lead tem `EXISTS (lead_attributions WHERE fbclid IS NOT NULL OR source IN ('meta','facebook','instagram','ig'))` em qualquer touch.
+- Resultado real (15/05): ROAS Geral 1,13x parecia OK, mas **ROAS Meta puro 0,90x** revelou campanha deficitária. ~25-35% das vendas vinham de canais não-Meta inflando ROAS aparente.
 
 ### Entregas 2026-05-14 — Incidente Hyperdrive + observability + Meta cost ingestor
 
