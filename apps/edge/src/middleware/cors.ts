@@ -95,6 +95,7 @@ function setCorsHeaders(
     'Access-Control-Allow-Credentials': 'true',
     'Access-Control-Allow-Methods': ALLOWED_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders,
+    'Access-Control-Expose-Headers': 'Content-Disposition, X-Request-Id',
     'Access-Control-Max-Age': MAX_AGE,
     Vary: 'Origin',
   };

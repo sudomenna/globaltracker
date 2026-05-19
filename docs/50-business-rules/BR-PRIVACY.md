@@ -156,9 +156,11 @@ Scenario: lazy re-encryption
 > **[SYNC-PENDING]** ADR-033 (Sprint 16) introduziu `geo_city`, `geo_region_code`, `geo_postal_code`, `geo_country` em `events.user_data`. Geo via IP é dado pessoal (LGPD art. 5º, IV) e **deve** ser zerado junto com `client_ip_address`/`client_user_agent` na próxima revisão de `apps/edge/src/lib/erasure.ts`. Tracking em `MEMORY.md §3 / ERASURE-GEO-FIELDS`. **Adicionado 2026-05-09:** `visitor_id` (coluna dedicada em `events`, ADR-031) também precisa ser zerado em massa — o lookup histórico promove `visitor_id` de qualquer event do lead para `external_id` Meta no dispatch.
 
 ### Enforcement
-- Endpoint `DELETE /v1/admin/leads/:lead_id` enqueue job.
-- Worker `apps/edge/src/lib/erasure.ts` executa com transaction.
-- `audit_log` com `action='erase_sar'` registra.
+- Endpoint `DELETE /v1/admin/leads/:lead_id` enqueue job (single-lead, admin-only).
+- Endpoint `POST /v1/leads/bulk-delete` (Sprint 18, owner/admin/privacy) enfileira 1 mensagem `{type:'lead_erase', lead_id, ...}` por lead em `QUEUE_DISPATCH`. Aceita seleção explícita (`lead_public_ids`) ou via filtro (`q`/`launch_public_id`/`lifecycle`/`status`); safety net rejeita body vazio com `400 empty_selection`.
+- Worker `apps/edge/src/lib/lead-erase.ts` (branch novo no `queueHandler` em `apps/edge/src/index.ts`) consome a fila, NULL toda PII conforme INV-IDENTITY-002, DELETA `lead_aliases` do lead e grava `audit_log` com `action='erase_sar_completed'`, `actor_type='system'`. Idempotente: `already_erased` / `not_found` → no-op `ok`.
+- Worker legado `apps/edge/src/lib/erasure.ts` segue cobrindo o caminho do endpoint admin (transação única). Convergência dos dois caminhos é dívida futura (alinhar scope de anonimização de `events.user_data` entre eles — `lead-erase.ts` cobre o lead em si; scope completo de events.user_data ainda é responsabilidade do worker legado / SYNC-PENDING ERASURE-GEO-FIELDS).
+- `audit_log` registra: `erase_sar` no momento do enqueue + `erase_sar_completed` quando o worker finaliza.
 
 ### Critério de aceite
 ```gherkin

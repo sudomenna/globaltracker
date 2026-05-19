@@ -43,7 +43,10 @@ Ver `30-contracts/01-enums.md` (`AuditAction`). Resumo:
 | `archive` | Status → `archived` |
 | `rotate` | `page_token` rotacionado |
 | `revoke` | `page_token` ou `lead_token` revogado |
-| `erase_sar` | SAR/erasure executado em lead |
+| `erase_sar` | SAR/erasure enfileirado (request inicial em lead) |
+| `erase_sar_completed` | Worker `lead_erase` concluiu a anonimização do lead (actor_type='system') |
+| `lead_archived` | Lead marcado como `archived` via `POST /v1/leads/bulk-archive` (soft-hide reversível) |
+| `lead_unarchived` | Lead `archived` retornado para `active` via `POST /v1/leads/bulk-unarchive` |
 | `merge_leads` | Merge canônico executado |
 | `read_pii_decrypted` | Decrypt de `email_enc` / `phone_enc` / `name_enc` (AUTHZ-001) |
 | `sync_audience` | Audience sync job iniciado |
@@ -68,7 +71,10 @@ INV-AUDIT-004 obriga audit log em mutações nas seguintes tabelas/cenários:
 | `audiences.consent_policy` (UPDATE) | `update` |
 | `audiences.destination_strategy` (UPDATE) | `update` |
 | `lead_consents` (INSERT) | `create` |
-| `leads.status='erased'` (SAR) | `erase_sar` |
+| `leads.status='erased'` (SAR enqueue) | `erase_sar` |
+| `leads.status='erased'` (worker conclui anonimização) | `erase_sar_completed` |
+| `leads.status='archived'` (bulk-archive) | `lead_archived` |
+| `leads.status='active'` vindo de `archived` (bulk-unarchive) | `lead_unarchived` |
 | `lead_merges` (INSERT) | `merge_leads` |
 | Decrypt de PII (qualquer tabela `*_enc`) | `read_pii_decrypted` |
 | `workspace_members` (CRUD) | `add_member` / `change_role` / `remove_member` |

@@ -94,8 +94,14 @@ export const PixelPolicy = ['server_only', 'browser_and_server_managed', 'coexis
 
 ### `LeadStatus`
 ```ts
-export const LeadStatus = ['active', 'merged', 'erased'] as const;
+export const LeadStatus = ['active', 'merged', 'erased', 'archived'] as const;
 ```
+
+Semântica:
+- `active` — operacional; visível em listagens, contagens, dashboards.
+- `merged` — combinado em outro lead (resolver segue `merged_into_lead_id`).
+- `erased` — SAR/LGPD erasure (PII NULL, irreversível). Ver INV-IDENTITY-002.
+- `archived` — soft-hide reversível pelo usuário; PII intacta. Excluído de listagens padrão (`GET /v1/leads?status=default`), mas preservado em métricas históricas (dashboard) para não retroagir receita/ROAS. Toggle via `POST /v1/leads/bulk-archive` / `bulk-unarchive`. Adicionado em migration `0052_lead_archived_status.sql`.
 
 ### `IdentifierType`
 ```ts

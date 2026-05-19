@@ -70,7 +70,7 @@ const LeadIdParamSchema = z.object({
  */
 export type LeadStatusResult =
   | { found: false }
-  | { found: true; status: 'active' | 'merged' | 'erased' };
+  | { found: true; status: 'active' | 'merged' | 'erased' | 'archived' };
 
 export type GetLeadStatusFn = (leadId: string) => Promise<LeadStatusResult>;
 

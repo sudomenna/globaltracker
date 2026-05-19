@@ -268,9 +268,10 @@ Lista paginada de leads do workspace com search multi-campo. Implementa CONTRACT
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-list-v1` |
 | **Auth** | JWT Supabase ES256 verificado via JWKS; role resolvido em `workspace_members` (autoritativo) ou fallback `app_metadata.role` |
-| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `lifecycle?` (`contato`\|`lead`\|`cliente`\|`aluno`\|`mentorado` — Sprint 16), `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100), `sort_by?` ∈ `last_seen_at` \| `first_seen_at` \| `name` \| `lifecycle_status` \| `last_purchase_at`, `sort_dir?` ∈ `asc` \| `desc` |
+| **Query** | `q?` (UUID/email/phone/name), `launch_public_id?`, `lifecycle?` (`contato`\|`lead`\|`cliente`\|`aluno`\|`mentorado` — Sprint 16), `status?` ∈ `default` \| `archived` (default exclui `archived`/`erased`/`merged`; `archived` = "lixeira" — devolve só leads em status archived), `cursor?` (`last_seen_at` ISO), `limit?` (default 30, max 100), `sort_by?` ∈ `last_seen_at` \| `first_seen_at` \| `name` \| `lifecycle_status` \| `last_purchase_at`, `sort_dir?` ∈ `asc` \| `desc` |
 | **Search detection** | `q` é UUID → match exato em `leads.id`; email → `hashPii(workspace, normalizedEmail)` match em `email_hash`; phone → `normalizePhone` + `hashPii` match em `phone_hash`; resto → `ILIKE %q%` em `lower(leads.name)` |
-| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, lifecycle_status, first_seen_at, last_seen_at, last_purchase_at }], next_cursor, role, pii_masked }` — `lifecycle_status` ∈ `LifecycleStatus` (Sprint 16); `last_purchase_at` é `MAX(events.event_time)` para `event_name='Purchase'` do lead (LEFT JOIN — `null` quando lead nunca comprou). Sort `last_purchase_at` aplica `NULLS LAST`. |
+| **Response 200** | `{ items: [{ lead_public_id, display_name, display_email, display_phone, status, lifecycle_status, first_seen_at, last_seen_at, last_purchase_at }], next_cursor, role, pii_masked, total_filtered?, total_unfiltered? }` — `total_filtered` (rows que casam com `q`/`launch_public_id`/`lifecycle`/`status`) e `total_unfiltered` (rows do workspace fora `erased`/`merged`) só aparecem na **primeira página** (sem `cursor`); páginas subsequentes omitem para evitar custo de COUNT redundante. `lifecycle_status` ∈ `LifecycleStatus` (Sprint 16); `last_purchase_at` é `MAX(events.event_time)` para `event_name='Purchase'` do lead (LEFT JOIN — `null` quando lead nunca comprou). Sort `last_purchase_at` aplica `NULLS LAST`. |
+| **Launch filter (fix 2026-05-18)** | Quando `launch_public_id` está presente, a query usa subquery `WHERE leads.id IN (SELECT lead_id FROM lead_attributions JOIN launches …)` em vez de INNER JOIN. Antes da troca, INNER JOIN multiplicava leads pelo nº de touches em `lead_attributions`, inflando contagem e quebrando paginação. Mesma correção aplicada em `countLeads` e `exportLeads`. |
 | **Masking (ADR-034)** | `display_email` e `display_phone` mascarados quando `role` ∈ {`operator`, `viewer`}; em claro para `owner`/`admin`/`marketer`/`privacy`. `display_name` sempre em claro (deixou de ser PII protegido). |
 
 ### `GET /v1/leads/:public_id`
@@ -353,6 +354,67 @@ Timeline visual end-to-end. Implementa C.1 ([70-ux/06-screen-lead-timeline.md](.
 | **Query** | `cursor`, `limit` (default 50, max 200), `since` (ISO 8601, opcional — exclui nodes anteriores à data), `filters` (JSON: `{ types?: NodeType[], statuses?: NodeStatus[] }` — **formato anterior CSV não é mais suportado**) |
 | **Response 200** | `{ nodes: [{ id, type, status, timestamp, summary, details, actions[] }], next_cursor }` |
 | **Errors** | `404 lead_not_found`, `410 lead_erased` |
+
+### `POST /v1/leads/export` (Sprint 18)
+
+Prepara um download CSV one-shot da seleção atual de leads. Enfileira a seleção (lista de `lead_public_ids` OU filtro `q`/`launch_public_id`/`lifecycle`/`status`) em KV (`leads-export:<token>`) com TTL de 5 minutos e devolve a URL assinada para `GET /v1/leads/export/:token`. Não emite o CSV inline — separação permite que o browser baixe via tag `<a download>` sem precisar passar Authorization header.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | Bearer JWT Supabase ES256; RBAC roles permitidas: `owner`, `admin`, `privacy`. Demais → `403 forbidden_role`. |
+| **Body** | `{ lead_public_ids?: string[], q?, launch_public_id?, lifecycle?, status? }` (mesmo shape do `bulk-delete`/`bulk-archive`). Safety net: body sem IDs **e** sem filtro → `400 empty_selection`. |
+| **Side effects** | `KV.put('leads-export:<token>', JSON.stringify(selection), { ttl: 300 })`. |
+| **Response 200** | `{ download_url: '/v1/leads/export/<token>' }` |
+| **Errors** | `400 empty_selection`, `401 unauthorized`, `403 forbidden_role` |
+
+### `GET /v1/leads/export/:token` (Sprint 18)
+
+Serve o CSV da seleção previamente preparada via `POST /v1/leads/export`. **Não requer JWT** — o token na path é a credencial (gerado pelo POST autenticado, single-use, deletado do KV após leitura). Permite que o browser baixe via link direto.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | Token na path (single-use). Token inválido/expirado → `404 not_found_or_expired`. |
+| **Side effects** | `KV.delete('leads-export:<token>')` após leitura — single-use. |
+| **Response 200** | `Content-Type: text/csv; charset=utf-8`; `Content-Disposition: attachment; filename="leads-<workspace>-<YYYY-MM-DD>.csv"`. CSV streaming. |
+| **Colunas CSV** | `full_name, first_name, last_name, email, phone, status, lifecycle_status, first_seen_at, last_seen_at, last_purchase_at`. Split de nome: primeira palavra de `display_name` = `first_name`; resto = `last_name`. |
+| **Masking** | Honra RBAC do JWT original gravado junto à seleção: `marketer`/`viewer` recebem `email`/`phone` mascarados via `maskEmail`/`maskPhone`. `owner`/`admin`/`privacy` recebem em claro. |
+| **Errors** | `404 not_found_or_expired` |
+
+### `POST /v1/leads/bulk-delete` (Sprint 18)
+
+Enfileira erasure (SAR/LGPD) de 1 ou mais leads. Cada lead vira **uma mensagem** `{type:'lead_erase', lead_id, job_id, request_id, requested_at}` em `QUEUE_DISPATCH`, consumida pelo worker `lead_erase` (ver MOD-IDENTITY + BR-PRIVACY-005). Operação irreversível.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | Bearer JWT Supabase ES256; roles permitidas: `owner`, `admin`, `privacy`. |
+| **Body** | `{ lead_public_ids?: string[], q?, launch_public_id?, lifecycle?, status? }`. Body sem IDs **e** sem filtro → `400 empty_selection`. |
+| **Side effects** | (1) Resolve seleção → lista de `lead_id`; (2) emite 1 `QUEUE_DISPATCH.send({type:'lead_erase', ...})` por lead; (3) audit `erase_sar` por lead (entry de request); worker grava `erase_sar_completed` ao finalizar. |
+| **Response 202** | `{ enqueued: number }` |
+| **Errors** | `400 empty_selection`, `401 unauthorized`, `403 forbidden_role` |
+
+### `POST /v1/leads/bulk-archive` (Sprint 18)
+
+Soft-hide reversível: flipa `leads.status='archived'` para a seleção. PII **NÃO** é tocada (diferente de `bulk-delete`). Lead some das listagens default; volta com `bulk-unarchive`. Ver INV-IDENTITY-009.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | Bearer JWT Supabase ES256; roles permitidas: `owner`, `admin`, `privacy`. |
+| **Body** | `{ lead_public_ids?: string[], q?, launch_public_id?, lifecycle?, status? }`. Body sem IDs **e** sem filtro → `400 empty_selection`. |
+| **Side effects** | `UPDATE leads SET status='archived' WHERE id IN (...)` (escopado ao workspace); 1 audit_log entry por lead com `action='lead_archived'`. Não enfileira jobs. |
+| **Response 200** | `{ updated: number }` |
+| **Errors** | `400 empty_selection`, `401 unauthorized`, `403 forbidden_role` |
+
+### `POST /v1/leads/bulk-unarchive` (Sprint 18)
+
+Reverte `archived` → `active`. Espelho de `bulk-archive`.
+
+| Item | Especificação |
+|---|---|
+| **Auth** | Bearer JWT Supabase ES256; roles permitidas: `owner`, `admin`, `privacy`. |
+| **Body** | mesmo de `bulk-archive`. |
+| **Side effects** | `UPDATE leads SET status='active' WHERE id IN (...) AND status='archived'`; audit `lead_unarchived` por lead. |
+| **Response 200** | `{ updated: number }` |
+| **Errors** | `400 empty_selection`, `401 unauthorized`, `403 forbidden_role` |
 
 ### `POST /v1/dispatch-jobs/:id/replay`
 

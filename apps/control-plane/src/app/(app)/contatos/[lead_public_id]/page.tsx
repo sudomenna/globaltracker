@@ -19,6 +19,8 @@ import type {
 } from './events-tab';
 import { LeadSummaryHeader } from './lead-summary-header';
 import type { LeadSummary as LeadSummaryAggregate } from './lead-summary-types';
+import { ArchiveLeadButton } from './archive-lead-button';
+import { DeleteLeadButton } from './delete-lead-button';
 import { RevealPiiButton } from './reveal-pii-button';
 import { TabsWithUrlSync } from './tabs-with-url-sync';
 
@@ -29,7 +31,7 @@ interface LeadIdentity {
   display_name: string | null;
   display_email: string | null;
   display_phone: string | null;
-  status: 'active' | 'merged' | 'erased';
+  status: 'active' | 'merged' | 'erased' | 'archived';
   lifecycle_status?: Lifecycle;
   created_at?: string;
   role?: string;
@@ -43,12 +45,14 @@ const STATUS_BADGE: Record<
   active: 'success',
   merged: 'secondary',
   erased: 'outline',
+  archived: 'secondary',
 };
 
 const STATUS_LABEL: Record<LeadIdentity['status'], string> = {
   active: 'Ativo',
   merged: 'Unificado',
   erased: 'Anonimizado',
+  archived: 'Arquivado',
 };
 
 // BR-PRIVACY: mask display name for marketer role
@@ -213,6 +217,20 @@ export default async function LeadDetailPage({
           {lead?.lifecycle_status && (
             <LifecycleBadge lifecycle={lead.lifecycle_status} />
           )}
+          <div className="ml-auto flex items-center gap-2">
+            <ArchiveLeadButton
+              leadPublicId={lead_public_id}
+              accessToken={accessToken}
+              edgeUrl={edgeUrl}
+              status={leadStatus}
+            />
+            <DeleteLeadButton
+              leadPublicId={lead_public_id}
+              accessToken={accessToken}
+              edgeUrl={edgeUrl}
+              alreadyErased={leadStatus === 'erased'}
+            />
+          </div>
         </div>
 
         <p className="text-sm text-muted-foreground font-mono">

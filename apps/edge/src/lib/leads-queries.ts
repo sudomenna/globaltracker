@@ -19,7 +19,7 @@ import {
   leads,
   pages,
 } from '@globaltracker/db';
-import { and, asc, desc, eq, gt, ilike, isNotNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, ilike, inArray, isNotNull, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { decryptPii, hashPii } from './pii.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
@@ -45,7 +45,7 @@ export type LeadSummary = {
   display_name: string | null;
   display_email: string | null;
   display_phone: string | null;
-  status: 'active' | 'merged' | 'erased';
+  status: 'active' | 'merged' | 'erased' | 'archived';
   lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
@@ -56,7 +56,7 @@ export type LeadListItem = {
   display_name: string | null;
   display_email: string | null;
   display_phone: string | null;
-  status: 'active' | 'merged' | 'erased';
+  status: 'active' | 'merged' | 'erased' | 'archived';
   lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
@@ -65,6 +65,12 @@ export type LeadListItem = {
 
 export type SortField = 'last_seen_at' | 'first_seen_at' | 'name' | 'lifecycle_status' | 'last_purchase_at';
 export type SortDir = 'asc' | 'desc';
+
+// Status filter mode for list/count/export queries.
+// 'default' — visible operational set: active + merged + erased (excludes archived).
+// 'archived' — only archived leads (trash bin view).
+// Adding more modes? Keep them disjoint from each other.
+export type StatusFilter = 'default' | 'archived';
 
 export type ListLeadsOpts = {
   workspaceId: string;
@@ -75,6 +81,37 @@ export type ListLeadsOpts = {
   limit: number;
   sortBy?: SortField;
   sortDir?: SortDir;
+  statusFilter?: StatusFilter;
+};
+
+export type CountLeadsOpts = {
+  workspaceId: string;
+  q?: string;
+  launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
+  statusFilter?: StatusFilter;
+};
+
+export type ExportLeadsOpts = {
+  workspaceId: string;
+  // Either explicit IDs (selected rows) OR filters (select-all-matching).
+  leadPublicIds?: string[];
+  q?: string;
+  launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
+  statusFilter?: StatusFilter;
+};
+
+export type ExportLeadRow = {
+  lead_public_id: string;
+  display_name: string | null;
+  display_email: string | null;
+  display_phone: string | null;
+  status: 'active' | 'merged' | 'erased' | 'archived';
+  lifecycle_status: LifecycleStatus;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_purchase_at: string | null;
 };
 
 const UUID_RE =
@@ -493,8 +530,17 @@ export function createLeadsQueryFns(
     const { workspaceId, q, launchPublicId, lifecycle, cursor, limit } = opts;
     const sortBy = opts.sortBy ?? 'last_seen_at';
     const sortDir = opts.sortDir ?? 'desc';
+    const statusFilter = opts.statusFilter ?? 'default';
 
     const conditions = [eq(leads.workspaceId, workspaceId)];
+
+    // archived rows are excluded from the default list; the trash bin view
+    // (statusFilter='archived') sees only archived rows.
+    conditions.push(
+      statusFilter === 'archived'
+        ? eq(leads.status, 'archived')
+        : ne(leads.status, 'archived'),
+    );
 
     if (lifecycle) {
       conditions.push(eq(leads.lifecycleStatus, lifecycle));
@@ -519,6 +565,21 @@ export function createLeadsQueryFns(
         // with pg_trgm if it becomes a hotspot.
         conditions.push(ilike(leads.name, `%${q}%`));
       }
+    }
+
+    if (launchPublicId) {
+      const launchLeadIds = db
+        .select({ leadId: leadAttributions.leadId })
+        .from(leadAttributions)
+        .innerJoin(launches, eq(launches.id, leadAttributions.launchId))
+        .where(
+          and(
+            eq(leadAttributions.workspaceId, workspaceId),
+            eq(launches.workspaceId, workspaceId),
+            eq(launches.publicId, launchPublicId),
+          ),
+        );
+      conditions.push(inArray(leads.id, launchLeadIds));
     }
 
     // Cursor applies only to date-based sorts (stable keyset pagination).
@@ -563,24 +624,11 @@ export function createLeadsQueryFns(
       .leftJoin(purchaseSq, eq(purchaseSq.leadId, leads.id))
       .$dynamic();
 
-    if (launchPublicId) {
-      query = query
-        .innerJoin(
-          leadAttributions,
-          and(
-            eq(leadAttributions.leadId, leads.id),
-            eq(leadAttributions.workspaceId, workspaceId),
-          ),
-        )
-        .innerJoin(
-          launches,
-          and(
-            eq(launches.id, leadAttributions.launchId),
-            eq(launches.publicId, launchPublicId),
-            eq(launches.workspaceId, workspaceId),
-          ),
-        );
-    }
+    // launchPublicId filter via subquery (NOT INNER JOIN) — joining on
+    // lead_attributions multiplies leads by their attribution-touch count
+    // (one row per lead per touch), which broke count(), pagination, and
+    // list rendering (React duplicate-key warnings). Subquery uses one row
+    // per matching lead, regardless of how many touches.
 
     let orderExpr;
     if (sortBy === 'last_purchase_at') {
@@ -643,6 +691,212 @@ export function createLeadsQueryFns(
     return items;
   }
 
+  // -------------------------------------------------------------------------
+  // countLeads — total matching the given filters (no pagination).
+  // Same filter semantics as listLeads (UUID/email/phone/name + launch + lifecycle).
+  // -------------------------------------------------------------------------
+  async function countLeads(opts: CountLeadsOpts): Promise<number> {
+    const { workspaceId, q, launchPublicId, lifecycle } = opts;
+    const statusFilter = opts.statusFilter ?? 'default';
+
+    const conditions = [eq(leads.workspaceId, workspaceId)];
+
+    conditions.push(
+      statusFilter === 'archived'
+        ? eq(leads.status, 'archived')
+        : ne(leads.status, 'archived'),
+    );
+
+    if (lifecycle) {
+      conditions.push(eq(leads.lifecycleStatus, lifecycle));
+    }
+
+    if (q) {
+      if (UUID_RE.test(q)) {
+        conditions.push(eq(leads.id, q));
+      } else if (EMAIL_RE.test(q)) {
+        const normalized = normalizeEmail(q);
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.emailHash, hash));
+      } else if (PHONE_RE.test(q)) {
+        const normalized = normalizePhone(q);
+        if (!normalized) return 0;
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.phoneHash, hash));
+      } else {
+        conditions.push(ilike(leads.name, `%${q}%`));
+      }
+    }
+
+    if (launchPublicId) {
+      const launchLeadIds = db
+        .select({ leadId: leadAttributions.leadId })
+        .from(leadAttributions)
+        .innerJoin(launches, eq(launches.id, leadAttributions.launchId))
+        .where(
+          and(
+            eq(leadAttributions.workspaceId, workspaceId),
+            eq(launches.workspaceId, workspaceId),
+            eq(launches.publicId, launchPublicId),
+          ),
+        );
+      conditions.push(inArray(leads.id, launchLeadIds));
+    }
+
+    const rows = await db
+      .select({ n: count() })
+      .from(leads)
+      .where(and(...conditions));
+    return Number(rows[0]?.n ?? 0);
+  }
+
+  // -------------------------------------------------------------------------
+  // exportLeads — returns ALL matching rows (no pagination cap).
+  // If leadPublicIds is provided, restricts to that set (intersected with filters).
+  // Used by POST /v1/leads/export to stream CSV.
+  // -------------------------------------------------------------------------
+  async function exportLeads(opts: ExportLeadsOpts): Promise<ExportLeadRow[]> {
+    const { workspaceId, leadPublicIds, q, launchPublicId, lifecycle } = opts;
+    const statusFilter = opts.statusFilter ?? 'default';
+
+    // An explicit empty array means "select nothing" — must not silently
+    // become "select all". Distinct from `undefined` which means no ID filter.
+    if (Array.isArray(leadPublicIds) && leadPublicIds.length === 0) {
+      return [];
+    }
+
+    const conditions = [eq(leads.workspaceId, workspaceId)];
+
+    conditions.push(
+      statusFilter === 'archived'
+        ? eq(leads.status, 'archived')
+        : ne(leads.status, 'archived'),
+    );
+
+    if (leadPublicIds && leadPublicIds.length > 0) {
+      conditions.push(inArray(leads.id, leadPublicIds));
+    }
+
+    if (lifecycle) {
+      conditions.push(eq(leads.lifecycleStatus, lifecycle));
+    }
+
+    if (q) {
+      if (UUID_RE.test(q)) {
+        conditions.push(eq(leads.id, q));
+      } else if (EMAIL_RE.test(q)) {
+        const normalized = normalizeEmail(q);
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.emailHash, hash));
+      } else if (PHONE_RE.test(q)) {
+        const normalized = normalizePhone(q);
+        if (!normalized) return [];
+        const hash = await hashPii(normalized, workspaceId);
+        conditions.push(eq(leads.phoneHash, hash));
+      } else {
+        conditions.push(ilike(leads.name, `%${q}%`));
+      }
+    }
+
+    if (launchPublicId) {
+      const launchLeadIds = db
+        .select({ leadId: leadAttributions.leadId })
+        .from(leadAttributions)
+        .innerJoin(launches, eq(launches.id, leadAttributions.launchId))
+        .where(
+          and(
+            eq(leadAttributions.workspaceId, workspaceId),
+            eq(launches.workspaceId, workspaceId),
+            eq(launches.publicId, launchPublicId),
+          ),
+        );
+      conditions.push(inArray(leads.id, launchLeadIds));
+    }
+
+    const purchaseSq = db
+      .select({
+        leadId: events.leadId,
+        lastPurchaseAt: sql<Date | null>`MAX(${events.eventTime})`.as('last_purchase_at'),
+      })
+      .from(events)
+      .where(
+        and(
+          eq(events.workspaceId, workspaceId),
+          eq(events.eventName, 'Purchase'),
+          isNotNull(events.leadId),
+        ),
+      )
+      .groupBy(events.leadId)
+      .as('purchase_sq');
+
+    let query = db
+      .select({
+        id: leads.id,
+        status: leads.status,
+        lifecycleStatus: leads.lifecycleStatus,
+        name: leads.name,
+        nameEnc: leads.nameEnc,
+        emailEnc: leads.emailEnc,
+        phoneEnc: leads.phoneEnc,
+        piiKeyVersion: leads.piiKeyVersion,
+        firstSeenAt: leads.firstSeenAt,
+        lastSeenAt: leads.lastSeenAt,
+        lastPurchaseAt: purchaseSq.lastPurchaseAt,
+      })
+      .from(leads)
+      .leftJoin(purchaseSq, eq(purchaseSq.leadId, leads.id))
+      .$dynamic();
+
+    // launchPublicId filter via subquery (NOT INNER JOIN) — joining on
+    // lead_attributions multiplies leads by their attribution-touch count
+    // (one row per lead per touch), which broke count(), pagination, and
+    // list rendering (React duplicate-key warnings). Subquery uses one row
+    // per matching lead, regardless of how many touches.
+
+    const rows = await query
+      .where(and(...conditions))
+      .orderBy(desc(leads.lastSeenAt), asc(leads.id));
+
+    const items = await Promise.all(
+      rows.map(async (row) => {
+        let displayName: string | null = row.name;
+        if (!displayName && row.nameEnc) {
+          const r = await decryptPii(
+            row.nameEnc,
+            workspaceId,
+            masterKeyRegistry,
+            row.piiKeyVersion,
+          );
+          if (r.ok) displayName = r.value;
+        }
+
+        const [displayEmail, displayPhone] = await Promise.all([
+          decryptOrNull(row.emailEnc, workspaceId, row.piiKeyVersion),
+          decryptOrNull(row.phoneEnc, workspaceId, row.piiKeyVersion),
+        ]);
+
+        const rawLpa = row.lastPurchaseAt as Date | string | null;
+        const lastPurchaseAt = rawLpa != null
+          ? (rawLpa instanceof Date ? rawLpa : new Date(rawLpa)).toISOString()
+          : null;
+
+        return {
+          lead_public_id: row.id,
+          display_name: displayName,
+          display_email: displayEmail,
+          display_phone: displayPhone,
+          status: row.status as ExportLeadRow['status'],
+          lifecycle_status: row.lifecycleStatus as LifecycleStatus,
+          first_seen_at: row.firstSeenAt.toISOString(),
+          last_seen_at: row.lastSeenAt.toISOString(),
+          last_purchase_at: lastPurchaseAt,
+        };
+      }),
+    );
+
+    return items;
+  }
+
   return {
     getLeadByPublicId,
     getLeadSummary,
@@ -654,5 +908,7 @@ export function createLeadsQueryFns(
     getLeadConsents,
     getLeadMerges,
     listLeads,
+    countLeads,
+    exportLeads,
   };
 }

@@ -36,8 +36,8 @@
  * app.route('/v1/leads', leadsTimelineRoute);
  */
 
-import { Hono } from 'hono';
-import { and, eq } from 'drizzle-orm';
+import { Hono, type Context } from 'hono';
+import { and, eq, inArray } from 'drizzle-orm';
 import { auditLog, createDb, leads, workspaceMembers } from '@globaltracker/db';
 import { z } from 'zod';
 import { createLeadsQueryFns } from '../lib/leads-queries.js';
@@ -69,6 +69,8 @@ type AppBindings = {
   PII_MASTER_KEY_V1?: string;
   DEV_WORKSPACE_ID?: string;
   SUPABASE_URL?: string;
+  GT_KV?: KVNamespace;
+  QUEUE_DISPATCH?: Queue;
 };
 
 type AppVariables = {
@@ -93,6 +95,91 @@ const TimelineQuerySchema = z.object({
 
 // List query schema — keeps existing behaviour, adds optional lifecycle filter
 // (T-PRODUCTS-006). lifecycle_status is not PII (BR-PRIVACY-001), safe to expose.
+const ExportLeadsBodySchema = z
+  .object({
+    lead_public_ids: z.array(z.string().uuid()).max(50000).optional(),
+    q: z.string().optional(),
+    launch_public_id: z.string().optional(),
+    lifecycle: z
+      .enum(LIFECYCLE_STATUSES as readonly [LifecycleStatus, ...LifecycleStatus[]])
+      .optional(),
+  })
+  .strict();
+
+// Same shape as export — bulk-delete operates over the same selection model
+// (explicit IDs OR filters intersection).
+const BulkDeleteBodySchema = ExportLeadsBodySchema;
+
+// Roles allowed to delete (erase) leads. Matches the privacy-sensitivity of
+// the operation: owners/admins for ops, privacy for SAR/GDPR work.
+const DELETE_ALLOWED_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>([
+  'owner',
+  'admin',
+  'privacy',
+]);
+
+function csvEscape(value: string | null | undefined): string {
+  if (value == null) return '';
+  const s = String(value);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+// Splits "Tiago Menna Barreto" → { first: "Tiago", last: "Menna Barreto" }.
+// Single-name input ("Tiago") yields first="Tiago", last="". Empty/null yields both "".
+function splitName(full: string | null): { first: string; last: string } {
+  if (!full) return { first: '', last: '' };
+  const parts = full.trim().split(/\s+/);
+  if (parts.length === 0 || !parts[0]) return { first: '', last: '' };
+  return { first: parts[0], last: parts.slice(1).join(' ') };
+}
+
+function leadsToCsv(
+  rows: Array<{
+    lead_public_id: string;
+    display_name: string | null;
+    display_email: string | null;
+    display_phone: string | null;
+    status: string;
+    lifecycle_status: string;
+    first_seen_at: string;
+    last_seen_at: string;
+    last_purchase_at: string | null;
+  }>,
+): string {
+  const header = [
+    'full_name',
+    'first_name',
+    'last_name',
+    'email',
+    'phone',
+    'status',
+    'lifecycle_status',
+    'first_seen_at',
+    'last_seen_at',
+    'last_purchase_at',
+  ].join(',');
+  const lines = rows.map((r) => {
+    const { first, last } = splitName(r.display_name);
+    return [
+      r.display_name,
+      first,
+      last,
+      r.display_email,
+      r.display_phone,
+      r.status,
+      r.lifecycle_status,
+      r.first_seen_at,
+      r.last_seen_at,
+      r.last_purchase_at,
+    ]
+      .map(csvEscape)
+      .join(',');
+  });
+  // UTF-8 BOM so Excel opens accented characters correctly.
+  return '﻿' + header + '\n' + lines.join('\n') + '\n';
+}
+
 const ListLeadsQuerySchema = z
   .object({
     q: z.string().optional(),
@@ -106,6 +193,8 @@ const ListLeadsQuerySchema = z
       .enum(['last_seen_at', 'first_seen_at', 'name', 'lifecycle_status', 'last_purchase_at'])
       .optional(),
     sort_dir: z.enum(['asc', 'desc']).optional(),
+    // 'default' (omit) excludes archived; 'archived' returns only the trash bin.
+    status: z.enum(['default', 'archived']).optional(),
   })
   .strict();
 
@@ -317,7 +406,7 @@ export type GetLeadSummaryFn = (
   display_name: string | null;
   display_email: string | null;
   display_phone: string | null;
-  status: 'active' | 'merged' | 'erased';
+  status: 'active' | 'merged' | 'erased' | 'archived';
   lifecycle_status: LifecycleStatus;
   first_seen_at: string;
   last_seen_at: string;
@@ -336,7 +425,34 @@ export type ListLeadsFn = (opts: {
     display_name: string | null;
     display_email: string | null;
     display_phone: string | null;
-    status: 'active' | 'merged' | 'erased';
+    status: 'active' | 'merged' | 'erased' | 'archived';
+    lifecycle_status: LifecycleStatus;
+    first_seen_at: string;
+    last_seen_at: string;
+    last_purchase_at: string | null;
+  }>
+>;
+
+export type CountLeadsFn = (opts: {
+  workspaceId: string;
+  q?: string;
+  launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
+}) => Promise<number>;
+
+export type ExportLeadsFn = (opts: {
+  workspaceId: string;
+  leadPublicIds?: string[];
+  q?: string;
+  launchPublicId?: string;
+  lifecycle?: LifecycleStatus;
+}) => Promise<
+  Array<{
+    lead_public_id: string;
+    display_name: string | null;
+    display_email: string | null;
+    display_phone: string | null;
+    status: 'active' | 'merged' | 'erased' | 'archived';
     lifecycle_status: LifecycleStatus;
     first_seen_at: string;
     last_seen_at: string;
@@ -793,6 +909,8 @@ export function createLeadsTimelineRoute(opts?: {
   getLeadMerges?: GetLeadMergesFn;
   getLeadSummary?: GetLeadSummaryFn;
   listLeads?: ListLeadsFn;
+  countLeads?: CountLeadsFn;
+  exportLeads?: ExportLeadsFn;
 }): Hono<AppEnv> {
   const route = new Hono<AppEnv>();
 
@@ -817,6 +935,8 @@ export function createLeadsTimelineRoute(opts?: {
       getLeadConsents: opts?.getLeadConsents,
       getLeadMerges: opts?.getLeadMerges,
       listLeads: opts?.listLeads,
+      countLeads: opts?.countLeads,
+      exportLeads: opts?.exportLeads,
     };
   }
 
@@ -846,7 +966,13 @@ export function createLeadsTimelineRoute(opts?: {
 
   // Middleware applied to all /v1/leads routes. Required mode: requires JWT
   // unless DEV_WORKSPACE_ID is configured, in which case it falls back.
+  // Exception: GET /v1/leads/export/<token> authenticates via the token in the
+  // path (issued by the authenticated POST /export), so it must skip the JWT
+  // check — the browser navigation that triggers it cannot send a Bearer header.
   route.use('*', async (c, next) => {
+    if (c.req.method === 'GET' && /\/export\/[^/]+$/.test(c.req.path)) {
+      return next();
+    }
     const mw = supabaseJwtMiddleware<AppEnv>({
       lookupMember: buildLookupMember(c.env),
     });
@@ -879,6 +1005,7 @@ export function createLeadsTimelineRoute(opts?: {
       lifecycle: rawQuery.lifecycle,
       sort_by: rawQuery.sort_by,
       sort_dir: rawQuery.sort_dir,
+      status: rawQuery.status,
     });
     if (!listParseResult.success) {
       return c.json(
@@ -897,6 +1024,7 @@ export function createLeadsTimelineRoute(opts?: {
     const lifecycle = listParseResult.data.lifecycle;
     const sortBy = listParseResult.data.sort_by ?? 'last_seen_at';
     const sortDir = listParseResult.data.sort_dir ?? 'desc';
+    const statusFilter = listParseResult.data.status ?? 'default';
     const rawLimit = Math.min(
       Math.max(1, Number(listParseResult.data.limit ?? 30)),
       100,
@@ -921,6 +1049,7 @@ export function createLeadsTimelineRoute(opts?: {
       limit: rawLimit + 1,
       sortBy,
       sortDir,
+      statusFilter,
     });
 
     const hasMore = items.length > rawLimit;
@@ -941,12 +1070,462 @@ export function createLeadsTimelineRoute(opts?: {
           display_phone: maskPhone(lead.display_phone),
         }));
 
+    // Only compute totals on the first page (no cursor) — saves a count() roundtrip
+    // on every "load more" click. Frontend caches the totals from the first request.
+    let totalFiltered: number | undefined;
+    let totalUnfiltered: number | undefined;
+    if (!cursor && qfns.countLeads) {
+      const [tf, tu] = await Promise.all([
+        qfns.countLeads({ workspaceId, q, launchPublicId, lifecycle, statusFilter }),
+        // Unfiltered "universe" follows the same status scope so "X/Y" makes
+        // sense in either view (default list or trash bin).
+        qfns.countLeads({ workspaceId, statusFilter }),
+      ]);
+      totalFiltered = tf;
+      totalUnfiltered = tu;
+    }
+
     return c.json(
-      { items: masked, next_cursor: nextCursor, role, pii_masked: !seePlain },
+      {
+        items: masked,
+        next_cursor: nextCursor,
+        role,
+        pii_masked: !seePlain,
+        ...(totalFiltered !== undefined ? { total_filtered: totalFiltered } : {}),
+        ...(totalUnfiltered !== undefined ? { total_unfiltered: totalUnfiltered } : {}),
+      },
       200,
       { 'X-Request-Id': requestId },
     );
   });
+
+  // -------------------------------------------------------------------------
+  // POST /export — prepares a one-shot CSV download.
+  // Stores the request parameters (workspace_id + filters + selected IDs + role)
+  // in KV under a random token, returns { download_url } pointing at the GET
+  // endpoint below. The frontend navigates to that URL so the browser performs
+  // a real download (Content-Disposition honored, file saved with proper name).
+  //
+  // POST is used here so we can authenticate via Bearer header and accept a
+  // body of arbitrary size (thousands of selected IDs). The GET endpoint only
+  // needs the token in the path — no auth header (the token IS the auth).
+  // -------------------------------------------------------------------------
+  route.post('/export', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    if (!workspaceId) {
+      return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+
+    const bodyRaw = await c.req.json().catch(() => ({}));
+    const parsed = ExportLeadsBodySchema.safeParse(bodyRaw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: 'validation_error',
+          message: 'Invalid body',
+          details: parsed.error.flatten().fieldErrors,
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    if (!c.env.GT_KV) {
+      return c.json(
+        { code: 'not_available', message: 'KV unavailable', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const token = crypto.randomUUID();
+    const payload = {
+      workspaceId,
+      role,
+      leadPublicIds: parsed.data.lead_public_ids,
+      q: parsed.data.q?.trim() || undefined,
+      launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
+      lifecycle: parsed.data.lifecycle,
+    };
+    // 5-minute TTL — plenty of time for the frontend to redirect and the
+    // browser to start the download; short enough that a leaked URL is useless.
+    await c.env.GT_KV.put(
+      `leads-export:${token}`,
+      JSON.stringify(payload),
+      { expirationTtl: 300 },
+    );
+
+    return c.json(
+      { download_url: `/v1/leads/export/${token}` },
+      200,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /export/:token — serves the CSV for a previously prepared download.
+  // Public (no auth header) because the token IS the auth — it was issued by
+  // POST /export which DID require auth. Token is single-use (deleted on read).
+  // -------------------------------------------------------------------------
+  route.get('/export/:token', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+    const token = c.req.param('token');
+
+    if (!c.env.GT_KV) {
+      return c.json(
+        { code: 'not_available', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const raw = await c.env.GT_KV.get(`leads-export:${token}`);
+    if (!raw) {
+      return c.json(
+        { code: 'not_found_or_expired', request_id: requestId },
+        404,
+        { 'X-Request-Id': requestId },
+      );
+    }
+    // Single-use — invalidate immediately so the token can't be replayed.
+    await c.env.GT_KV.delete(`leads-export:${token}`);
+
+    const payload = JSON.parse(raw) as {
+      workspaceId: string;
+      role: WorkspaceRole | null;
+      leadPublicIds?: string[];
+      q?: string;
+      launchPublicId?: string;
+      lifecycle?: LifecycleStatus;
+    };
+
+    const qfns = resolveQueryFns(c.env);
+    if (!qfns.exportLeads) {
+      return c.json(
+        { code: 'not_available', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const rows = await qfns.exportLeads({
+      workspaceId: payload.workspaceId,
+      leadPublicIds: payload.leadPublicIds,
+      q: payload.q,
+      launchPublicId: payload.launchPublicId,
+      lifecycle: payload.lifecycle,
+    });
+
+    const seePlain = canSeePiiPlainByDefault(payload.role);
+    const masked = seePlain
+      ? rows
+      : rows.map((r) => ({
+          ...r,
+          display_email: maskEmail(r.display_email),
+          display_phone: maskPhone(r.display_phone),
+        }));
+
+    const csv = leadsToCsv(masked);
+    const filename = `contatos-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    return new Response(csv, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'X-Request-Id': requestId,
+      },
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /bulk-delete — erase (anonymize) one or more leads.
+  // Same selection model as /export: explicit `lead_public_ids` OR filter
+  // intersection. Enqueues a `lead_erase` job per matching lead (existing SAR
+  // pipeline does the actual anonymization). Already-erased leads are skipped.
+  // RBAC: owner / admin / privacy only.
+  // -------------------------------------------------------------------------
+  route.post('/bulk-delete', async (c) => {
+    const requestId: string =
+      (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+    const workspaceId = c.get('workspace_id') as string | undefined;
+    if (!workspaceId) {
+      return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+    if (!role || !DELETE_ALLOWED_ROLES.has(role)) {
+      return c.json({ code: 'forbidden', request_id: requestId }, 403, {
+        'X-Request-Id': requestId,
+      });
+    }
+
+    const bodyRaw = await c.req.json().catch(() => ({}));
+    const parsed = BulkDeleteBodySchema.safeParse(bodyRaw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: 'validation_error',
+          message: 'Invalid body',
+          details: parsed.error.flatten().fieldErrors,
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // Safety net: refuse a body that would target every lead in the workspace.
+    // The selection model requires EITHER explicit IDs (non-empty array) OR
+    // at least one filter (q / launch / lifecycle). An empty body, or an empty
+    // ids array with no filters, is almost certainly a frontend bug — refuse
+    // rather than nuke the workspace.
+    const hasIds = Array.isArray(parsed.data.lead_public_ids)
+      && parsed.data.lead_public_ids.length > 0;
+    const hasFilter = !!(
+      parsed.data.q?.trim() ||
+      parsed.data.launch_public_id?.trim() ||
+      parsed.data.lifecycle
+    );
+    if (!hasIds && !hasFilter) {
+      return c.json(
+        {
+          code: 'empty_selection',
+          message: 'Provide non-empty lead_public_ids or at least one filter',
+          request_id: requestId,
+        },
+        400,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    if (!c.env.QUEUE_DISPATCH) {
+      return c.json(
+        { code: 'not_available', message: 'queue unavailable', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    const qfns = resolveQueryFns(c.env);
+    if (!qfns.exportLeads) {
+      return c.json(
+        { code: 'not_available', request_id: requestId },
+        503,
+        { 'X-Request-Id': requestId },
+      );
+    }
+
+    // Resolve the selection to a concrete list. exportLeads returns one row
+    // per lead matching IDs ∩ filters, intersected against the workspace.
+    const matched = await qfns.exportLeads({
+      workspaceId,
+      leadPublicIds: parsed.data.lead_public_ids,
+      q: parsed.data.q?.trim() || undefined,
+      launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
+      lifecycle: parsed.data.lifecycle,
+    });
+
+    const targets = matched.filter((r) => r.status !== 'erased');
+    const skipped = matched.length - targets.length;
+
+    // Enqueue erasure jobs in parallel. Each job is independent — the existing
+    // SAR worker (FLOW-09) consumes them and performs the actual anonymization.
+    const jobIds: string[] = [];
+    const enqueueErrors: string[] = [];
+    await Promise.all(
+      targets.map(async (lead) => {
+        const jobId = crypto.randomUUID();
+        try {
+          await c.env.QUEUE_DISPATCH!.send({
+            type: 'lead_erase',
+            lead_id: lead.lead_public_id,
+            job_id: jobId,
+            requested_at: new Date().toISOString(),
+            request_id: requestId,
+          });
+          jobIds.push(jobId);
+        } catch (err) {
+          safeLog('error', {
+            event: 'leads_bulk_delete_queue_error',
+            request_id: requestId,
+            lead_id: lead.lead_public_id,
+            error_type: err instanceof Error ? err.constructor.name : typeof err,
+          });
+          enqueueErrors.push(lead.lead_public_id);
+        }
+      }),
+    );
+
+    return c.json(
+      {
+        queued: jobIds.length,
+        skipped,
+        failed: enqueueErrors.length,
+        job_ids: jobIds,
+      },
+      202,
+      { 'X-Request-Id': requestId },
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /bulk-archive  — soft-hide one or more leads (reversible).
+  // POST /bulk-unarchive — restore archived leads back to active.
+  //
+  // Same selection model as /export and /bulk-delete: explicit IDs OR filter
+  // intersection. Both endpoints flip leads.status and write an audit_log
+  // entry. Idempotent: a target already in the target state is just skipped.
+  //
+  // RBAC: same group as delete (owner/admin/privacy). Archive is reversible
+  // but it still hides data from operators by default, so we gate it.
+  // -------------------------------------------------------------------------
+  function makeArchiveHandler(toStatus: 'archived' | 'active') {
+    return async (c: Context<AppEnv>) => {
+      const requestId: string =
+        (c.get('request_id') as string | undefined) ?? crypto.randomUUID();
+
+      const workspaceId = c.get('workspace_id') as string | undefined;
+      if (!workspaceId) {
+        return c.json({ code: 'unauthorized', request_id: requestId }, 401, {
+          'X-Request-Id': requestId,
+        });
+      }
+
+      const roleVal = (c.get('role') as WorkspaceRole | undefined) ?? null;
+      if (!roleVal || !DELETE_ALLOWED_ROLES.has(roleVal)) {
+        return c.json({ code: 'forbidden', request_id: requestId }, 403, {
+          'X-Request-Id': requestId,
+        });
+      }
+
+      const bodyRaw = await c.req.json().catch(() => ({}));
+      const parsed = BulkDeleteBodySchema.safeParse(bodyRaw);
+      if (!parsed.success) {
+        return c.json(
+          {
+            code: 'validation_error',
+            message: 'Invalid body',
+            details: parsed.error.flatten().fieldErrors,
+            request_id: requestId,
+          },
+          400,
+          { 'X-Request-Id': requestId },
+        );
+      }
+
+      const hasIds = Array.isArray(parsed.data.lead_public_ids)
+        && parsed.data.lead_public_ids.length > 0;
+      const hasFilter = !!(
+        parsed.data.q?.trim() ||
+        parsed.data.launch_public_id?.trim() ||
+        parsed.data.lifecycle
+      );
+      if (!hasIds && !hasFilter) {
+        return c.json(
+          {
+            code: 'empty_selection',
+            message: 'Provide non-empty lead_public_ids or at least one filter',
+            request_id: requestId,
+          },
+          400,
+          { 'X-Request-Id': requestId },
+        );
+      }
+
+      const qfns = resolveQueryFns(c.env);
+      if (!qfns.exportLeads) {
+        return c.json(
+          { code: 'not_available', request_id: requestId },
+          503,
+          { 'X-Request-Id': requestId },
+        );
+      }
+
+      // For unarchive we have to look in the trash bin; for archive we resolve
+      // against the default visible set (no point archiving an already-erased
+      // row, and erased PII is already gone).
+      const matched = await qfns.exportLeads({
+        workspaceId,
+        leadPublicIds: parsed.data.lead_public_ids,
+        q: parsed.data.q?.trim() || undefined,
+        launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
+        lifecycle: parsed.data.lifecycle,
+        statusFilter: toStatus === 'archived' ? 'default' : 'archived',
+      });
+
+      // For archive: skip rows that are merged/erased (status flips would be
+      // nonsensical). For unarchive: all `matched` rows are already archived
+      // by the statusFilter above, so no extra skip.
+      const targets =
+        toStatus === 'archived'
+          ? matched.filter((r) => r.status === 'active')
+          : matched;
+      const skipped = matched.length - targets.length;
+
+      const connStr = opts?.getConnStr ? opts.getConnStr(c.env) : '';
+      if (!connStr) {
+        return c.json(
+          { code: 'not_available', message: 'db unavailable', request_id: requestId },
+          503,
+          { 'X-Request-Id': requestId },
+        );
+      }
+      const db = createDb(connStr);
+
+      let updated = 0;
+      if (targets.length > 0) {
+        const result = await db
+          .update(leads)
+          .set({ status: toStatus, updatedAt: new Date() })
+          .where(
+            and(
+              eq(leads.workspaceId, workspaceId),
+              inArray(leads.id, targets.map((r) => r.lead_public_id)),
+            ),
+          );
+        updated = (result as unknown as { rowCount?: number }).rowCount ?? targets.length;
+
+        // Audit log: one row per affected lead. BR-AUDIT-001 / BR-PRIVACY-001.
+        await Promise.all(
+          targets.map((r) =>
+            db.insert(auditLog).values({
+              workspaceId,
+              actorId: 'cp_user',
+              actorType: 'user',
+              action: toStatus === 'archived' ? 'lead_archived' : 'lead_unarchived',
+              entityType: 'lead',
+              entityId: r.lead_public_id,
+              before: { status: r.status },
+              after: { status: toStatus },
+              requestContext: { request_id: requestId },
+            }),
+          ),
+        );
+      }
+
+      return c.json(
+        { updated, skipped },
+        200,
+        { 'X-Request-Id': requestId },
+      );
+    };
+  }
+
+  route.post('/bulk-archive', makeArchiveHandler('archived'));
+  route.post('/bulk-unarchive', makeArchiveHandler('active'));
 
   // -------------------------------------------------------------------------
   // GET /:public_id — lead summary (display_name, status, timestamps)

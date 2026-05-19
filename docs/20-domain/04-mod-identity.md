@@ -32,7 +32,7 @@
 - `name` (text plaintext, ADR-034 — indexado em `idx_leads_name_lower (lower(name) text_pattern_ops)` para search ILIKE)
 - `name_enc` (DEPRECATED por ADR-034 — writers param de gravar; reads mantêm fallback por compat retroativa)
 - `pii_key_version` (smallint, default 1)
-- `status` (`active` / `merged` / `erased`)
+- `status` (`active` / `merged` / `erased` / `archived`) — ver `LeadStatus` em `30-contracts/01-enums.md` para semântica.
 - `lifecycle_status` (`LifecycleStatus` — `contato`/`lead`/`cliente`/`aluno`/`mentorado`; NOT NULL DEFAULT `contato`; CHECK constraint, migration `0042`, Sprint 16). Hierarquia monotônica não-regressiva — escrito por `promoteLeadLifecycle` sempre que um Purchase é processado ou um Lead/form é capturado. Derivado de `products.category` via `lifecycleForCategory`. Ver MOD-PRODUCT e BR-PRODUCT-001.
 - `merged_into_lead_id` (FK, opcional — para registros pós-merge)
 - `first_seen_at`, `last_seen_at`
@@ -109,8 +109,9 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 ## 5. Estados (Lead)
 
 ```
-[active] → [merged]   (não pode voltar)
-       → [erased]   (terminal — PII zerada por SAR)
+[active] ⇄ [archived]  (soft-hide reversível — PII intacta)
+       → [merged]      (não pode voltar)
+       → [erased]      (terminal — PII zerada por SAR)
 ```
 
 ## 6. Transições válidas
@@ -119,12 +120,15 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 |---|---|---|---|
 | (criação) | `active` | sistema (resolveLeadByAliases) | — |
 | `active` | `merged` | sistema (durante merge) | `merged_into_lead_id` populado; aliases movidos para canonical. |
-| `active` | `erased` | PRIVACY, ADMIN (via `DELETE /v1/admin/leads/:id`) | PII zerada; agregados preservados; aliases removidos. |
+| `active` | `erased` | PRIVACY, ADMIN (via `DELETE /v1/admin/leads/:id` ou `POST /v1/leads/bulk-delete` que enfileira worker `lead_erase`) | PII zerada; agregados preservados; aliases removidos. |
+| `active` | `archived` | OWNER, ADMIN, PRIVACY (via `POST /v1/leads/bulk-archive`) | Soft-hide; PII intacta; ainda no workspace; excluído de listagem default. Audit `lead_archived`. |
+| `archived` | `active` | OWNER, ADMIN, PRIVACY (via `POST /v1/leads/bulk-unarchive`) | Restaura visibilidade. Audit `lead_unarchived`. |
 
 ## 7. Invariantes
 
 - **INV-IDENTITY-001 — Aliases ativos são únicos por `(workspace_id, identifier_type, identifier_hash)`.** Constraint `unique (...) where status='active'`. Testável.
 - **INV-IDENTITY-002 — Lead `erased` não tem PII em claro.** Após SAR, `email_enc`, `phone_enc`, `name_enc` IS NULL e hashes IS NULL. Testável.
+- **INV-IDENTITY-009 — Lead `archived` mantém PII intacta e segue no workspace.** Diferente de `erased`, archived é soft-hide reversível: `email_enc`/`phone_enc`/`name_enc`/`*_hash`/aliases permanecem inalterados; o lead apenas sai de listagens default (`GET /v1/leads?status=default`) e pode voltar via `bulk-unarchive`. Métricas históricas (dashboard) continuam contabilizando archived leads para não retroagir receita/ROAS. Testável.
 - **INV-IDENTITY-003 — Lead `merged` não recebe novos aliases ou eventos.** Resolver direciona qualquer match para `merged_into_lead_id`. Eventos com `lead_id` de lead merged são rejeitados ou redirecionados pelo ingestion processor. Testável.
 - **INV-IDENTITY-004 — Cada lead tem ao menos 1 alias `active` enquanto `lead.status='active'`.** Validador. Testável.
 - **INV-IDENTITY-005 — `pii_key_version` corresponde a uma versão de chave existente.** Validador (config tem lista de versões disponíveis). Testável.

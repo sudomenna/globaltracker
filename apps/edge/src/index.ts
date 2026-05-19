@@ -83,6 +83,7 @@ import { aggregatePurchaseValueByGroup } from './lib/transaction-aggregator.js';
 import { processSendflowRawEvent } from './lib/sendflow-raw-events-processor.js';
 import { hashPiiExternal } from './lib/pii.js';
 import { processRawEvent } from './lib/raw-events-processor.js';
+import { eraseLead } from './lib/lead-erase.js';
 import {
   type LookupPageTokenFn,
   authPublicToken,
@@ -189,7 +190,19 @@ type EventsQueueMessage = {
   platform?: string;
 };
 
-type AnyQueueMessage = DispatchQueueMessage | EventsQueueMessage;
+/** Message published by SAR/bulk-delete endpoints — carries the lead to anonymize. */
+type LeadEraseQueueMessage = {
+  type: 'lead_erase';
+  lead_id: string;
+  job_id: string;
+  requested_at: string;
+  request_id: string;
+};
+
+type AnyQueueMessage =
+  | DispatchQueueMessage
+  | EventsQueueMessage
+  | LeadEraseQueueMessage;
 
 // ---------------------------------------------------------------------------
 // Context variables
@@ -860,6 +873,44 @@ async function queueHandler(
           event: 'ingestion_unhandled_error',
           raw_event_id,
           platform: platform ?? 'tracker',
+          error_type: err instanceof Error ? err.constructor.name : 'unknown',
+        });
+        message.retry();
+      }
+      continue;
+    }
+
+    // lead_erase path: SAR anonymization (idempotent, single-shot).
+    if ('type' in body && (body as { type?: string }).type === 'lead_erase') {
+      const { lead_id, job_id, request_id } = body as LeadEraseQueueMessage;
+      try {
+        const result = await eraseLead(db, {
+          leadId: lead_id,
+          jobId: job_id,
+          requestId: request_id,
+        });
+        if (!result.ok) {
+          safeLog('error', {
+            event: 'lead_erase_failed',
+            lead_id,
+            job_id,
+            error_code: result.error.code,
+          });
+          message.retry();
+          continue;
+        }
+        safeLog('info', {
+          event: 'lead_erase_processed',
+          lead_id,
+          job_id,
+          outcome: result.outcome,
+        });
+        message.ack();
+      } catch (err) {
+        safeLog('error', {
+          event: 'lead_erase_unhandled_error',
+          lead_id,
+          job_id,
           error_type: err instanceof Error ? err.constructor.name : 'unknown',
         });
         message.retry();

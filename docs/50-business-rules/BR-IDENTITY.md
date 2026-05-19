@@ -185,6 +185,8 @@ Após `lead.status` virar `merged` ou `erased`, o lead **NÃO PODE** ser destino
 - `merged`: novo evento deve ir para canonical, não para o lead absorvido.
 - `erased`: lead foi anonimizado (SAR); não pode "reviver" via novo evento.
 
+**Nota — `archived`:** soft-hide reversível (ver INV-IDENTITY-009) NÃO bloqueia ingestion. Lead arquivado segue recebendo eventos/aliases normalmente; apenas é excluído de listagens default da UI. Eventos durante período archived são preservados e ficam visíveis novamente ao desarquivar (`bulk-unarchive`).
+
 ### Enforcement
 - **Domain:** ingestion processor verifica `lead.status` antes de associar evento.
 - **DB:** trigger ou check pode bloquear (decisão na Fase 1).
