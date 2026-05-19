@@ -421,6 +421,8 @@ app.use('/v1/dispatch-jobs/*', cpCors);
 app.use('/v1/help/*', cpCors);
 app.use('/v1/orchestrator/*', cpCors);
 app.use('/v1/workspace/*', cpCors);
+app.use('/v1/workspace-tags/*', cpCors);
+app.use('/v1/leads-tags/*', cpCors);
 
 // OPTIONS preflight for public tracker routes (/v1/lead, /v1/config, etc.)
 // /v1/events OPTIONS is handled by the method-dispatch middleware above.
