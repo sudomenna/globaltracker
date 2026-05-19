@@ -13,6 +13,7 @@ import {
   Plug,
   Settings,
   Shield,
+  Tag,
   Users,
   Zap,
 } from 'lucide-react';
@@ -82,6 +83,7 @@ const navItems: NavItemDef[] = [
     resolveHealth: () => 'unknown',
     resolveTooltip: () => 'Dados de saúde de privacy indisponíveis',
   },
+  { href: '/settings/tags', label: 'Tags', icon: Tag },
   { href: '/settings/workspace', label: 'Configurações', icon: Settings },
   { href: '/help/glossary', label: 'Ajuda', icon: HelpCircle },
 ];

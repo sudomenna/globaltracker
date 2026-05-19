@@ -66,6 +66,7 @@ $$ language plpgsql;
 | `audit_log`, `events`, `dispatch_jobs`, `dispatch_attempts`, `link_clicks` | Apenas-anexar; purge por retenção em background job. |
 | `raw_events` | Hard delete após 7 dias (retenção curta). |
 | `lead_aliases` (após erasure) | Hard delete (ADR-014). |
+| `workspace_tags` (catálogo de tags) | Soft via `archived_at timestamptz` (`NULL` = ativa). INV-WORKSPACE-TAG-001/002/003. Match com `lead_tags.tag_name` é soft (sem FK) — ver ADR-047. |
 
 Hard delete sempre via job de retenção, nunca via UPDATE/DELETE manual em produção.
 

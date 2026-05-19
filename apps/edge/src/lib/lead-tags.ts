@@ -26,6 +26,7 @@
 import type { Db } from '@globaltracker/db';
 import { sql } from 'drizzle-orm';
 import { safeLog } from '../middleware/sanitize-logs.js';
+import { autoRegisterTag } from './workspace-tags.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,6 +190,29 @@ export async function applyTagRules(
 
     if (result.ok) {
       applied++;
+
+      // T-TAGS-002: tag aplicada via tag_rule do blueprint → sincroniza o
+      // catálogo workspace_tags (auto-registro idempotente). Falha do
+      // autoRegister NÃO bloqueia o contador `applied` e NÃO bubbla:
+      // ingestion de eventos não pode 500ar por divergência de catálogo.
+      // INV-WORKSPACE-TAG-002: source = 'system:blueprint' (proveniência).
+      const reg = await autoRegisterTag({
+        db: args.db,
+        workspaceId: args.workspaceId,
+        name: rule.tag,
+        source: 'system:blueprint',
+      });
+      if (!reg.ok) {
+        // BR-PRIVACY-001: tag_name + workspace_id são domain ids — safe em log.
+        safeLog('warn', {
+          event: 'auto_register_tag_failed',
+          request_id: args.requestId,
+          workspace_id: args.workspaceId,
+          tag_name: rule.tag,
+          source: 'system:blueprint',
+          error: reg.error.slice(0, 200),
+        });
+      }
     } else {
       skipped++;
       // BR-PRIVACY-001: lead_id é UUID interno (não-PII); tag_name é string
@@ -206,4 +230,157 @@ export async function applyTagRules(
   }
 
   return { applied, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// unsetLeadTag — T-TAGS-002
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove uma tag específica de um lead. NOT-found não é erro — apenas
+ * `removed: false`. Idempotente: chamadas repetidas são no-op após a primeira.
+ *
+ * INV-LEAD-TAG-001: UNIQUE garante que cada (workspace, lead, tag) tem no
+ * máximo uma row; DELETE remove ≤ 1.
+ * BR-IDENTITY: workspace_id e lead_id no WHERE (cross-workspace leak proibido).
+ */
+export async function unsetLeadTag(args: {
+  db: Db;
+  workspaceId: string;
+  leadId: string;
+  tagName: string;
+}): Promise<{ ok: true; removed: boolean } | { ok: false; error: string }> {
+  try {
+    // Usamos RETURNING para extrair rowCount de forma portátil — postgres-js
+    // não expõe rowCount confiável em DELETE sem RETURNING.
+    const res = await args.db.execute(sql`
+      DELETE FROM lead_tags
+      WHERE workspace_id = ${args.workspaceId}::uuid
+        AND lead_id = ${args.leadId}::uuid
+        AND tag_name = ${args.tagName}
+      RETURNING id
+    `);
+    const removed = (res as unknown as unknown[]).length > 0;
+    return { ok: true, removed };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'unknown',
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// bulkApplyLeadTagsByIds — T-TAGS-002
+// ---------------------------------------------------------------------------
+
+/**
+ * Aplica um conjunto de tags a um conjunto de leads (produto cartesiano).
+ *
+ * Implementação: uma única INSERT ... SELECT com unnest(leadIds[]) ×
+ * unnest(tagNames[]). Idempotente via ON CONFLICT DO NOTHING.
+ *
+ *   applied = nº de rows inseridas (rowCount via RETURNING id)
+ *   skipped = (leadIds × tagNames) - applied
+ *
+ * INV-LEAD-TAG-001: ON CONFLICT DO NOTHING — duplicatas viram `skipped`.
+ * INV-LEAD-TAG-002: `setBy` segue formato canônico — validação de formato é
+ *   do caller (route layer). Helper aceita string para flexibilidade.
+ * BR-AUDIT-001: set_by + set_at populados (NOW() server-side).
+ * BR-IDENTITY: workspace_id fixo em todas as rows inseridas.
+ *
+ * @param requestId apenas para correlação de logs (não persistido).
+ */
+export async function bulkApplyLeadTagsByIds(args: {
+  db: Db;
+  workspaceId: string;
+  leadIds: string[];
+  tagNames: string[];
+  setBy: string;
+  requestId?: string;
+}): Promise<{ applied: number; skipped: number }> {
+  if (args.leadIds.length === 0 || args.tagNames.length === 0) {
+    return { applied: 0, skipped: 0 };
+  }
+
+  const expected = args.leadIds.length * args.tagNames.length;
+
+  try {
+    // Cartesian product via unnest(...) cross join.
+    // postgres.js encoda JS arrays como text[]/uuid[] quando o cast é
+    // explícito (::uuid[] / ::text[]).
+    const res = await args.db.execute(sql`
+      INSERT INTO lead_tags (workspace_id, lead_id, tag_name, set_by, set_at)
+      SELECT
+        ${args.workspaceId}::uuid,
+        l.lead_id::uuid,
+        t.tag_name,
+        ${args.setBy},
+        NOW()
+      FROM unnest(${args.leadIds}::uuid[]) AS l(lead_id)
+      CROSS JOIN unnest(${args.tagNames}::text[]) AS t(tag_name)
+      ON CONFLICT (workspace_id, lead_id, tag_name) DO NOTHING
+      RETURNING id
+    `);
+    const applied = (res as unknown as unknown[]).length;
+    return { applied, skipped: expected - applied };
+  } catch (err) {
+    // BR-PRIVACY-001: workspace_id + counts são safe; lead_ids são UUIDs
+    // internos mas evitamos logar a lista inteira (tamanho indefinido).
+    safeLog('error', {
+      event: 'bulk_apply_lead_tags_failed',
+      request_id: args.requestId,
+      workspace_id: args.workspaceId,
+      lead_ids_count: args.leadIds.length,
+      tag_names_count: args.tagNames.length,
+      error: err instanceof Error ? err.message.slice(0, 200) : 'unknown',
+    });
+    // Erro é caminho excepcional; retornamos contadores neutros para o caller
+    // decidir. Mantemos a assinatura simples (sem Result) porque a semântica
+    // "applied=0, skipped=expected" já é informativa.
+    return { applied: 0, skipped: expected };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// bulkUnsetLeadTagsByIds — T-TAGS-002
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove um conjunto de tags de um conjunto de leads (DELETE em lote).
+ *
+ *   removed = rowCount (via RETURNING id).
+ *
+ * BR-IDENTITY: workspace_id no WHERE.
+ * Idempotente: combinações inexistentes são no-op (não contam para removed).
+ */
+export async function bulkUnsetLeadTagsByIds(args: {
+  db: Db;
+  workspaceId: string;
+  leadIds: string[];
+  tagNames: string[];
+}): Promise<{ removed: number }> {
+  if (args.leadIds.length === 0 || args.tagNames.length === 0) {
+    return { removed: 0 };
+  }
+
+  try {
+    const res = await args.db.execute(sql`
+      DELETE FROM lead_tags
+      WHERE workspace_id = ${args.workspaceId}::uuid
+        AND lead_id = ANY(${args.leadIds}::uuid[])
+        AND tag_name = ANY(${args.tagNames}::text[])
+      RETURNING id
+    `);
+    return { removed: (res as unknown as unknown[]).length };
+  } catch (err) {
+    safeLog('error', {
+      event: 'bulk_unset_lead_tags_failed',
+      workspace_id: args.workspaceId,
+      lead_ids_count: args.leadIds.length,
+      tag_names_count: args.tagNames.length,
+      error: err instanceof Error ? err.message.slice(0, 200) : 'unknown',
+    });
+    return { removed: 0 };
+  }
 }

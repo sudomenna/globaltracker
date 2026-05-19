@@ -808,6 +808,151 @@ Remove associação `launch_products` (não apaga `products`).
 
 > **Nota Hono — ordem de mount (Sprint 16):** `/v1/launches/:launch_public_id/products/*` é montado em `apps/edge/src/index.ts` **antes** de `launchesRoute`. Caso contrário o middleware do `launchesRoute` (auth Bearer-only) intercepta e quebra o JWT pattern. Ver commit `0fb5ca6`.
 
+### `GET /v1/workspace-tags` (Sprint 18)
+
+Lista tags do catálogo do workspace autenticado (ordenado por `name ASC`). Implementa T-TAGS-004 / BR-TAGS-003.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-tags-list-v1` |
+| **Auth** | Bearer JWT Supabase ES256 verificado via `supabaseJwtMiddleware` (modo `required:false` para preservar fallback `DEV_WORKSPACE_ID`); `workspace_id` resolvido via `workspace_members` (BR-RBAC-001) |
+| **Query** | `include_archived?` ∈ `true`\|`false`\|`1`\|`0` (default `false` — oculta tags com `archived_at` definido); `with_count?` ∈ `true`\|`false`\|`1`\|`0` (default `true` — popula `lead_count` por subquery `COUNT(*) FROM lead_tags WHERE tag_name = wt.name`) |
+| **Response 200** | `{ tags: WorkspaceTag[], request_id }` onde `WorkspaceTag = { id, workspaceId, name, color, description, createdBy, createdAt, archivedAt, leadCount? }` |
+| **Mount order** | Montado em `apps/edge/src/index.ts` como `app.route('/v1/workspace-tags', workspaceTagsRoute)` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `503 not_available` |
+
+### `POST /v1/workspace-tags` (Sprint 18)
+
+Cria uma tag manualmente no catálogo. Diferente de `autoRegisterTag` (silencioso), sinaliza conflito explicitamente para a UI.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-tags-create-v1` |
+| **Auth** | Bearer JWT (qualquer role autenticado — Wave 2B; refinamento para `owner`/`admin`/`editor` deferred) |
+| **Body** | `{ name: string (1–120, trimmed), color?: string\|null (max 32), description?: string\|null (max 500) }` (Zod `.strict`) |
+| **Side effects** | INSERT em `workspace_tags` com `created_by = "user:" + jwt.user_id` (BR-TAGS-010). `audit_log` action=`workspace_tag.create`, `entity_type='workspace_tag'`, before=null, after={ tag serializada }. |
+| **Response 201** | `{ tag: WorkspaceTag, request_id }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `409 duplicate_tag` (UNIQUE `(workspace_id, name)` violado — BR-TAGS-003), `500 internal_error`, `503` |
+
+### `PATCH /v1/workspace-tags/:id` (Sprint 18)
+
+Atualiza metadados (`name`, `color`, `description`). Rename é **atômico** (BR-TAGS-005): renomeia em `workspace_tags` E em `lead_tags` na mesma transação.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-tags-patch-v1` |
+| **Auth** | Bearer JWT |
+| **Path** | `:id` = `workspace_tags.id` (UUID validado por regex no handler) |
+| **Body** | `{ name?, color?, description? }` (Zod `.strict` + `.refine` exigindo pelo menos uma chave) |
+| **Side effects** | UPDATE com workspace isolation (`WHERE id = ? AND workspace_id = ?`). Quando `name` muda: `SELECT … FOR UPDATE` + UPDATE wt + UPDATE `lead_tags.tag_name` na **mesma transação** (BR-TAGS-005 / INV-WORKSPACE-TAG-003). `audit_log` action=`workspace_tag.update`, before/after com row serializada. |
+| **Response 200** | `{ tag: WorkspaceTag, request_id }` |
+| **Errors** | `400 validation_error`, `401`, `404 not_found`, `409 duplicate_tag` (rename colide), `500`, `503` |
+
+### `DELETE /v1/workspace-tags/:id` (Sprint 18)
+
+Soft-delete reversível (`archived_at = NOW()`) com cascade opcional para `lead_tags`. BR-TAGS-006.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-tags-archive-v1` |
+| **Auth** | Bearer JWT |
+| **Path** | `:id` = `workspace_tags.id` |
+| **Body** | `{ cascade?: boolean }` (default `false`; body opcional — empty `{}` aceito). Quando `cascade=true`, DELETE em `lead_tags WHERE tag_name = nome_da_tag` na MESMA transação do UPDATE de `archived_at`. |
+| **Side effects** | UPDATE `archived_at`. Quando archived (não-idempotente): `audit_log` action=`workspace_tag.archive` ou `workspace_tag.delete_cascade` (quando cascade). Tag já arquivada → response com `archived: false`, sem audit. |
+| **Response 200** | `{ archived: boolean, cascaded: number, request_id }` — `cascaded` é o nº de lead_tags removidas (0 quando `cascade=false`) |
+| **Errors** | `400 validation_error`, `401`, `500`, `503` |
+
+### `POST /v1/workspace-tags/:id/unarchive` (Sprint 18)
+
+Reverte archive (`archived_at = NULL`). Espelho de DELETE.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-workspace-tags-unarchive-v1` |
+| **Auth** | Bearer JWT |
+| **Side effects** | UPDATE com filtro `archived_at IS NOT NULL`. Quando flip ocorre: `audit_log` action=`workspace_tag.unarchive`. |
+| **Response 200** | `{ unarchived: boolean, request_id }` |
+| **Errors** | `400 validation_error`, `401`, `500`, `503` |
+
+### `POST /v1/leads-tags/by-lead/:lead_public_id` (Sprint 18)
+
+Aplica N tags a 1 lead. Idempotente (BR-TAGS-001). Cada tag também é auto-registrada no catálogo (BR-TAGS-003).
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-tags-by-lead-apply-v1` |
+| **Auth** | Bearer JWT |
+| **Path** | `:lead_public_id` = `leads.id` (UUID — BR-IDENTITY-013) |
+| **Body** | `{ tag_names: string[] }` (cada nome 1–120 chars; lista 1–50). Zod `.strict`. |
+| **Side effects** | (1) Resolve `lead_id` via SELECT em `leads` com `workspace_id` no WHERE; (2) para cada `tagName`: `autoRegisterTag(source='user:<uuid>')` + `setLeadTag(setBy='user:<uuid>')` em paralelo (idempotentes); (3) `audit_log` agregado action=`lead_tag.set_batch`, entity=`lead`, after=`{ tag_names, applied }`. |
+| **Response 200** | `{ applied: number, request_id }` |
+| **Errors** | `400 validation_error`, `401 unauthorized`, `404 not_found` (lead inexistente ou cross-workspace), `503` |
+
+### `DELETE /v1/leads-tags/by-lead/:lead_public_id/:tag_name` (Sprint 18)
+
+Remove 1 tag de 1 lead. Idempotente.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-tags-by-lead-remove-v1` |
+| **Auth** | Bearer JWT |
+| **Path** | `:lead_public_id` (UUID); `:tag_name` (URI-decoded; 1–120 chars após decode) |
+| **Side effects** | `unsetLeadTag` em `apps/edge/src/lib/lead-tags.ts`. Audit `lead_tag.unset` quando `removed=true`. |
+| **Response 200** | `{ removed: boolean, request_id }` — `false` quando combinação não existia (no-op idempotente, sem audit) |
+| **Errors** | `400 validation_error`, `401`, `404 not_found` (lead), `500`, `503` |
+
+### `POST /v1/leads-tags/bulk-apply` (Sprint 18)
+
+Aplica N tags × M leads (produto cartesiano). Idempotente. Reporta unknown `lead_public_ids` em vez de fail-fast. BR-TAGS-007.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-tags-bulk-apply-v1` |
+| **Auth** | Bearer JWT |
+| **Body** | `{ tag_names: string[] (1–50), lead_public_ids: string[] (UUID, 1–5000) }` (Zod `.strict`) |
+| **Side effects** | (1) Single-roundtrip SELECT `id = ANY(::uuid[])` resolve `lead_public_ids` em `lead_id`s + reporta unknowns; (2) `autoRegisterTag` paralelo para cada `tag_name` (source=`user:<uuid>`); (3) `bulkApplyLeadTagsByIds` faz `INSERT … SELECT FROM unnest(::uuid[]) CROSS JOIN unnest(::text[])` com `ON CONFLICT DO NOTHING`; (4) **1 audit_log row** agregado (`lead_tag.bulk_apply`, entity_id = primeiro lead_id ou `'-'`, after = `{ tag_names, lead_count, applied, skipped, unknown_public_ids_count }`). |
+| **Response 200** | `{ applied: number, skipped: number, unknown_public_ids: string[], request_id }` |
+| **Errors** | `400 validation_error` (cap excedido vira aqui), `401`, `503` |
+
+### `POST /v1/leads-tags/bulk-remove` (Sprint 18)
+
+Remove N tags × M leads. Espelho de bulk-apply. Idempotente.
+
+| Item | Especificação |
+|---|---|
+| **CONTRACT-id** | `CONTRACT-api-leads-tags-bulk-remove-v1` |
+| **Auth** | Bearer JWT |
+| **Body** | mesmo shape de bulk-apply (`tag_names` 1–50, `lead_public_ids` UUID 1–5000) |
+| **Side effects** | `bulkUnsetLeadTagsByIds` via single DELETE `WHERE workspace_id = ? AND lead_id = ANY(::uuid[]) AND tag_name = ANY(::text[]) RETURNING id`. Audit agregado `lead_tag.bulk_remove`. |
+| **Response 200** | `{ removed: number, unknown_public_ids: string[], request_id }` |
+| **Errors** | `400`, `401`, `503` |
+
+### `GET /v1/leads` — query param `tag_filter` (Sprint 18 — extensão de CONTRACT-api-leads-list-v1)
+
+Filtro combinatório por presença/ausência de tags. **Não** é JOIN — é EXISTS/NOT EXISTS por subquery (BR-TAGS-008 — evita "join multiplication bug").
+
+| Item | Especificação |
+|---|---|
+| **Wire format** | `tag_filter = base64url( JSON.stringify({ op, clauses }) )` (BR-TAGS-009) |
+| **Schema decodificado** | `{ op: 'and'\|'or' (default 'and'), clauses: Array<{has: boolean, tag: string (1–120)}> (min 1, max 20) }` |
+| **Combinadores** | `op='and'` — todas as clauses precisam ser satisfeitas; `op='or'` — pelo menos uma. `has:true` → EXISTS; `has:false` → NOT EXISTS. |
+| **SQL gerado** | Cada clause vira `[NOT] EXISTS (SELECT 1 FROM lead_tags WHERE lead_id = leads.id AND workspace_id = $ws AND tag_name = $tag)` — workspace anchored explicitamente (BR-IDENTITY / BR-PRIVACY-001), zero string interpolation. Combinação via `AND`/`OR` no fragmento final. |
+| **Aplicação** | `listLeads`, `countLeads`, `exportLeads` em `apps/edge/src/lib/leads-queries.ts` recebem `tagFilter?: TagFilter` em `ListLeadsOpts`/`CountLeadsOpts`/`ExportLeadsOpts`. Implementação em `apps/edge/src/lib/leads-filter.ts` (`buildTagFilterWhere`). |
+| **Total filtrado** | Quando `tag_filter` está presente, `total_filtered` na primeira página reflete o filtro; `total_unfiltered` continua sendo o total do workspace (BR-IDENTITY-006 — sem expor counts cross-tag). |
+| **Errors** | `400 invalid_tag_filter` — base64url malformado, JSON parse error, ou Zod schema violation (todos colapsam neste single code; mensagem genérica para não vazar shape interno) |
+
+**Exemplo de uso (CP):**
+
+```ts
+const tagFilter = { op: 'and', clauses: [
+  { has: true,  tag: 'vip' },
+  { has: false, tag: 'frio' },
+]};
+const encoded = btoa(JSON.stringify(tagFilter))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+fetch(`/v1/leads?tag_filter=${encoded}&limit=50`);
+```
+
 ### `DELETE /v1/admin/leads/:lead_id`
 
 SAR/erasure. Auth restrita.

@@ -81,6 +81,7 @@ Header global tem **badge de saúde do workspace** (B.4) com painel lateral de i
 /settings/members                       → CRUD members
 /settings/api-keys                      → CRUD api keys
 /settings/onboarding                    → re-entry do wizard (Sprint 6)
+/settings/tags                          → catálogo de tags do workspace (Sprint 18 — ver 14-screen-tags-catalog.md)
 ```
 
 ## Command palette (Fase 4)

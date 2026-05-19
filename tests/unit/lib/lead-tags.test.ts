@@ -158,7 +158,9 @@ describe('applyTagRules (T-LEADS-VIEW-002)', () => {
     });
 
     expect(result).toEqual({ applied: 1, skipped: 0 });
-    expect(executeSpy).toHaveBeenCalledOnce();
+    // 2 calls: setLeadTag + autoRegisterTag (T-TAGS-002 — applyTagRules
+    // auto-registra a tag no catálogo após cada setLeadTag ok).
+    expect(executeSpy).toHaveBeenCalledTimes(2);
   });
 
   it('skips tag when event_name does not match', async () => {
@@ -198,7 +200,8 @@ describe('applyTagRules (T-LEADS-VIEW-002)', () => {
     });
 
     expect(result).toEqual({ applied: 1, skipped: 1 });
-    expect(executeSpy).toHaveBeenCalledOnce();
+    // 2 calls: setLeadTag + autoRegisterTag (T-TAGS-002).
+    expect(executeSpy).toHaveBeenCalledTimes(2);
   });
 
   it('skips when.funnel_role rule when eventContext.funnel_role is undefined', async () => {
@@ -263,7 +266,8 @@ describe('applyTagRules (T-LEADS-VIEW-002)', () => {
     });
 
     expect(result).toEqual({ applied: 2, skipped: 1 });
-    expect(executeSpy).toHaveBeenCalledTimes(2);
+    // 4 calls: 2× (setLeadTag + autoRegisterTag) — T-TAGS-002.
+    expect(executeSpy).toHaveBeenCalledTimes(4);
   });
 
   it('continues applying remaining rules when one fails (failure is logged, not bubbled)', async () => {
@@ -292,7 +296,9 @@ describe('applyTagRules (T-LEADS-VIEW-002)', () => {
     });
 
     expect(result).toEqual({ applied: 1, skipped: 1 });
-    expect(executeSpy).toHaveBeenCalledTimes(2);
+    // 3 calls: rule1 setLeadTag (throws, sem autoRegister), rule2 setLeadTag ok,
+    // rule2 autoRegisterTag ok (T-TAGS-002).
+    expect(executeSpy).toHaveBeenCalledTimes(3);
   });
 
   it('uses set_by="event:<event_name>" (INV-LEAD-TAG-002) when delegating to setLeadTag', async () => {
@@ -325,6 +331,7 @@ describe('applyTagRules (T-LEADS-VIEW-002)', () => {
     });
 
     expect(result).toEqual({ applied: 1, skipped: 0 });
-    expect(executeSpy).toHaveBeenCalledOnce();
+    // 2 calls: setLeadTag + autoRegisterTag (T-TAGS-002).
+    expect(executeSpy).toHaveBeenCalledTimes(2);
   });
 });

@@ -123,6 +123,8 @@ import { createDashboardStatsRoute } from './routes/dashboard-stats.js';
 import { createRecoveryRoute } from './routes/recovery.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
+import { createWorkspaceTagsRoute } from './routes/workspace-tags.js';
+import { createLeadsTagsRoute } from './routes/leads-tags.js';
 import { createGuruWebhookRoute } from './routes/webhooks/guru.js';
 import { createOnprofitWebhookRoute } from './routes/webhooks/onprofit.js';
 import { createSendflowWebhookRoute } from './routes/webhooks/sendflow.js';
@@ -742,6 +744,21 @@ app.route('/v1/orchestrator/workflows', orchestratorRoute);
 // Auth: Bearer token; OPERATOR/ADMIN role required (TODO T-AUTH-CP: full JWT RBAC).
 // BR-RBAC-002: workspace_id from auth context, never from body.
 app.route('/v1/workspace', workspaceConfigRoute);
+
+// Tags catalog + lead-side tag application (T-TAGS-004).
+// BR-IDENTITY / BR-AUDIT-001 / BR-PRIVACY-001 honored inside each route.
+app.route(
+  '/v1/workspace-tags',
+  createWorkspaceTagsRoute({
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
+  }),
+);
+app.route(
+  '/v1/leads-tags',
+  createLeadsTagsRoute({
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
+  }),
+);
 
 // Products catalog (T-PRODUCTS-005). GET ≥ viewer, PATCH ≥ admin/owner.
 // BR-PRODUCT-001/002/003: lifecycle backfill on category change.

@@ -22,6 +22,7 @@ import {
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNotNull, lt, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { decryptPii, hashPii } from './pii.js';
+import { buildTagFilterWhere, type TagFilter } from './leads-filter.js';
 import { normalizeEmail, normalizePhone } from './lead-resolver.js';
 import type { LifecycleStatus } from './lifecycle-rules.js';
 import type {
@@ -82,6 +83,9 @@ export type ListLeadsOpts = {
   sortBy?: SortField;
   sortDir?: SortDir;
   statusFilter?: StatusFilter;
+  // Optional tag presence/absence filter — EXISTS subquery, never JOIN
+  // (see MEMORY.md "Join multiplication bug pattern").
+  tagFilter?: TagFilter;
 };
 
 export type CountLeadsOpts = {
@@ -90,6 +94,7 @@ export type CountLeadsOpts = {
   launchPublicId?: string;
   lifecycle?: LifecycleStatus;
   statusFilter?: StatusFilter;
+  tagFilter?: TagFilter;
 };
 
 export type ExportLeadsOpts = {
@@ -100,6 +105,7 @@ export type ExportLeadsOpts = {
   launchPublicId?: string;
   lifecycle?: LifecycleStatus;
   statusFilter?: StatusFilter;
+  tagFilter?: TagFilter;
 };
 
 export type ExportLeadRow = {
@@ -582,6 +588,11 @@ export function createLeadsQueryFns(
       conditions.push(inArray(leads.id, launchLeadIds));
     }
 
+    // BR-IDENTITY: tag filter via EXISTS subquery anchored on workspace_id;
+    // never INNER JOIN on lead_tags (multiplies rows by tag count).
+    const tagWhere = buildTagFilterWhere(opts.tagFilter, workspaceId, sql`${leads.id}`);
+    if (tagWhere) conditions.push(tagWhere);
+
     // Cursor applies only to date-based sorts (stable keyset pagination).
     if (cursor && (sortBy === 'last_seen_at' || sortBy === 'first_seen_at')) {
       const col = sortBy === 'first_seen_at' ? leads.firstSeenAt : leads.lastSeenAt;
@@ -743,6 +754,11 @@ export function createLeadsQueryFns(
       conditions.push(inArray(leads.id, launchLeadIds));
     }
 
+    // BR-IDENTITY: tag filter via EXISTS subquery anchored on workspace_id;
+    // never INNER JOIN on lead_tags (multiplies rows by tag count).
+    const tagWhere = buildTagFilterWhere(opts.tagFilter, workspaceId, sql`${leads.id}`);
+    if (tagWhere) conditions.push(tagWhere);
+
     const rows = await db
       .select({ n: count() })
       .from(leads)
@@ -812,6 +828,11 @@ export function createLeadsQueryFns(
         );
       conditions.push(inArray(leads.id, launchLeadIds));
     }
+
+    // BR-IDENTITY: tag filter via EXISTS subquery anchored on workspace_id;
+    // never INNER JOIN on lead_tags (multiplies rows by tag count).
+    const tagWhere = buildTagFilterWhere(opts.tagFilter, workspaceId, sql`${leads.id}`);
+    if (tagWhere) conditions.push(tagWhere);
 
     const purchaseSq = db
       .select({

@@ -93,6 +93,48 @@ Diferença canônica:
 
 Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:wpp_joined` → stage `group_joined` + tag `joined_group`). Helpers `setLeadTag` / `applyTagRules` em `apps/edge/src/lib/lead-tags.ts` (ver MOD-IDENTITY § 10 e `30-contracts/07-module-interfaces.md`).
 
+### WorkspaceTag — catálogo de tags do workspace (T-TAGS-001 — Sprint 18)
+
+Catálogo opcional de metadados (cor, descrição, soft-delete) das tags utilizadas no workspace. **Não substitui** `lead_tags` — convive lado a lado:
+
+- `lead_tags.tag_name` (já existente desde Sprint 16, migration 0044) → permanece **texto livre operator-defined**, escrito por blueprint `tag_rules` e integrações externas. Sem FK rígida para o catálogo.
+- `workspace_tags` (nova — migration 0053) → catálogo de metadados de UI. Match com `lead_tags.tag_name` é **soft**, feito em service layer via `(workspace_id, name)`.
+
+**Por que sem FK rígida (ADR-047):** compat retroativa (rows pré-catálogo permanecem válidas) + blueprints podem declarar `tag_rules` sem pré-cadastro + auto-registro pelo service layer sincroniza o catálogo de forma idempotente.
+
+Schema:
+
+- `id` (uuid PK), `workspace_id` (FK → workspaces, ON DELETE CASCADE)
+- `name` (text — match com `lead_tags.tag_name`, mesmo charset)
+- `color` (text NULL — hex `#rrggbb` ou token do design system; sem CHECK DB)
+- `description` (text NULL — descrição livre exibida no catálogo)
+- `created_by` (text — INV-WORKSPACE-TAG-002 — formato `user:<uuid> | system:auto-registered | system:blueprint`; validação em service layer)
+- `created_at` (timestamptz, default now)
+- `archived_at` (timestamptz NULL — soft-delete reversível; `NULL` = ativa)
+- **UNIQUE** `(workspace_id, name)` via index `uq_workspace_tags_workspace_name` — INV-WORKSPACE-TAG-001
+- **RLS** policy `workspace_tags_workspace_isolation` (dual-mode: GUC `app.current_workspace_id` + JWT-derived `auth_workspace_id()`)
+- **Index:** `idx_workspace_tags_workspace_active (workspace_id) WHERE archived_at IS NULL` — partial index para o lookup mais frequente ("tags ativas do workspace" no catálogo e no tag picker)
+
+Auto-registro (implementado Sprint 18 — `apps/edge/src/lib/workspace-tags.ts`): `autoRegisterTag(workspace_id, tag_name, source)` é chamado por:
+- `applyTagRules` durante ingestion (source=`system:blueprint`) — após cada tag aplicada via `tag_rules` do blueprint, idempotente, falha logada sem bloquear.
+- Route handlers de `/v1/leads-tags/*` (source=`user:<uuid>`) — antes de cada `setLeadTag` manual, em paralelo via `Promise.all`.
+
+Rename é atômico em transação (`updateTag` em `lib/workspace-tags.ts`): `SELECT … FOR UPDATE` lock + UPDATE `workspace_tags.name` + UPDATE `lead_tags.tag_name` (workspace-scoped) na mesma `db.transaction`. Colisão de nome → rollback + `error: 'duplicate'`. Ver [BR-TAGS-005](../50-business-rules/BR-TAGS.md#br-tags-005).
+
+### Fluxos do sistema de tags (Sprint 18 — T-TAGS-001 → T-TAGS-009)
+
+**1. Aplicação automática via blueprint:** evento ingerido → `raw-events-processor` chama `applyTagRules` com o `eventName` e `tagRules` do `funnel_blueprint`. Para cada match: `setLeadTag(setBy='event:<name>')` + `autoRegisterTag(source='system:blueprint')` em sequência. Idempotente; falha não bloqueia o pipeline. BR-TAGS-001/003.
+
+**2. Aplicação manual no detalhe do lead:** UI `apps/control-plane/src/app/(app)/contatos/[lead_public_id]/lead-summary-header.tsx` chama `POST /v1/leads-tags/by-lead/:lead_public_id { tag_names: [...] }`. Route handler resolve `lead_id` (workspace-scoped), itera `Promise.all` com `autoRegisterTag` + `setLeadTag` por tag. `set_by = "user:<uuid>"`. Audit agregado `lead_tag.set_batch`. BR-TAGS-010.
+
+**3. Remoção manual:** `DELETE /v1/leads-tags/by-lead/:lead_public_id/:tag_name`. `unsetLeadTag` workspace-scoped; audit `lead_tag.unset` quando `removed=true`.
+
+**4. Bulk apply em seleção de contatos:** UI `apps/control-plane/src/app/(app)/contatos/page.tsx` permite selecionar até 5000 leads e aplicar até 50 tags via `POST /v1/leads-tags/bulk-apply`. Cap imposto no Zod do route. Unknowns reportados em `unknown_public_ids[]`, não falham (BR-TAGS-007). Produto cartesiano via `unnest()` SQL — single INSERT.
+
+**5. Filtro combinatório na lista de contatos:** UI envia `tag_filter = base64url(JSON.stringify({ op, clauses }))`. Endpoint `GET /v1/leads` decoda + valida via Zod; converte em fragmento SQL EXISTS/NOT EXISTS combinado por AND/OR (`buildTagFilterWhere` em `lib/leads-filter.ts`). Aplicado em `listLeads`, `countLeads`, `exportLeads` via campo opcional `tagFilter`. Nunca JOIN. BR-TAGS-008/009.
+
+**6. Catálogo `/settings/tags`:** UI lista (`GET /v1/workspace-tags?with_count=true`), cria (`POST`), edita (`PATCH`), arquiva (`DELETE { cascade? }`), reativa (`POST /:id/unarchive`). Rename atômico (BR-TAGS-005); archive com cascade opcional (BR-TAGS-006).
+
 ## 4. Relações
 
 - `Lead 1—N LeadAlias`
@@ -138,6 +180,9 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 - **INV-IDENTITY-LASTSEEN-MONOTONIC — `leads.last_seen_at` é monotonicamente não-decrescente.** `resolveLeadByAliases(input, workspace_id, db, options?: { eventTime })` aplica `lastSeenAt = GREATEST(COALESCE(current, '-infinity'::timestamptz), eventTime ?? NOW())` no UPDATE — em casos B (lead existente) e C (mergeLeads → canonical). No caso A (createNewLead), `firstSeenAt = lastSeenAt = eventTime ?? NOW()`. Backfills/replays de eventos antigos não bumpam o timestamp para trás (nem para frente além do event_time real). `updatedAt` continua sempre `= NOW()` (separado de last_seen_at). Testável: `tests/unit/identity/lead-resolver-lastseen-monotonic.test.ts`. Ver BR-IDENTITY-008.
 - **INV-LEAD-TAG-001 — `(workspace_id, lead_id, tag_name)` é único em `lead_tags`.** Garantido via UNIQUE index + UPSERT idempotente em `setLeadTag` (`ON CONFLICT DO NOTHING`).
 - **INV-LEAD-TAG-002 — `lead_tags.set_by` segue formato canônico `system | user:<uuid> | integration:<name> | event:<event_name>`.** Validação no service layer (não há CHECK DB — flexibilidade para novas fontes sem migration).
+- **INV-WORKSPACE-TAG-001 — `(workspace_id, name)` é único em `workspace_tags`.** Garantido via UNIQUE index `uq_workspace_tags_workspace_name`. Auto-registro deve usar UPSERT idempotente (`ON CONFLICT DO NOTHING`).
+- **INV-WORKSPACE-TAG-002 — `workspace_tags.created_by` segue formato canônico `user:<uuid> | system:auto-registered | system:blueprint`.** Validação no service layer (sem CHECK DB — mesmo padrão de `lead_tags.set_by` / INV-LEAD-TAG-002).
+- **INV-WORKSPACE-TAG-003 — Relação `workspace_tags ↔ lead_tags` é soft.** Match por `(workspace_id, name)`, sem FK rígida. `lead_tags.tag_name` permanece texto livre por compat retroativa e para suportar `tag_rules` de blueprints / integrações externas. Sync via service layer (auto-registro + rename atômico). Decisão em ADR-047.
 
 ### Storage de `visitor_id`
 
@@ -161,6 +206,7 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 - `BR-PRIVACY-*` — em `BR-PRIVACY.md`.
 - `BR-CONSENT-*` — em `BR-CONSENT.md`.
 - `BR-PRODUCT-001` — `lifecycle_status` é monotônico (write-side delegado a `MOD-PRODUCT.promoteLeadLifecycle`). Ver `BR-PRODUCT.md`.
+- `BR-TAGS-*` — sistema de tags (lead_tags + workspace_tags + filtro combinatório). Ver [`BR-TAGS.md`](../50-business-rules/BR-TAGS.md).
 
 ## 9. Contratos consumidos
 
@@ -170,8 +216,18 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 ## 10. Contratos expostos
 
 - `resolveLeadByAliases({email, phone, external_id}, workspace_id, ctx, options?: { eventTime?: Date }): Result<{lead_id, was_created, merge_executed, merged_lead_ids}, ResolutionError>` — `options.eventTime` (Sprint 16) é usado como `first_seen_at` (caso A) e como candidato a `last_seen_at` via `GREATEST` (casos B e C). Omitir = `NOW()`. Ver INV-IDENTITY-LASTSEEN-MONOTONIC.
-- `setLeadTag({ db, workspaceId, leadId, tagName, setBy }): { ok: true } | { ok: false; error }` — UPSERT idempotente em `lead_tags` (`apps/edge/src/lib/lead-tags.ts`). INV-LEAD-TAG-001/002.
-- `applyTagRules({ db, workspaceId, leadId, eventName, eventContext?, tagRules, requestId? }): { applied, skipped }` — lê regras do blueprint (`tag_rules[]`), filtra por `event` + `when` (AND lógico de keys), chama `setLeadTag` para cada match. Não levanta — falhas viram log + `skipped++`.
+- `setLeadTag({ db, workspaceId, leadId, tagName, setBy }): { ok: true } | { ok: false; error }` — UPSERT idempotente em `lead_tags` (`apps/edge/src/lib/lead-tags.ts`). INV-LEAD-TAG-001/002. Ver [BR-TAGS-001/002](../50-business-rules/BR-TAGS.md).
+- `applyTagRules({ db, workspaceId, leadId, eventName, eventContext?, tagRules, requestId? }): { applied, skipped }` — lê regras do blueprint (`tag_rules[]`), filtra por `event` + `when` (AND lógico de keys), chama `setLeadTag` para cada match + `autoRegisterTag(source='system:blueprint')` para sincronizar catálogo. Não levanta — falhas viram log + `skipped++`.
+- `unsetLeadTag({ db, workspaceId, leadId, tagName }): { ok: true; removed } | { ok: false; error }` — DELETE workspace-scoped. Not-found vira `removed: false` (idempotente). BR-TAGS-001.
+- `bulkApplyLeadTagsByIds({ db, workspaceId, leadIds[], tagNames[], setBy, requestId? }): { applied, skipped }` — produto cartesiano via `unnest(uuid[]) × unnest(text[])` em single INSERT … SELECT com `ON CONFLICT DO NOTHING`. Cap operacional 5000 × 50 imposto no route layer. BR-TAGS-001/007.
+- `bulkUnsetLeadTagsByIds({ db, workspaceId, leadIds[], tagNames[] }): { removed }` — DELETE em lote via `ANY()`. BR-TAGS-007.
+- `autoRegisterTag({ db, workspaceId, name, source }): { ok: true } | { ok: false; error }` — INSERT idempotente em `workspace_tags` (`ON CONFLICT (workspace_id, name) DO NOTHING`). Não modifica `created_by` da row existente. Chamado por `setLeadTag` (route layer, source=`user:<uuid>`) e por `applyTagRules` (source=`system:blueprint`). BR-TAGS-003/004.
+- `createTag({ db, workspaceId, name, color?, description?, createdBy }): { ok: true; tag } | { ok: false; error: 'duplicate' | 'unknown' }` — variante "operador manual": sinaliza `duplicate` explicitamente em vez de no-op idempotente. BR-TAGS-003.
+- `updateTag({ db, workspaceId, tagId, patch: { name?, color?, description? } }): Result<{ tag }, 'not_found' | 'duplicate'>` — rename **atômico** em transação (SELECT FOR UPDATE + UPDATE wt + UPDATE lt). BR-TAGS-005 / INV-WORKSPACE-TAG-003.
+- `archiveTag({ db, workspaceId, tagId, cascade }): { ok: true; archived, cascaded } | { ok: false; error }` — soft-delete (`archived_at = NOW()`). Quando `cascade=true`, DELETE `lead_tags WHERE tag_name = name` na mesma transação. BR-TAGS-006.
+- `unarchiveTag({ db, workspaceId, tagId }): { ok: true; unarchived } | { ok: false; error }` — reverte archive.
+- `listTags({ db, workspaceId, includeArchived?=false, withCount?=false }): WorkspaceTagRow[]` — ordenado por `name ASC`. `withCount` opt-in (subquery `COUNT(*) FROM lead_tags`).
+- `buildTagFilterWhere(filter: TagFilter | null, workspaceId, leadIdColumn?): SQL | null` (`apps/edge/src/lib/leads-filter.ts`) — gera fragmento SQL com EXISTS/NOT EXISTS combinados por `AND`/`OR`. Caller passa via `tagFilter?` em `ListLeadsOpts`/`CountLeadsOpts`/`ExportLeadsOpts`. NUNCA JOIN (BR-TAGS-008). Consumido pelo handler de `GET /v1/leads` (formato wire `tag_filter = base64url(JSON)` — BR-TAGS-009).
 - `createLeadConsent(lead_id, consent, source, policy_version, ctx): Result<LeadConsent>`
 - `getLatestConsent(lead_id, finality): Result<ConsentValue, NotFound>` — para dispatcher checar consent antes de envio.
 - `issueLeadToken(lead_id, page_token_hash, ttl_days, ctx): Result<{token_clear, expires_at}>`
@@ -200,14 +256,19 @@ Eventos podem disparar simultaneamente: stage promotion + tag set (ex.: `custom:
 - `packages/db/src/schema/lead_consent.ts`
 - `packages/db/src/schema/lead_token.ts`
 - `packages/db/src/schema/lead_tag.ts`
+- `packages/db/src/schema/workspace_tag.ts`
 - `apps/edge/src/lib/lead-resolver.ts`
 - `apps/edge/src/lib/lead-tags.ts`
+- `apps/edge/src/lib/workspace-tags.ts`
+- `apps/edge/src/lib/leads-filter.ts`
 - `apps/edge/src/lib/lead-token.ts`
 - `apps/edge/src/lib/pii.ts`
 - `apps/edge/src/lib/pii-enrich.ts`
 - `apps/edge/src/lib/consent.ts`
 - `apps/edge/src/lib/cookies.ts` (set/read `__ftk`)
 - `apps/edge/src/routes/admin/leads-erase.ts`
+- `apps/edge/src/routes/workspace-tags.ts`
+- `apps/edge/src/routes/leads-tags.ts`
 - `tests/unit/identity/**`
 - `tests/integration/identity/**`
 

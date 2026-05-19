@@ -41,6 +41,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { auditLog, createDb, leads, workspaceMembers } from '@globaltracker/db';
 import { z } from 'zod';
 import { createLeadsQueryFns } from '../lib/leads-queries.js';
+import type { TagFilter } from '../lib/leads-filter.js';
 import {
   LIFECYCLE_STATUSES,
   type LifecycleStatus,
@@ -195,8 +196,38 @@ const ListLeadsQuerySchema = z
     sort_dir: z.enum(['asc', 'desc']).optional(),
     // 'default' (omit) excludes archived; 'archived' returns only the trash bin.
     status: z.enum(['default', 'archived']).optional(),
+    // T-TAGS-003b: tag_filter is read separately (base64url JSON) outside of
+    // this schema because Zod cannot decode binary-safe strings in a strict()
+    // object alongside the other query params. The handler reads it via
+    // c.req.query('tag_filter') and validates with TagFilterSchema below.
   })
   .strict();
+
+// T-TAGS-003b: validation schema for the decoded tag_filter payload. The wire
+// format is base64url(JSON.stringify({op, clauses})) — see base64UrlDecode and
+// the GET / handler. Keeping the clause cap at 20 to avoid pathological
+// EXISTS-subquery fan-out in `buildTagFilterWhere` (lib/leads-filter.ts).
+const TagFilterClauseSchema = z.object({
+  has: z.boolean(),
+  tag: z.string().min(1).max(120),
+});
+const TagFilterSchema = z.object({
+  op: z.enum(['and', 'or']).default('and'),
+  clauses: z.array(TagFilterClauseSchema).min(1).max(20),
+});
+
+/**
+ * Decode a base64url-encoded string to its UTF-8 representation using the
+ * Workers-global `atob`. base64url differs from base64 by using `-`/`_` instead
+ * of `+`/`/` and by omitting padding; we restore both before delegating.
+ *
+ * Throws on malformed input (caller wraps in try/catch and returns 400).
+ */
+function base64UrlDecode(input: string): string {
+  const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+  return atob(padded);
+}
 
 // ---------------------------------------------------------------------------
 // TimelineNode type
@@ -419,6 +450,9 @@ export type ListLeadsFn = (opts: {
   lifecycle?: LifecycleStatus;
   cursor?: Date | null;
   limit: number;
+  // T-TAGS-003b: optional tag-presence/absence filter (forwarded to
+  // buildTagFilterWhere in lib/leads-filter.ts).
+  tagFilter?: TagFilter;
 }) => Promise<
   Array<{
     lead_public_id: string;
@@ -438,6 +472,10 @@ export type CountLeadsFn = (opts: {
   q?: string;
   launchPublicId?: string;
   lifecycle?: LifecycleStatus;
+  // T-TAGS-003b: optional tag-presence/absence filter (forwarded to
+  // buildTagFilterWhere in lib/leads-filter.ts). Note: `total_unfiltered`
+  // intentionally omits this — counting tag-filtered universe makes no sense.
+  tagFilter?: TagFilter;
 }) => Promise<number>;
 
 export type ExportLeadsFn = (opts: {
@@ -1032,6 +1070,25 @@ export function createLeadsTimelineRoute(opts?: {
     const cursorRaw = listParseResult.data.cursor;
     const cursor = cursorRaw ? new Date(cursorRaw) : null;
 
+    // T-TAGS-003b: optional tag filter. Wire format is base64url(JSON({op,
+    // clauses})). Decode + validate; any failure (malformed base64, bad JSON,
+    // schema violation) collapses into a single `invalid_tag_filter` 400 so
+    // we don't leak parser internals to the client.
+    const rawTagFilter = c.req.query('tag_filter');
+    let parsedTagFilter: TagFilter | undefined;
+    if (rawTagFilter) {
+      try {
+        const decoded = base64UrlDecode(rawTagFilter);
+        parsedTagFilter = TagFilterSchema.parse(JSON.parse(decoded));
+      } catch {
+        return c.json(
+          { code: 'invalid_tag_filter', request_id: requestId },
+          400,
+          { 'X-Request-Id': requestId },
+        );
+      }
+    }
+
     const qfns = resolveQueryFns(c.env);
 
     if (!qfns.listLeads) {
@@ -1050,6 +1107,7 @@ export function createLeadsTimelineRoute(opts?: {
       sortBy,
       sortDir,
       statusFilter,
+      tagFilter: parsedTagFilter,
     });
 
     const hasMore = items.length > rawLimit;
@@ -1076,7 +1134,17 @@ export function createLeadsTimelineRoute(opts?: {
     let totalUnfiltered: number | undefined;
     if (!cursor && qfns.countLeads) {
       const [tf, tu] = await Promise.all([
-        qfns.countLeads({ workspaceId, q, launchPublicId, lifecycle, statusFilter }),
+        // T-TAGS-003b: tagFilter applies to the *filtered* total only — the
+        // unfiltered "universe" below intentionally omits it so the X/Y badge
+        // reads as "X matching / Y in this view scope".
+        qfns.countLeads({
+          workspaceId,
+          q,
+          launchPublicId,
+          lifecycle,
+          statusFilter,
+          tagFilter: parsedTagFilter,
+        }),
         // Unfiltered "universe" follows the same status scope so "X/Y" makes
         // sense in either view (default list or trash bin).
         qfns.countLeads({ workspaceId, statusFilter }),

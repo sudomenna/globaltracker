@@ -10,6 +10,7 @@
 
 ## §1 Estado atual
 
+- **[2026-05-19]** Sistema completo de tags entregue (Waves 1-4): catálogo `workspace_tags` + CRUD manual + bulk + filtro combinatório (E/OU possui/não-possui). Endpoints `/v1/workspace-tags*` + `/v1/leads-tags*` + extensão de `GET /v1/leads` com `tag_filter` (base64url JSON). Docs em [`BR-TAGS.md`](docs/50-business-rules/BR-TAGS.md), [`14-screen-tags-catalog.md`](docs/70-ux/14-screen-tags-catalog.md), MOD-IDENTITY § 3/10/12 atualizados. Migration `0053_workspace_tags.sql`.
 - **Sprint ativo**: manutenção. Última sessão 2026-05-15/16 fechou recovery SendFlow + ROAS Meta vs ROAS Geral no dashboard.
 - **Branch**: `main`. Sincronizado com `origin/main` — todos os commits da sessão pushed (HEAD `3fef6b5`).
 - **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Não tocado nesta sessão.

@@ -1628,6 +1628,61 @@ INV-INFRA-001 segue valendo — dashboard é detecção pós-fato; smoke test é
 
 ---
 
+## ADR-047 — Catálogo de tags sem FK rígido com `lead_tags` (2026-05-19)
+
+### Status
+Aceito.
+
+### Contexto
+
+T-LEADS-VIEW-001 (Sprint 16, migration 0044) criou `lead_tags` com `tag_name` como **texto livre operator-defined**. As fontes que escrevem em `lead_tags.tag_name` hoje são:
+
+1. **Blueprint `tag_rules`**: cada `funnel_template.blueprint.tag_rules[]` declara mapeamento `event → tag_name`. Quando um evento dispara (ex.: `custom:wpp_joined`), o service layer chama `setLeadTag(workspace_id, lead_id, tag_name, set_by='event:<name>')`. As tag_names declaradas no blueprint são gravadas em runtime — não há etapa de pré-cadastro.
+2. **Integrações externas** (SendFlow, Guru, etc.): handlers podem chamar `setLeadTag` com `set_by='integration:<name>'`.
+3. **Ação manual de operador** (UI da Leads tab — futura): `set_by='user:<uuid>'`.
+
+T-TAGS-001 (Sprint 18) introduz `workspace_tags` para suportar metadados de UI (cor, descrição, soft-delete) — necessários para o catálogo de tags do workspace.
+
+Surge a questão: `lead_tags.tag_name` deve ganhar FK para `workspace_tags.name`?
+
+### Decisão
+
+`workspace_tags` é catálogo de metadados **sem FK rígida** com `lead_tags`. Match por `(workspace_id, name)` é feito em **service layer**. A unicidade DB-side fica em `uq_workspace_tags_workspace_name` (catálogo) e `uq_lead_tags_workspace_lead_tag` (lead tags) — não há constraint cruzada.
+
+Sync entre os dois é responsabilidade do service layer:
+
+- **Auto-registro**: helper `setLeadTag` (em `apps/edge/src/lib/lead-tags.ts`, próxima wave) chama `autoRegisterTag(workspace_id, tag_name, 'system:auto-registered')` em UPSERT idempotente (`ON CONFLICT (workspace_id, name) DO NOTHING`) antes de inserir a row em `lead_tags`. Custo desprezível em runtime; garante que toda tag em uso aparece no catálogo.
+- **Rename atômico**: operações de rename do catálogo executam em transação `BEGIN; UPDATE workspace_tags SET name = $new WHERE workspace_id = $ws AND name = $old; UPDATE lead_tags SET tag_name = $new WHERE workspace_id = $ws AND tag_name = $old; COMMIT;`. Sem FK = sem cascade automático, mas a transação garante atomicidade.
+- **Archive**: `workspace_tags.archived_at` é apenas hint de UI. `lead_tags` continuam apontando pelo nome — não há propagação automática. Operador que arquiva uma tag entende que rows em `lead_tags` permanecem.
+
+### Alternativas consideradas
+
+- **FK rígida `lead_tags.tag_name → workspace_tags(workspace_id, name)`**: forçaria pré-cadastro antes de toda escrita de `lead_tags`. Quebra os 3 caminhos de escrita atuais — blueprints precisariam ter migration que pré-cadastra tags antes de cada deploy; integrações externas ficariam bloqueadas. Migração retroativa de `lead_tags` existentes (>1k rows em prod) seria custosa. Ganho marginal — service layer já mantém invariante via auto-registro.
+- **Manter apenas `lead_tags` e estender com `color`/`description` por (workspace_id, tag_name)**: viola normalização (color/description repetidos em N rows do mesmo nome). Soft-delete ficaria impossível sem deletar dados.
+- **`workspace_tags` ser source-of-truth e `lead_tags` carregar `workspace_tag_id` em vez de `tag_name`**: requer migration destrutiva (rename de coluna + backfill). Quebra blueprints existentes que referenciam tags por nome. Rejeitada — custo desproporcional ao ganho.
+
+### Consequências
+
+- (+) Compat retroativa total: `lead_tags` existentes (T-LEADS-VIEW-001, migration 0044) continuam válidas sem migração.
+- (+) Blueprints podem declarar `tag_rules` sem pré-cadastro — auto-registro pelo service layer mantém o catálogo sincronizado.
+- (+) Soft-delete de catálogo (`archived_at`) não afeta integridade de `lead_tags` históricos.
+- (+) Custo runtime do auto-registro é desprezível (UPSERT idempotente em tabela pequena, index hit).
+- (–) Sem garantia DB-side de que toda `lead_tags.tag_name` aparece em `workspace_tags` — depende do service layer chamar `autoRegisterTag`. Mitigação: helper único (`setLeadTag`) é o entry point canônico; teste de integração valida o sync.
+- (–) Rename de tag não é transparente: precisa transação explícita em service layer (não cascade DB).
+- (–) Possibilidade de drift se rows forem inseridas em `lead_tags` direto (bypass do service layer). Mitigação: code review + grep `db.insert(leadTags)` deve aparecer apenas em `lib/lead-tags.ts`.
+
+### Invariante derivada
+
+**INV-WORKSPACE-TAG-003 (nova)**: relação `workspace_tags ↔ lead_tags` é soft (match por `(workspace_id, name)`, sem FK). Sync via service layer (auto-registro + rename atômico em transação).
+
+### Impacta
+
+[`packages/db/src/schema/workspace_tag.ts`](../../packages/db/src/schema/workspace_tag.ts) (novo), [`packages/db/migrations/0053_workspace_tags.sql`](../../packages/db/migrations/0053_workspace_tags.sql) (novo), [`docs/20-domain/04-mod-identity.md`](../20-domain/04-mod-identity.md) (entidade `WorkspaceTag` + INVs 001/002/003), [`docs/30-contracts/02-db-schema-conventions.md`](../30-contracts/02-db-schema-conventions.md) (linha em "Soft-delete vs hard-delete").
+
+Próximas waves: implementar `autoRegisterTag` em [`apps/edge/src/lib/lead-tags.ts`](../../apps/edge/src/lib/lead-tags.ts); UI de catálogo no control-plane.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:

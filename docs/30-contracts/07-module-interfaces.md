@@ -198,8 +198,160 @@ export interface IdentityModule {
   }): Promise<{ applied: number; skipped: number }>;
   // Lê regras do blueprint, filtra por event + when (AND lógico de keys),
   // chama setLeadTag para cada match. Não levanta — falhas viram log
-  // estruturado e contagem skipped++.
+  // estruturado e contagem skipped++. Sincroniza catálogo workspace_tags via
+  // autoRegisterTag(source='system:blueprint') quando a tag é aplicada
+  // (BR-TAGS-003).
+
+  // ---------------------------------------------------------------------
+  // Lead tags — operações manuais e bulk (T-TAGS-002 / T-TAGS-004 — Sprint 18)
+  // Implementação em `apps/edge/src/lib/lead-tags.ts`.
+  // ---------------------------------------------------------------------
+
+  unsetLeadTag(args: {
+    db: Db;
+    workspaceId: string;
+    leadId: string;
+    tagName: string;
+  }): Promise<{ ok: true; removed: boolean } | { ok: false; error: string }>;
+  // Remove uma tag específica de um lead. Not-found não é erro — apenas
+  // `removed: false`. Idempotente. BR-TAGS-001.
+
+  bulkApplyLeadTagsByIds(args: {
+    db: Db;
+    workspaceId: string;
+    leadIds: string[];
+    tagNames: string[];
+    setBy: string;
+    requestId?: string;
+  }): Promise<{ applied: number; skipped: number }>;
+  // Produto cartesiano leadIds × tagNames via single INSERT ... SELECT FROM
+  // unnest(uuid[]) CROSS JOIN unnest(text[]) com ON CONFLICT DO NOTHING.
+  // applied = rowCount inserido; skipped = (leadIds * tagNames) - applied.
+  // BR-TAGS-001 (idempotente), BR-TAGS-007 (cap 5000×50 no route layer).
+
+  bulkUnsetLeadTagsByIds(args: {
+    db: Db;
+    workspaceId: string;
+    leadIds: string[];
+    tagNames: string[];
+  }): Promise<{ removed: number }>;
+  // DELETE em lote via lead_id = ANY($1::uuid[]) AND tag_name = ANY($2::text[]).
+  // BR-IDENTITY: workspace_id no WHERE.
+
+  // ---------------------------------------------------------------------
+  // Workspace tags catalog (T-TAGS-002 — Sprint 18)
+  // Implementação em `apps/edge/src/lib/workspace-tags.ts`.
+  // ADR-047: relação soft com lead_tags (sem FK).
+  // ---------------------------------------------------------------------
+
+  autoRegisterTag(args: {
+    db: Db;
+    workspaceId: string;
+    name: string;
+    /** 'system:auto-registered' | 'system:blueprint' | `user:${string}` */
+    source: 'system:auto-registered' | 'system:blueprint' | `user:${string}`;
+  }): Promise<{ ok: true } | { ok: false; error: string }>;
+  // INSERT idempotente com ON CONFLICT (workspace_id, name) DO NOTHING.
+  // INV-WORKSPACE-TAG-001 + INV-WORKSPACE-TAG-002. Não modifica created_by
+  // da row existente.
+
+  createTag(args: {
+    db: Db;
+    workspaceId: string;
+    name: string;
+    color?: string | null;
+    description?: string | null;
+    createdBy: string;
+  }): Promise<
+    | { ok: true; tag: WorkspaceTagRow }
+    | { ok: false; error: 'duplicate' | 'unknown'; message?: string }
+  >;
+  // Diferente de autoRegisterTag: sinaliza 'duplicate' explicitamente (UX da
+  // tela /settings/tags). BR-TAGS-003.
+
+  updateTag(args: {
+    db: Db;
+    workspaceId: string;
+    tagId: string;
+    patch: { name?: string; color?: string | null; description?: string | null };
+  }): Promise<
+    | { ok: true; tag: WorkspaceTagRow }
+    | { ok: false; error: 'not_found' | 'duplicate' | 'unknown'; message?: string }
+  >;
+  // Rename ATÔMICO em transação: SELECT FOR UPDATE no catálogo + UPDATE
+  // workspace_tags + UPDATE lead_tags na mesma TX. BR-TAGS-005 /
+  // INV-WORKSPACE-TAG-003. Rename para nome em uso → rollback + 'duplicate'.
+
+  archiveTag(args: {
+    db: Db;
+    workspaceId: string;
+    tagId: string;
+    cascade: boolean;
+  }): Promise<
+    | { ok: true; archived: boolean; cascaded: number }
+    | { ok: false; error: string }
+  >;
+  // archive_at = NOW() (soft-delete reversível). Quando cascade=true,
+  // DELETE em lead_tags com mesmo tag_name na MESMA transação. BR-TAGS-006.
+
+  unarchiveTag(args: {
+    db: Db;
+    workspaceId: string;
+    tagId: string;
+  }): Promise<{ ok: true; unarchived: boolean } | { ok: false; error: string }>;
+  // archived_at = NULL. Reverte archiveTag.
+
+  listTags(args: {
+    db: Db;
+    workspaceId: string;
+    includeArchived?: boolean;  // default false
+    withCount?: boolean;         // default false (popula leadCount via subquery)
+  }): Promise<WorkspaceTagRow[]>;
+  // Ordenado por name ASC. `withCount` opt-in porque exige subquery COUNT
+  // por linha; UIs de picker tipicamente não precisam.
 }
+
+interface WorkspaceTagRow {
+  id: string;
+  workspaceId: string;
+  name: string;
+  color: string | null;
+  description: string | null;
+  createdBy: string;
+  createdAt: Date;
+  archivedAt: Date | null;
+  /** Populado apenas quando listTags({ withCount: true }). */
+  leadCount?: number;
+}
+
+// ---------------------------------------------------------------------
+// Leads list filter by tag presence (T-TAGS-003a — Sprint 18)
+// Implementação em `apps/edge/src/lib/leads-filter.ts`.
+// ---------------------------------------------------------------------
+
+export interface TagFilterClause {
+  /** true → tag deve estar presente (EXISTS); false → ausente (NOT EXISTS) */
+  has: boolean;
+  /** tag_name como armazenado em lead_tags.tag_name */
+  tag: string;
+}
+
+export interface TagFilter {
+  /** Combinador: 'and' → TODAS; 'or' → QUALQUER UMA */
+  op: 'and' | 'or';
+  clauses: TagFilterClause[];
+}
+
+export function buildTagFilterWhere(
+  filter: TagFilter | undefined | null,
+  workspaceId: string,
+  leadIdColumn?: SQL, // default: sql`leads.id`
+): SQL | null;
+// Retorna fragmento SQL com EXISTS / NOT EXISTS combinados por AND/OR.
+// NUNCA usa INNER JOIN — evita join-multiplication bug (BR-TAGS-008).
+// Retorna null quando filter está vazio (caller pula o push).
+// Consumido por ListLeadsOpts/CountLeadsOpts/ExportLeadsOpts em
+// `apps/edge/src/lib/leads-queries.ts` via campo opcional `tagFilter`.
 ```
 
 ---

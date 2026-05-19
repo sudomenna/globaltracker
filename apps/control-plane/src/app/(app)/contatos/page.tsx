@@ -1,6 +1,12 @@
 'use client';
 
 import { type Lifecycle, LifecycleBadge } from '@/components/lifecycle-badge';
+import {
+  TagFilterBuilder,
+  type TagFilterValue,
+} from '@/components/tags/TagFilterBuilder';
+import { TagPicker } from '@/components/tags/TagPicker';
+import { useWorkspaceTags } from '@/components/tags/use-workspace-tags';
 import { Badge } from '@/components/ui/badge';
 import {
   Archive,
@@ -12,7 +18,9 @@ import {
   Loader2,
   Mail,
   Phone,
+  Plus,
   Search,
+  Tag,
   Trash2,
   Users,
   X,
@@ -117,6 +125,22 @@ function formatDateTime(iso: string) {
   });
 }
 
+// T-TAGS-007: encoder base64url (sem padding) compatível com leads-timeline.ts.
+function encodeTagFilter(v: TagFilterValue): string {
+  const json = JSON.stringify(v);
+  const bytes = new TextEncoder().encode(json);
+  let bin = '';
+  for (const b of bytes) {
+    bin += String.fromCharCode(b);
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Limite operacional para "selecionar todos que casam" → quantos lead_public_ids
+// coletamos antes de processar o bulk. Acompanha o cap do endpoint
+// /v1/leads-tags/bulk-{apply,remove} (5000 por request, ver leads-tags.ts).
+const BULK_TAG_CAP = 5000;
+
 // Format phone for display: +55 11 9XXXX-YYYY (best-effort).
 function formatPhone(raw: string): string {
   const digits = raw.replace(/\D/g, '');
@@ -199,6 +223,45 @@ export default function LeadsPage() {
   const [deleting, setDeleting] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
+  // T-TAGS-007: filtro combinatório por tags (AND/OR de cláusulas has/missing).
+  const [tagFilter, setTagFilter] = useState<TagFilterValue>({
+    op: 'and',
+    clauses: [],
+  });
+  // Disclosure: collapsa por default; expande quando há cláusulas (ou usuário abre).
+  const [showTagFilter, setShowTagFilter] = useState(false);
+
+  // Catálogo de tags do workspace — alimenta TagFilterBuilder e TagPicker do bulk.
+  const { tags: workspaceTagsCatalog } = useWorkspaceTags();
+  const tagBuilderAvailable = useMemo(
+    () => workspaceTagsCatalog.map((t) => ({ id: t.id, name: t.name })),
+    [workspaceTagsCatalog],
+  );
+  const tagPickerAvailable = useMemo(
+    () =>
+      workspaceTagsCatalog
+        .filter((t) => !t.archived_at)
+        .map((t) => ({ id: t.id, name: t.name, color: t.color })),
+    [workspaceTagsCatalog],
+  );
+
+  // Cláusulas com tag não vazia (as únicas que realmente filtram).
+  const tagFilterActive = useMemo(
+    () => tagFilter.clauses.filter((c) => c.tag.trim().length > 0),
+    [tagFilter],
+  );
+  const tagFilterIsActive = tagFilterActive.length > 0;
+
+  // Bulk apply/remove de tags — dialog inline.
+  type BulkTagMode = 'apply' | 'remove' | null;
+  const [bulkTagMode, setBulkTagMode] = useState<BulkTagMode>(null);
+  const [bulkTagSelection, setBulkTagSelection] = useState<string[]>([]);
+  const [bulkTagPending, setBulkTagPending] = useState(false);
+  const [bulkTagProgress, setBulkTagProgress] = useState<{
+    fetched: number;
+    total: number | null;
+  } | null>(null);
+
   const selectionCount = selectAllMatching
     ? (totalFiltered ?? 0)
     : selectedIds.size;
@@ -250,6 +313,13 @@ export default function LeadsPage() {
       params.set('sort_by', sortBy);
       params.set('sort_dir', sortDir);
       if (cursor) params.set('cursor', cursor);
+      // T-TAGS-007: encoda só cláusulas com tag preenchida.
+      if (tagFilterActive.length > 0) {
+        params.set(
+          'tag_filter',
+          encodeTagFilter({ op: tagFilter.op, clauses: tagFilterActive }),
+        );
+      }
 
       const isLoadMore = !!cursor;
       if (isLoadMore) {
@@ -289,7 +359,16 @@ export default function LeadsPage() {
         setLoadingMore(false);
       }
     },
-    [accessToken, debouncedQ, selectedLaunch, selectedLifecycle, sortBy, sortDir],
+    [
+      accessToken,
+      debouncedQ,
+      selectedLaunch,
+      selectedLifecycle,
+      sortBy,
+      sortDir,
+      tagFilter.op,
+      tagFilterActive,
+    ],
   );
 
   function toggleRow(id: string) {
@@ -466,6 +545,152 @@ export default function LeadsPage() {
     }
   }
 
+  // T-TAGS-007: coleta lead_public_ids para bulk de tags. Quando o usuário
+  // selecionou linhas explicitamente, usa o Set; quando está em
+  // selectAllMatching, pagina pelos filtros atuais até esgotar (ou bater no
+  // BULK_TAG_CAP). Retorna {ids, capped} — `capped=true` quando o universo
+  // excedeu o cap e processaremos só os primeiros 5000.
+  const collectLeadIdsForBulkTag = useCallback(
+    async (): Promise<{ ids: string[]; capped: boolean }> => {
+      if (!accessToken) return { ids: [], capped: false };
+      if (!selectAllMatching) {
+        return { ids: Array.from(selectedIds), capped: false };
+      }
+      // Paginate.
+      const collected: string[] = [];
+      let cursor: string | null = null;
+      let totalAcc: number | null = null;
+      // Limite por página: 100 (maior que o default 30 pra reduzir round-trips).
+      const PAGE = 100;
+      do {
+        const params = new URLSearchParams({ limit: String(PAGE) });
+        if (debouncedQ) params.set('q', debouncedQ);
+        if (selectedLaunch) params.set('launch_public_id', selectedLaunch);
+        if (selectedLifecycle) params.set('lifecycle', selectedLifecycle);
+        params.set('sort_by', sortBy);
+        params.set('sort_dir', sortDir);
+        if (cursor) params.set('cursor', cursor);
+        if (tagFilterActive.length > 0) {
+          params.set(
+            'tag_filter',
+            encodeTagFilter({ op: tagFilter.op, clauses: tagFilterActive }),
+          );
+        }
+        const res = await fetch(`${EDGE}/v1/leads?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) break;
+        const body = (await res.json()) as {
+          items: Array<{ lead_public_id: string }>;
+          next_cursor: string | null;
+          total_filtered?: number;
+        };
+        if (totalAcc === null && typeof body.total_filtered === 'number') {
+          totalAcc = body.total_filtered;
+        }
+        for (const it of body.items ?? []) {
+          if (collected.length >= BULK_TAG_CAP) break;
+          collected.push(it.lead_public_id);
+        }
+        setBulkTagProgress({
+          fetched: collected.length,
+          total: totalAcc ?? null,
+        });
+        if (collected.length >= BULK_TAG_CAP) {
+          return { ids: collected, capped: true };
+        }
+        cursor = body.next_cursor ?? null;
+      } while (cursor);
+      return { ids: collected, capped: false };
+    },
+    [
+      accessToken,
+      selectAllMatching,
+      selectedIds,
+      debouncedQ,
+      selectedLaunch,
+      selectedLifecycle,
+      sortBy,
+      sortDir,
+      tagFilter.op,
+      tagFilterActive,
+    ],
+  );
+
+  async function submitBulkTagAction() {
+    if (!accessToken || !bulkTagMode || bulkTagPending) return;
+    const names = bulkTagSelection
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+    if (names.length === 0) return;
+
+    setBulkTagPending(true);
+    setBulkTagProgress({ fetched: 0, total: totalFiltered });
+    try {
+      const { ids, capped } = await collectLeadIdsForBulkTag();
+      if (ids.length === 0) {
+        alert('Nenhum contato selecionado.');
+        return;
+      }
+      if (capped) {
+        const proceed = window.confirm(
+          `A seleção excede ${BULK_TAG_CAP.toLocaleString('pt-BR')} contatos. ` +
+            `Vamos processar apenas os primeiros ${BULK_TAG_CAP.toLocaleString(
+              'pt-BR',
+            )}. Continuar?`,
+        );
+        if (!proceed) return;
+      }
+
+      const endpoint =
+        bulkTagMode === 'apply' ? 'bulk-apply' : 'bulk-remove';
+      const res = await fetch(`${EDGE}/v1/leads-tags/${endpoint}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ tag_names: names, lead_public_ids: ids }),
+      });
+      if (!res.ok) {
+        if (res.status === 401) {
+          alert('Sessão expirada. Faça login novamente.');
+          window.location.href = '/login';
+          return;
+        }
+        alert(`Falha na operação (HTTP ${res.status}). Tente novamente.`);
+        return;
+      }
+      const body = (await res.json()) as {
+        applied?: number;
+        removed?: number;
+        skipped?: number;
+        unknown_public_ids?: string[];
+      };
+      // TODO: trocar por sistema de toast quando disponível (não existe global
+      // toast helper no app hoje). Alert mantém paridade com bulkDelete/bulkArchive.
+      const verb = bulkTagMode === 'apply' ? 'aplicada(s)' : 'removida(s)';
+      const count =
+        bulkTagMode === 'apply' ? (body.applied ?? 0) : (body.removed ?? 0);
+      const parts = [
+        `${count.toLocaleString('pt-BR')} associação(ões) de tag ${verb}`,
+      ];
+      if (body.skipped) parts.push(`${body.skipped} já existente(s)`);
+      if (body.unknown_public_ids?.length) {
+        parts.push(`${body.unknown_public_ids.length} lead(s) desconhecido(s)`);
+      }
+      alert(parts.join(' · ') + '.');
+      setBulkTagMode(null);
+      setBulkTagSelection([]);
+      // Recarrega a lista (tags podem afetar filtros futuros, e a barra
+      // de seleção precisa refletir IDs vivos).
+      await fetchLeads();
+    } finally {
+      setBulkTagPending(false);
+      setBulkTagProgress(null);
+    }
+  }
+
   // Re-fetch when filters, search, or sort change
   useEffect(() => {
     void fetchLeads();
@@ -544,6 +769,40 @@ export default function LeadsPage() {
         </select>
       </div>
 
+      {/* T-TAGS-007: filtro combinatório por tags — disclosure pra não poluir
+          o header quando vazio. Auto-expande quando há cláusulas ativas. */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowTagFilter((v) => !v)}
+          aria-expanded={showTagFilter || tagFilterIsActive}
+          className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+        >
+          {showTagFilter || tagFilterIsActive ? (
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+          <Tag className="h-3.5 w-3.5" aria-hidden="true" />
+          Filtrar por tags
+          {tagFilterIsActive && (
+            <span className="ml-1 inline-flex items-center justify-center rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary tabular-nums">
+              {tagFilterActive.length}
+            </span>
+          )}
+        </button>
+
+        {(showTagFilter || tagFilterIsActive) && (
+          <div className="mt-2">
+            <TagFilterBuilder
+              value={tagFilter}
+              onChange={setTagFilter}
+              availableTags={tagBuilderAvailable}
+            />
+          </div>
+        )}
+      </div>
+
       {/* Bulk action bar */}
       {selectionCount > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-2.5">
@@ -589,6 +848,38 @@ export default function LeadsPage() {
                 <Download className="h-4 w-4" aria-hidden="true" />
               )}
               Exportar CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setBulkTagMode('apply');
+                setBulkTagSelection([]);
+              }}
+              disabled={exporting || deleting || archiving || bulkTagPending}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {bulkTagPending && bulkTagMode === 'apply' ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Plus className="h-4 w-4" aria-hidden="true" />
+              )}
+              Aplicar tags…
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setBulkTagMode('remove');
+                setBulkTagSelection([]);
+              }}
+              disabled={exporting || deleting || archiving || bulkTagPending}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {bulkTagPending && bulkTagMode === 'remove' ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Tag className="h-4 w-4" aria-hidden="true" />
+              )}
+              Remover tags…
             </button>
             <button
               type="button"
@@ -799,6 +1090,123 @@ export default function LeadsPage() {
           </>
         )}
       </div>
+
+      {/* T-TAGS-007: dialog inline para apply/remove tags em massa. */}
+      {bulkTagMode !== null && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={
+            bulkTagMode === 'apply'
+              ? 'Aplicar tags em massa'
+              : 'Remover tags em massa'
+          }
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={(e) => {
+            // Click no backdrop fecha (não fecha durante request pendente).
+            if (e.target === e.currentTarget && !bulkTagPending) {
+              setBulkTagMode(null);
+              setBulkTagSelection([]);
+            }
+          }}
+        >
+          <div className="w-full max-w-md rounded-md border bg-background p-4 shadow-lg space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">
+                  {bulkTagMode === 'apply'
+                    ? 'Aplicar tags'
+                    : 'Remover tags'}
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {selectionCount.toLocaleString('pt-BR')}{' '}
+                  {selectionCount === 1
+                    ? 'contato selecionado'
+                    : 'contatos selecionados'}
+                  {selectAllMatching && totalFiltered !== null && totalFiltered > BULK_TAG_CAP && (
+                    <>
+                      {' · '}
+                      <span className="text-yellow-700">
+                        excede o limite de {BULK_TAG_CAP.toLocaleString('pt-BR')};
+                        processaremos só os primeiros
+                      </span>
+                    </>
+                  )}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (bulkTagPending) return;
+                  setBulkTagMode(null);
+                  setBulkTagSelection([]);
+                }}
+                aria-label="Fechar"
+                disabled={bulkTagPending}
+                className="rounded p-1 hover:bg-muted disabled:opacity-50"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+
+            <TagPicker
+              availableTags={tagPickerAvailable}
+              selectedNames={bulkTagSelection}
+              onChange={setBulkTagSelection}
+              // Em "remove" não criamos tags — só removemos catálogo
+              // existente. allowCreate=false evita confusão ("vou remover
+              // uma tag que ainda não existe?").
+              allowCreate={bulkTagMode === 'apply'}
+              placeholder={
+                bulkTagMode === 'apply'
+                  ? 'Buscar ou criar tag...'
+                  : 'Buscar tag para remover...'
+              }
+            />
+
+            {bulkTagPending && bulkTagProgress && (
+              <p
+                className="text-xs text-muted-foreground"
+                aria-live="polite"
+              >
+                Coletando contatos: {bulkTagProgress.fetched.toLocaleString('pt-BR')}
+                {bulkTagProgress.total !== null
+                  ? ` de ${Math.min(bulkTagProgress.total, BULK_TAG_CAP).toLocaleString('pt-BR')}`
+                  : ''}
+                ...
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkTagMode(null);
+                  setBulkTagSelection([]);
+                }}
+                disabled={bulkTagPending}
+                className="inline-flex h-9 items-center rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitBulkTagAction()}
+                disabled={bulkTagPending || bulkTagSelection.length === 0}
+                className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              >
+                {bulkTagPending && (
+                  <Loader2
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                  />
+                )}
+                {bulkTagMode === 'apply' ? 'Aplicar' : 'Remover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
