@@ -51,7 +51,38 @@ import {
   setLeadTag,
   unsetLeadTag,
 } from '../lib/lead-tags.js';
+import {
+  buildTagFilterWhere,
+  TagFilterSchema,
+  type TagFilter,
+} from '../lib/leads-filter.js';
 import { isValidRole, type WorkspaceRole } from '../lib/rbac.js';
+
+// ---------------------------------------------------------------------------
+// RBAC allowlists (T-TAGS-011)
+//
+// BR-RBAC: lead-side tag operations are split into two sensitivity tiers.
+//
+//   SINGLE-LEAD writes (POST/DELETE /by-lead/...) — day-to-day editing of one
+//   lead at a time. Allowed for owner|admin plus the everyday editor role.
+//   The canonical taxonomy in lib/rbac.ts is owner|admin|marketer|privacy|
+//   operator|viewer (no "editor"); we map the prompt's "editor" to `marketer`,
+//   which is the canonical "everyday CP editor" role per BR-RBAC. Privacy is
+//   intentionally excluded — privacy is a read/erasure role, not a tag editor.
+//
+//   BULK writes (POST /bulk-apply, /bulk-remove) — high-blast-radius. Kept
+//   tight at owner|admin to match catalog write authority.
+// ---------------------------------------------------------------------------
+const SINGLE_LEAD_TAG_WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>([
+  'owner',
+  'admin',
+  'marketer',
+]);
+
+const BULK_LEAD_TAG_WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>([
+  'owner',
+  'admin',
+]);
 import {
   supabaseJwtMiddleware,
   type LookupWorkspaceMemberFn,
@@ -91,12 +122,31 @@ const ApplyByLeadBodySchema = z
   })
   .strict();
 
-const BulkBodySchema = z
+// T-TAGS-010: bulk endpoints accept EITHER explicit IDs OR a tag_filter that
+// resolves to the universe of leads matching tag presence/absence. Mutually
+// exclusive (XOR) — passing both is a frontend bug. We model that with a
+// union of two strict object shapes; Zod surfaces a clean validation error
+// when neither (or both) is provided.
+const BulkBodyByIdsSchema = z
   .object({
     tag_names: z.array(TagNameSchema).min(1).max(50),
     lead_public_ids: z.array(z.string().uuid()).min(1).max(5000),
   })
   .strict();
+
+const BulkBodyByFilterSchema = z
+  .object({
+    tag_names: z.array(TagNameSchema).min(1).max(50),
+    tag_filter: TagFilterSchema,
+  })
+  .strict();
+
+const BulkBodySchema = z.union([BulkBodyByIdsSchema, BulkBodyByFilterSchema]);
+
+// Cap aligned with the explicit-ID path (max 5000). When the filter matches
+// more than this, we process the first 5000 (deterministic by leads.id ASC)
+// and report `capped: true` so the UI can prompt for a narrower filter.
+const BULK_BY_FILTER_CAP = 5000;
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -153,6 +203,9 @@ export function createLeadsTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: single-lead tag set restricted to owner|admin|marketer (T-TAGS-011).
+    const roleGate = requireWriteRole(c, SINGLE_LEAD_TAG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const leadPublicId = c.req.param('lead_public_id');
     if (!leadPublicId || !isUuid(leadPublicId)) {
@@ -268,6 +321,9 @@ export function createLeadsTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: single-lead tag unset restricted to owner|admin|marketer (T-TAGS-011).
+    const roleGate = requireWriteRole(c, SINGLE_LEAD_TAG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const leadPublicId = c.req.param('lead_public_id');
     const tagNameRaw = c.req.param('tag_name');
@@ -352,6 +408,9 @@ export function createLeadsTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: bulk tag apply restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, BULK_LEAD_TAG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const bodyRaw = await c.req.json().catch(() => ({}));
     const parsed = BulkBodySchema.safeParse(bodyRaw);
@@ -377,12 +436,33 @@ export function createLeadsTagsRoute(opts?: {
       );
     }
 
-    // Resolve lead_public_ids → lead_ids in one round-trip; report unknowns.
-    const { knownIds, unknownPublicIds } = await resolveLeadIdsBatch(
-      db,
-      workspaceId,
-      parsed.data.lead_public_ids,
-    );
+    // T-TAGS-010: two resolution paths, mutually exclusive (XOR enforced by
+    // the union schema). `byIds` reports unknown public_ids individually;
+    // `byFilter` reports `matched` (rows selected by the filter) + `capped`.
+    // TS doesn't narrow the union via property presence here (`tag_names` is
+    // in both branches), so we discriminate manually and re-derive the branch
+    // via a typed local.
+    const data = parsed.data;
+    const byIds = 'lead_public_ids' in data;
+    let knownIds: string[] = [];
+    let unknownPublicIds: string[] = [];
+    let matched = 0;
+    let capped = false;
+    if (byIds) {
+      const ids = (data as { lead_public_ids: string[] }).lead_public_ids;
+      const r = await resolveLeadIdsBatch(db, workspaceId, ids);
+      knownIds = r.knownIds;
+      unknownPublicIds = r.unknownPublicIds;
+      matched = knownIds.length;
+    } else {
+      const filter = (data as { tag_filter: TagFilter }).tag_filter;
+      const r = await resolveLeadIdsByTagFilter(db, workspaceId, filter);
+      // resolveLeadIdsByTagFilter returns null only on empty/invalid filter
+      // (caught upstream by Zod). Defensive: treat as empty selection.
+      knownIds = r?.ids ?? [];
+      capped = r?.capped ?? false;
+      matched = knownIds.length;
+    }
 
     const userId = c.get('user_id') as string | undefined;
     const setBy = userId && userId !== 'dev' ? `user:${userId}` : 'user:dev';
@@ -432,7 +512,10 @@ export function createLeadsTagsRoute(opts?: {
         lead_count: knownIds.length,
         applied,
         skipped,
-        unknown_public_ids_count: unknownPublicIds.length,
+        // T-TAGS-010: capture which selection mode was used (by ids vs. filter)
+        // and overflow status — useful for forensics when capped batches recur.
+        selection_mode: byIds ? 'by_ids' : 'by_filter',
+        ...(byIds ? { unknown_public_ids_count: unknownPublicIds.length } : { capped }),
       },
       requestId,
     });
@@ -441,7 +524,8 @@ export function createLeadsTagsRoute(opts?: {
       {
         applied,
         skipped,
-        unknown_public_ids: unknownPublicIds,
+        matched,
+        ...(byIds ? { unknown_public_ids: unknownPublicIds } : { capped }),
         request_id: requestId,
       },
       200,
@@ -461,6 +545,9 @@ export function createLeadsTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: bulk tag remove restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, BULK_LEAD_TAG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const bodyRaw = await c.req.json().catch(() => ({}));
     const parsed = BulkBodySchema.safeParse(bodyRaw);
@@ -486,11 +573,26 @@ export function createLeadsTagsRoute(opts?: {
       );
     }
 
-    const { knownIds, unknownPublicIds } = await resolveLeadIdsBatch(
-      db,
-      workspaceId,
-      parsed.data.lead_public_ids,
-    );
+    // T-TAGS-010: see /bulk-apply above for the XOR design notes.
+    const data = parsed.data;
+    const byIds = 'lead_public_ids' in data;
+    let knownIds: string[] = [];
+    let unknownPublicIds: string[] = [];
+    let matched = 0;
+    let capped = false;
+    if (byIds) {
+      const ids = (data as { lead_public_ids: string[] }).lead_public_ids;
+      const r = await resolveLeadIdsBatch(db, workspaceId, ids);
+      knownIds = r.knownIds;
+      unknownPublicIds = r.unknownPublicIds;
+      matched = knownIds.length;
+    } else {
+      const filter = (data as { tag_filter: TagFilter }).tag_filter;
+      const r = await resolveLeadIdsByTagFilter(db, workspaceId, filter);
+      knownIds = r?.ids ?? [];
+      capped = r?.capped ?? false;
+      matched = knownIds.length;
+    }
 
     const { removed } =
       knownIds.length === 0
@@ -512,7 +614,8 @@ export function createLeadsTagsRoute(opts?: {
       before: { tag_names: parsed.data.tag_names, lead_count: knownIds.length },
       after: {
         removed,
-        unknown_public_ids_count: unknownPublicIds.length,
+        selection_mode: byIds ? 'by_ids' : 'by_filter',
+        ...(byIds ? { unknown_public_ids_count: unknownPublicIds.length } : { capped }),
       },
       requestId,
     });
@@ -520,7 +623,8 @@ export function createLeadsTagsRoute(opts?: {
     return c.json(
       {
         removed,
-        unknown_public_ids: unknownPublicIds,
+        matched,
+        ...(byIds ? { unknown_public_ids: unknownPublicIds } : { capped }),
         request_id: requestId,
       },
       200,
@@ -538,6 +642,30 @@ export function createLeadsTagsRoute(opts?: {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(v: string): boolean {
   return UUID_RE.test(v);
+}
+
+/**
+ * Returns a 403 Response when the current role is not in the allowlist;
+ * returns null when allowed. Co-located with workspace-tags.ts's identical
+ * helper — kept inline because Wave 2B only has two call sites in this domain
+ * and route author's ownership excludes lib/.
+ *
+ * BR-RBAC: workspace-scoped role gate. No audit log on denial — request never
+ * reaches the mutation, no business event occurred.
+ */
+function requireWriteRole(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  allowed: ReadonlySet<WorkspaceRole>,
+  requestId: string,
+): Response | null {
+  const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+  if (!role || !allowed.has(role)) {
+    return c.json({ code: 'forbidden', request_id: requestId }, 403, {
+      'X-Request-Id': requestId,
+    }) as Response;
+  }
+  return null;
 }
 
 /**
@@ -587,6 +715,42 @@ async function resolveLeadIdsBatch(
   const knownSet = new Set(knownIds);
   const unknownPublicIds = leadPublicIds.filter((p) => !knownSet.has(p));
   return { knownIds, unknownPublicIds };
+}
+
+/**
+ * T-TAGS-010: resolve the universe of lead_ids matching a tag_filter under a
+ * workspace. Bulk endpoints by filter use ONLY tag-presence/absence — no
+ * q / launch / lifecycle composition. Reads `BULK_BY_FILTER_CAP + 1` rows so
+ * the caller can detect overflow and surface `capped: true` to the UI.
+ *
+ * BR-IDENTITY: workspace_id is anchored in BOTH the outer WHERE and the
+ * EXISTS subqueries built by `buildTagFilterWhere` — no cross-workspace
+ * leak even if RLS is bypassed by an internal call site.
+ *
+ * Returns `null` when the filter is malformed/empty (caller should reject
+ * with 400 before reaching this point — defensive).
+ */
+async function resolveLeadIdsByTagFilter(
+  db: Db,
+  workspaceId: string,
+  filter: TagFilter,
+): Promise<{ ids: string[]; capped: boolean } | null> {
+  const tagWhere = buildTagFilterWhere(filter, workspaceId, sql`leads.id`);
+  if (!tagWhere) return null;
+  // Deterministic order (id ASC) so the "first 5000" slice on overflow is
+  // stable across retries — same client retry hits the same row set.
+  const res = await db.execute(sql`
+    SELECT id::text AS id
+    FROM leads
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND ${tagWhere}
+    ORDER BY id ASC
+    LIMIT ${BULK_BY_FILTER_CAP + 1}
+  `);
+  const rows = res as unknown as Array<{ id: string }>;
+  const capped = rows.length > BULK_BY_FILTER_CAP;
+  const ids = capped ? rows.slice(0, BULK_BY_FILTER_CAP).map((r) => r.id) : rows.map((r) => r.id);
+  return { ids, capped };
 }
 
 type AuditEntry = {

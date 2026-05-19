@@ -41,7 +41,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { auditLog, createDb, leads, workspaceMembers } from '@globaltracker/db';
 import { z } from 'zod';
 import { createLeadsQueryFns } from '../lib/leads-queries.js';
-import type { TagFilter } from '../lib/leads-filter.js';
+import { TagFilterSchema, type TagFilter } from '../lib/leads-filter.js';
 import {
   LIFECYCLE_STATUSES,
   type LifecycleStatus,
@@ -96,6 +96,13 @@ const TimelineQuerySchema = z.object({
 
 // List query schema — keeps existing behaviour, adds optional lifecycle filter
 // (T-PRODUCTS-006). lifecycle_status is not PII (BR-PRIVACY-001), safe to expose.
+//
+// T-TAGS-010: adds optional `tag_filter` (same JSON shape as the GET /v1/leads
+// query param; imported from lib/leads-filter.ts so the wire contract is
+// single-sourced). `tag_filter` and a non-empty `lead_public_ids` are
+// mutually exclusive — when explicit IDs are provided, all filter criteria
+// (q / launch / lifecycle / tag_filter) are intentionally ignored, but
+// passing BOTH is almost certainly a frontend bug and is rejected with 400.
 const ExportLeadsBodySchema = z
   .object({
     lead_public_ids: z.array(z.string().uuid()).max(50000).optional(),
@@ -104,8 +111,20 @@ const ExportLeadsBodySchema = z
     lifecycle: z
       .enum(LIFECYCLE_STATUSES as readonly [LifecycleStatus, ...LifecycleStatus[]])
       .optional(),
+    tag_filter: TagFilterSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    const hasIds =
+      Array.isArray(data.lead_public_ids) && data.lead_public_ids.length > 0;
+    if (hasIds && data.tag_filter) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tag_filter'],
+        message: 'tag_filter is mutually exclusive with lead_public_ids',
+      });
+    }
+  });
 
 // Same shape as export — bulk-delete operates over the same selection model
 // (explicit IDs OR filters intersection).
@@ -203,18 +222,11 @@ const ListLeadsQuerySchema = z
   })
   .strict();
 
-// T-TAGS-003b: validation schema for the decoded tag_filter payload. The wire
-// format is base64url(JSON.stringify({op, clauses})) — see base64UrlDecode and
-// the GET / handler. Keeping the clause cap at 20 to avoid pathological
-// EXISTS-subquery fan-out in `buildTagFilterWhere` (lib/leads-filter.ts).
-const TagFilterClauseSchema = z.object({
-  has: z.boolean(),
-  tag: z.string().min(1).max(120),
-});
-const TagFilterSchema = z.object({
-  op: z.enum(['and', 'or']).default('and'),
-  clauses: z.array(TagFilterClauseSchema).min(1).max(20),
-});
+// T-TAGS-003b: validation schema for the decoded tag_filter payload lives in
+// lib/leads-filter.ts (single source of truth for the wire format — also used
+// by the bulk endpoints below as a JSON body field, T-TAGS-010). The wire
+// format on GET / is base64url(JSON.stringify({op, clauses})) — see
+// base64UrlDecode and the GET / handler.
 
 /**
  * Decode a base64url-encoded string to its UTF-8 representation using the
@@ -484,6 +496,12 @@ export type ExportLeadsFn = (opts: {
   q?: string;
   launchPublicId?: string;
   lifecycle?: LifecycleStatus;
+  // T-TAGS-010: optional tag-presence/absence filter — combined with the
+  // other filters via AND in lib/leads-queries.ts.
+  tagFilter?: TagFilter;
+  // The route already passes statusFilter (archive/unarchive call sites);
+  // align the type so additional callers don't accidentally drop it.
+  statusFilter?: 'default' | 'archived';
 }) => Promise<
   Array<{
     lead_public_id: string;
@@ -1215,6 +1233,8 @@ export function createLeadsTimelineRoute(opts?: {
     }
 
     const token = crypto.randomUUID();
+    // T-TAGS-010: tag_filter is persisted in the KV payload so the GET /export
+    // /:token handler can replay the exact same selection criteria.
     const payload = {
       workspaceId,
       role,
@@ -1222,6 +1242,7 @@ export function createLeadsTimelineRoute(opts?: {
       q: parsed.data.q?.trim() || undefined,
       launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
       lifecycle: parsed.data.lifecycle,
+      tagFilter: parsed.data.tag_filter,
     };
     // 5-minute TTL — plenty of time for the frontend to redirect and the
     // browser to start the download; short enough that a leaked URL is useless.
@@ -1274,6 +1295,7 @@ export function createLeadsTimelineRoute(opts?: {
       q?: string;
       launchPublicId?: string;
       lifecycle?: LifecycleStatus;
+      tagFilter?: TagFilter;
     };
 
     const qfns = resolveQueryFns(c.env);
@@ -1291,6 +1313,7 @@ export function createLeadsTimelineRoute(opts?: {
       q: payload.q,
       launchPublicId: payload.launchPublicId,
       lifecycle: payload.lifecycle,
+      tagFilter: payload.tagFilter,
     });
 
     const seePlain = canSeePiiPlainByDefault(payload.role);
@@ -1357,15 +1380,16 @@ export function createLeadsTimelineRoute(opts?: {
 
     // Safety net: refuse a body that would target every lead in the workspace.
     // The selection model requires EITHER explicit IDs (non-empty array) OR
-    // at least one filter (q / launch / lifecycle). An empty body, or an empty
-    // ids array with no filters, is almost certainly a frontend bug — refuse
-    // rather than nuke the workspace.
+    // at least one filter (q / launch / lifecycle / tag_filter). An empty
+    // body, or an empty ids array with no filters, is almost certainly a
+    // frontend bug — refuse rather than nuke the workspace.
     const hasIds = Array.isArray(parsed.data.lead_public_ids)
       && parsed.data.lead_public_ids.length > 0;
     const hasFilter = !!(
       parsed.data.q?.trim() ||
       parsed.data.launch_public_id?.trim() ||
-      parsed.data.lifecycle
+      parsed.data.lifecycle ||
+      parsed.data.tag_filter // T-TAGS-010
     );
     if (!hasIds && !hasFilter) {
       return c.json(
@@ -1398,12 +1422,14 @@ export function createLeadsTimelineRoute(opts?: {
 
     // Resolve the selection to a concrete list. exportLeads returns one row
     // per lead matching IDs ∩ filters, intersected against the workspace.
+    // T-TAGS-010: tag_filter combines with the other filters via AND.
     const matched = await qfns.exportLeads({
       workspaceId,
       leadPublicIds: parsed.data.lead_public_ids,
       q: parsed.data.q?.trim() || undefined,
       launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
       lifecycle: parsed.data.lifecycle,
+      tagFilter: parsed.data.tag_filter,
     });
 
     const targets = matched.filter((r) => r.status !== 'erased');
@@ -1499,7 +1525,8 @@ export function createLeadsTimelineRoute(opts?: {
       const hasFilter = !!(
         parsed.data.q?.trim() ||
         parsed.data.launch_public_id?.trim() ||
-        parsed.data.lifecycle
+        parsed.data.lifecycle ||
+        parsed.data.tag_filter // T-TAGS-010
       );
       if (!hasIds && !hasFilter) {
         return c.json(
@@ -1525,12 +1552,14 @@ export function createLeadsTimelineRoute(opts?: {
       // For unarchive we have to look in the trash bin; for archive we resolve
       // against the default visible set (no point archiving an already-erased
       // row, and erased PII is already gone).
+      // T-TAGS-010: tag_filter combines with the other filters via AND.
       const matched = await qfns.exportLeads({
         workspaceId,
         leadPublicIds: parsed.data.lead_public_ids,
         q: parsed.data.q?.trim() || undefined,
         launchPublicId: parsed.data.launch_public_id?.trim() || undefined,
         lifecycle: parsed.data.lifecycle,
+        tagFilter: parsed.data.tag_filter,
         statusFilter: toStatus === 'archived' ? 'default' : 'archived',
       });
 

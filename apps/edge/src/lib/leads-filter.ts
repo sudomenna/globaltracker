@@ -14,6 +14,7 @@
  */
 
 import { sql, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
 
 export interface TagFilterClause {
   /** true → tag must be present (EXISTS); false → tag must be absent (NOT EXISTS) */
@@ -27,6 +28,30 @@ export interface TagFilter {
   op: 'and' | 'or';
   clauses: TagFilterClause[];
 }
+
+/**
+ * Zod validators for the tag-filter wire format. Co-located with the SQL
+ * builder so every consumer (GET /v1/leads via base64url query param, plus
+ * the bulk endpoints in routes/leads-timeline.ts and routes/leads-tags.ts
+ * that accept it as a JSON body field) parses the same shape.
+ *
+ * `op` defaults to 'and' for ergonomics — clients can omit it when there is
+ * a single clause and the choice is moot. `z.infer<typeof TagFilterSchema>`
+ * yields the same runtime shape as the `TagFilter` interface above (after
+ * parsing the default fills `op`).
+ *
+ * Clause cap is 20 to avoid pathological EXISTS-subquery fan-out in
+ * `buildTagFilterWhere` (each clause adds a correlated subquery).
+ */
+export const TagFilterClauseSchema = z.object({
+  has: z.boolean(),
+  tag: z.string().min(1).max(120),
+});
+
+export const TagFilterSchema = z.object({
+  op: z.enum(['and', 'or']).default('and'),
+  clauses: z.array(TagFilterClauseSchema).min(1).max(20),
+});
 
 /**
  * Build the WHERE fragment that filters leads by presence/absence of tags.

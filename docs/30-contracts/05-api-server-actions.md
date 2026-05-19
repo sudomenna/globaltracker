@@ -828,7 +828,7 @@ Cria uma tag manualmente no catálogo. Diferente de `autoRegisterTag` (silencios
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-workspace-tags-create-v1` |
-| **Auth** | Bearer JWT (qualquer role autenticado — Wave 2B; refinamento para `owner`/`admin`/`editor` deferred) |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). Demais roles → `403 forbidden`. |
 | **Body** | `{ name: string (1–120, trimmed), color?: string\|null (max 32), description?: string\|null (max 500) }` (Zod `.strict`) |
 | **Side effects** | INSERT em `workspace_tags` com `created_by = "user:" + jwt.user_id` (BR-TAGS-010). `audit_log` action=`workspace_tag.create`, `entity_type='workspace_tag'`, before=null, after={ tag serializada }. |
 | **Response 201** | `{ tag: WorkspaceTag, request_id }` |
@@ -841,7 +841,7 @@ Atualiza metadados (`name`, `color`, `description`). Rename é **atômico** (BR-
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-workspace-tags-patch-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). |
 | **Path** | `:id` = `workspace_tags.id` (UUID validado por regex no handler) |
 | **Body** | `{ name?, color?, description? }` (Zod `.strict` + `.refine` exigindo pelo menos uma chave) |
 | **Side effects** | UPDATE com workspace isolation (`WHERE id = ? AND workspace_id = ?`). Quando `name` muda: `SELECT … FOR UPDATE` + UPDATE wt + UPDATE `lead_tags.tag_name` na **mesma transação** (BR-TAGS-005 / INV-WORKSPACE-TAG-003). `audit_log` action=`workspace_tag.update`, before/after com row serializada. |
@@ -855,7 +855,7 @@ Soft-delete reversível (`archived_at = NOW()`) com cascade opcional para `lead_
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-workspace-tags-archive-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). |
 | **Path** | `:id` = `workspace_tags.id` |
 | **Body** | `{ cascade?: boolean }` (default `false`; body opcional — empty `{}` aceito). Quando `cascade=true`, DELETE em `lead_tags WHERE tag_name = nome_da_tag` na MESMA transação do UPDATE de `archived_at`. |
 | **Side effects** | UPDATE `archived_at`. Quando archived (não-idempotente): `audit_log` action=`workspace_tag.archive` ou `workspace_tag.delete_cascade` (quando cascade). Tag já arquivada → response com `archived: false`, sem audit. |
@@ -869,7 +869,7 @@ Reverte archive (`archived_at = NULL`). Espelho de DELETE.
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-workspace-tags-unarchive-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). |
 | **Side effects** | UPDATE com filtro `archived_at IS NOT NULL`. Quando flip ocorre: `audit_log` action=`workspace_tag.unarchive`. |
 | **Response 200** | `{ unarchived: boolean, request_id }` |
 | **Errors** | `400 validation_error`, `401`, `500`, `503` |
@@ -881,7 +881,7 @@ Aplica N tags a 1 lead. Idempotente (BR-TAGS-001). Cada tag também é auto-regi
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-tags-by-lead-apply-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin \| marketer` (T-TAGS-011). |
 | **Path** | `:lead_public_id` = `leads.id` (UUID — BR-IDENTITY-013) |
 | **Body** | `{ tag_names: string[] }` (cada nome 1–120 chars; lista 1–50). Zod `.strict`. |
 | **Side effects** | (1) Resolve `lead_id` via SELECT em `leads` com `workspace_id` no WHERE; (2) para cada `tagName`: `autoRegisterTag(source='user:<uuid>')` + `setLeadTag(setBy='user:<uuid>')` em paralelo (idempotentes); (3) `audit_log` agregado action=`lead_tag.set_batch`, entity=`lead`, after=`{ tag_names, applied }`. |
@@ -895,7 +895,7 @@ Remove 1 tag de 1 lead. Idempotente.
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-tags-by-lead-remove-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin \| marketer` (T-TAGS-011). |
 | **Path** | `:lead_public_id` (UUID); `:tag_name` (URI-decoded; 1–120 chars após decode) |
 | **Side effects** | `unsetLeadTag` em `apps/edge/src/lib/lead-tags.ts`. Audit `lead_tag.unset` quando `removed=true`. |
 | **Response 200** | `{ removed: boolean, request_id }` — `false` quando combinação não existia (no-op idempotente, sem audit) |
@@ -908,7 +908,7 @@ Aplica N tags × M leads (produto cartesiano). Idempotente. Reporta unknown `lea
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-tags-bulk-apply-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). |
 | **Body** | `{ tag_names: string[] (1–50), lead_public_ids: string[] (UUID, 1–5000) }` (Zod `.strict`) |
 | **Side effects** | (1) Single-roundtrip SELECT `id = ANY(::uuid[])` resolve `lead_public_ids` em `lead_id`s + reporta unknowns; (2) `autoRegisterTag` paralelo para cada `tag_name` (source=`user:<uuid>`); (3) `bulkApplyLeadTagsByIds` faz `INSERT … SELECT FROM unnest(::uuid[]) CROSS JOIN unnest(::text[])` com `ON CONFLICT DO NOTHING`; (4) **1 audit_log row** agregado (`lead_tag.bulk_apply`, entity_id = primeiro lead_id ou `'-'`, after = `{ tag_names, lead_count, applied, skipped, unknown_public_ids_count }`). |
 | **Response 200** | `{ applied: number, skipped: number, unknown_public_ids: string[], request_id }` |
@@ -921,7 +921,7 @@ Remove N tags × M leads. Espelho de bulk-apply. Idempotente.
 | Item | Especificação |
 |---|---|
 | **CONTRACT-id** | `CONTRACT-api-leads-tags-bulk-remove-v1` |
-| **Auth** | Bearer JWT |
+| **Auth** | Bearer JWT — gate RBAC `owner \| admin` (T-TAGS-011). |
 | **Body** | mesmo shape de bulk-apply (`tag_names` 1–50, `lead_public_ids` UUID 1–5000) |
 | **Side effects** | `bulkUnsetLeadTagsByIds` via single DELETE `WHERE workspace_id = ? AND lead_id = ANY(::uuid[]) AND tag_name = ANY(::text[]) RETURNING id`. Audit agregado `lead_tag.bulk_remove`. |
 | **Response 200** | `{ removed: number, unknown_public_ids: string[], request_id }` |

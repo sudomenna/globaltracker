@@ -48,6 +48,24 @@ import {
   type WorkspaceTagRow,
 } from '../lib/workspace-tags.js';
 import { isValidRole, type WorkspaceRole } from '../lib/rbac.js';
+
+// ---------------------------------------------------------------------------
+// RBAC allowlist (T-TAGS-011)
+//
+// BR-RBAC: write operations on the workspace tag catalog are administrative
+// and must be restricted to high-trust roles. We mirror the canonical role
+// taxonomy from lib/rbac.ts (owner|admin|marketer|privacy|operator|viewer) —
+// the orchestrator prompt referenced "editor", which does not exist in this
+// taxonomy; the closest semantic equivalent for everyday editing of catalog
+// metadata would be `marketer`, but for the catalog mutations themselves we
+// keep the gate tight at owner|admin (matches the spec for "Catálogo").
+//
+// Reads remain open to any authenticated role (handled inline in GET).
+// ---------------------------------------------------------------------------
+const CATALOG_WRITE_ROLES: ReadonlySet<WorkspaceRole> = new Set<WorkspaceRole>([
+  'owner',
+  'admin',
+]);
 import {
   supabaseJwtMiddleware,
   type LookupWorkspaceMemberFn,
@@ -161,8 +179,9 @@ export function createWorkspaceTagsRoute(opts?: {
     };
   };
 
-  // RBAC (Wave 2B): any authenticated role passes. Refining to
-  // owner|admin|editor only is deferred — registered in route docstring above.
+  // RBAC: auth middleware sets `role` from workspace_members lookup. Per-handler
+  // role gates below restrict catalog WRITES to owner|admin (T-TAGS-011). GETs
+  // remain open to any authenticated role.
   route.use('*', async (c, next) => {
     const mw = supabaseJwtMiddleware<AppEnv>({
       required: false, // keeps DEV_WORKSPACE_ID fallback for local/curl tests
@@ -229,6 +248,9 @@ export function createWorkspaceTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: catalog write restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, CATALOG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const bodyRaw = await c.req.json().catch(() => ({}));
     const parsed = CreateTagBodySchema.safeParse(bodyRaw);
@@ -315,6 +337,9 @@ export function createWorkspaceTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: catalog write restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, CATALOG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const tagId = c.req.param('id');
     if (!tagId || !isUuid(tagId)) {
@@ -422,6 +447,9 @@ export function createWorkspaceTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: catalog write restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, CATALOG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const tagId = c.req.param('id');
     if (!tagId || !isUuid(tagId)) {
@@ -514,6 +542,9 @@ export function createWorkspaceTagsRoute(opts?: {
         'X-Request-Id': requestId,
       });
     }
+    // BR-RBAC: catalog write restricted to owner|admin (T-TAGS-011).
+    const roleGate = requireWriteRole(c, CATALOG_WRITE_ROLES, requestId);
+    if (roleGate) return roleGate;
 
     const tagId = c.req.param('id');
     if (!tagId || !isUuid(tagId)) {
@@ -581,6 +612,29 @@ export function createWorkspaceTagsRoute(opts?: {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUuid(v: string): boolean {
   return UUID_RE.test(v);
+}
+
+/**
+ * Returns a 403 Response when the current role is not in the allowlist;
+ * returns null (callable as truthy guard) when the role is allowed.
+ *
+ * BR-RBAC: workspace-scoped role gate. Audit log is intentionally NOT written
+ * on denial — the request never reaches the mutation, so no business event
+ * occurred.
+ */
+function requireWriteRole(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: any,
+  allowed: ReadonlySet<WorkspaceRole>,
+  requestId: string,
+): Response | null {
+  const role = (c.get('role') as WorkspaceRole | undefined) ?? null;
+  if (!role || !allowed.has(role)) {
+    return c.json({ code: 'forbidden', request_id: requestId }, 403, {
+      'X-Request-Id': requestId,
+    }) as Response;
+  }
+  return null;
 }
 
 function serializeTag(tag: WorkspaceTagRow): Record<string, unknown> {
