@@ -84,11 +84,38 @@ export function useWorkspaceTags(
         setTags([]);
         return;
       }
-      const body = (await res.json()) as {
-        tags?: WorkspaceTag[];
-        items?: WorkspaceTag[];
+      // Edge devolve camelCase (Drizzle .$inferSelect). Normalizamos para
+      // snake_case esperado pela UI.
+      type ApiTag = {
+        id: string;
+        workspaceId?: string;
+        workspace_id?: string;
+        name: string;
+        color: string | null;
+        description: string | null;
+        createdBy?: string;
+        created_by?: string;
+        createdAt?: string;
+        created_at?: string;
+        archivedAt?: string | null;
+        archived_at?: string | null;
+        leadCount?: number;
+        lead_count?: number;
       };
-      setTags(body.tags ?? body.items ?? []);
+      const body = (await res.json()) as { tags?: ApiTag[]; items?: ApiTag[] };
+      const raw = body.tags ?? body.items ?? [];
+      const normalized: WorkspaceTag[] = raw.map((t) => ({
+        id: t.id,
+        workspace_id: t.workspace_id ?? t.workspaceId ?? '',
+        name: t.name,
+        color: t.color,
+        description: t.description,
+        created_by: t.created_by ?? t.createdBy ?? '',
+        created_at: t.created_at ?? t.createdAt ?? '',
+        archived_at: t.archived_at ?? t.archivedAt ?? null,
+        lead_count: t.lead_count ?? t.leadCount,
+      }));
+      setTags(normalized);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'fetch failed');
       setTags([]);
