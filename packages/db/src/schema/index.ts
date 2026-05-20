@@ -34,3 +34,6 @@ export * from './funnel_template.js';
 export * from './product.js';
 export * from './launch_product.js';
 export * from './meta_audience.js';
+export * from './recovery_template.js';
+export * from './recovery_campaign.js';
+export * from './recovery_job.js';
