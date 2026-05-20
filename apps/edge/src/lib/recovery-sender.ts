@@ -2,26 +2,48 @@
  * recovery-sender.ts — Dispatcher de recovery_jobs prontos para envio via
  * API Unnichat (BSP WhatsApp).
  *
- * T-RECOVERY-002 (domain, Wave 2). Wave 3 conectará a um cron handler.
+ * T-RECOVERY-002 / 002b (REWRITE 2026-05-20). Wave 3 conectará a um cron
+ * handler.
  *
  * Responsabilidades:
- *   1. Query: jobs `status='queued'` com `scheduled_for <= NOW()` cuja hora
- *      atual no fuso da campanha caia dentro de [send_window_start, end].
- *      SQL já filtra a janela em PG. Cap de 50 jobs por tick.
+ *   1. Query: jobs `status='queued'` com `scheduled_for <= NOW()` cuja
+ *      hora atual no fuso da campanha caia dentro de [send_window_start,
+ *      end]. SQL já filtra a janela em PG. Cap de 50 jobs por tick.
  *   2. Para cada job: aplica supressão final (cliente comprou outro
  *      `bait_*` após o job ser agendado) → marca `suppressed` sem enviar.
- *   3. Resolve placeholders do template a partir do evento gatilho
- *      (customer name, offer_hash).
- *   4. POST `https://unnichat.com.br/api/meta/templates` com Authorization
+ *   3. DECRYPT phone (leads.phone_enc) e nome (leads.name plaintext OU
+ *      leads.name_enc) usando masterKeyRegistry (HKDF workspace-scoped).
+ *   4. Resolve placeholders do template a partir do nome decifrado.
+ *   5. POST `https://unnichat.com.br/api/meta/templates` com Authorization
  *      header do env (que JÁ traz "Bearer " no valor — não concatenar).
- *   5. Atualiza o job: `sent` / `failed` / re-`queued` (retry transitório
+ *   6. Atualiza o job: `sent` / `failed` / re-`queued` (retry transitório
  *      até attempts >= 5).
+ *
+ * --- Schema correto de `events` (notas da reescrita 002b) -------------
+ *
+ * Não existe `events.payload`. PII de comprador (telefone, nome) vive em
+ * `leads.{phone_enc,name_enc,name,pii_key_version}`. Ver
+ * recovery-job-creator.ts para a discussão completa.
+ *
+ * Reflexos no sender:
+ *   - SELECT principal junta `leads` para puxar phone_enc + name(+enc) +
+ *     pii_key_version.
+ *   - `decryptPii()` (lib/pii.ts) é chamado per-row com
+ *     masterKeyRegistry derivado de env.PII_MASTER_KEY_V1. Mesmo padrão
+ *     de createLeadsQueryFns(connStr, masterKeyRegistry).
+ *   - Falha de decrypt → mark job 'failed' com error='decrypt_failed'
+ *     (sem retry: ciphertext corrupto ou key version desconhecida não
+ *     melhoram com o tempo).
  *
  * BRs / INVs honrados:
  *   - BR-RBAC-002: workspace_id em todas as queries.
  *   - BR-PRIVACY-001: response_payload sanitizado antes de persistir;
- *     phone aparece em logs apenas porque é o destinatário do dispatch
- *     (mesma postura do dispatcher Meta CAPI com email_hash etc.).
+ *     phone decifrado fica em memória durante o dispatch e jamais é
+ *     logado (mesma postura do dispatcher Meta CAPI com email_hash etc.).
+ *   - BR-PRIVACY-003: AES-256-GCM com HKDF workspace-scoped via
+ *     decryptPii().
+ *   - BR-PRIVACY-004: pii_key_version lido da row de leads para
+ *     selecionar a chave correta no registry.
  *   - INV-RECOVERY-JOB-001: jamais re-inserimos jobs aqui — apenas
  *     UPDATE. Idempotência do creator não é afetada.
  *   - INV-RECOVERY-JOB-002: status final ∈ {queued, sent, failed,
@@ -34,11 +56,14 @@
  *   - 4xx                → failed (permanente)
  *   - 5xx / rede / parse → mantém queued + attempts++; se attempts ≥ 5,
  *                          marca failed
+ *   - decrypt_failed     → failed (permanente; sem retry)
+ *   - phone vazio        → failed (permanente; sem retry)
  */
 
 import type { Db } from '@globaltracker/db';
 import { sql } from 'drizzle-orm';
 import { safeLog, sanitize } from '../middleware/sanitize-logs.js';
+import { type MasterKeyRegistry, decryptPii } from './pii.js';
 import type {
   RecoveryTemplateSlot,
   SendResult,
@@ -68,12 +93,27 @@ interface PendingJobRow {
   unnichat_template_id: string;
   body_params: unknown;
   url_button_params: unknown;
-  phone_raw: string | null;
-  customer_name: string | null;
-  offer_hash: string | null;
+  // PII criptografada — decifrada em runtime no sender, nunca logada.
+  phone_enc: string | null;
+  name_plain: string | null;
+  name_enc: string | null;
+  pii_key_version: number;
   launch_id: string | null;
   trigger_event_id: string;
   job_created_at: string; // ISO timestamp; usado na checagem de supressão
+}
+
+// ---------------------------------------------------------------------------
+// Env shape — sender precisa do PII_MASTER_KEY_V1 para decifrar phone+nome.
+// Mantemos um shape estreito (não pega o Env inteiro do worker) para o
+// helper continuar testável.
+// ---------------------------------------------------------------------------
+
+export interface RecoverySenderEnv {
+  /** Header Authorization completo (já com "Bearer "). */
+  UNNICHAT_API_KEY: string;
+  /** Hex 64-char master key (BR-PRIVACY-003/004). */
+  PII_MASTER_KEY_V1?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,26 +226,30 @@ export async function dispatchToUnnichat(
  *   - status='queued'
  *   - scheduled_for <= NOW()
  *   - hora local da campanha dentro de [send_window_start, send_window_end]
+ *   - leads.phone_enc IS NOT NULL (defesa em profundidade; creator já
+ *     impõe o mesmo)
  *
  * Para cada job, aplicamos:
  *   1. Supressão final (compra de bait_* posterior ao agendamento) →
  *      status='suppressed'.
- *   2. Sanitização do telefone (`replace(/\D+/g, '')`). Vazio → failed.
- *   3. Resolução de placeholders (body + url button).
- *   4. POST Unnichat + atualização do job.
+ *   2. Decrypt do phone (e nome) com decryptPii() workspace-scoped.
+ *      Falha → status='failed' com error='decrypt_failed'.
+ *   3. Sanitização do telefone (`replace(/\D+/g, '')`). Vazio → failed.
+ *   4. Resolução de placeholders (body + url button).
+ *   5. POST Unnichat + atualização do job.
  *
  * BR-RBAC-002: workspace_id é argumento e filtra todas as queries.
  *
  * @param db          conexão Drizzle
  * @param workspaceId tenant anchor
- * @param env         deve carregar UNNICHAT_API_KEY (header completo,
- *                    com "Bearer ")
+ * @param env         deve carregar UNNICHAT_API_KEY (header completo, com
+ *                    "Bearer ") e PII_MASTER_KEY_V1 (hex 64 chars).
  * @param fetchFn     injectable para testes (default global fetch)
  */
 export async function sendPendingRecoveryJobs(
   db: Db,
   workspaceId: string,
-  env: { UNNICHAT_API_KEY: string },
+  env: RecoverySenderEnv,
   fetchFn: typeof fetch = fetch,
 ): Promise<SendResult> {
   let sent = 0;
@@ -215,9 +259,21 @@ export async function sendPendingRecoveryJobs(
   // estável da resposta (a UI/cron loga consistente entre ticks).
   const skippedWindow = 0;
 
+  // BR-PRIVACY-003/004: master key registry. Sem chave válida, o sender
+  // nem tenta — falha rápido e loga sem expor key value.
+  if (!env.PII_MASTER_KEY_V1) {
+    safeLog('error', {
+      event: 'recovery_sender_missing_master_key',
+      workspace_id: workspaceId,
+    });
+    return { workspaceId, sent: 0, failed: 0, suppressed: 0, skippedWindow: 0 };
+  }
+  const masterKeyRegistry: MasterKeyRegistry = { 1: env.PII_MASTER_KEY_V1 };
+
   let rows: PendingJobRow[];
   try {
-    // Query principal: junta job → template → campaign → event gatilho.
+    // Query principal: junta job → template → campaign → event gatilho →
+    //   lead (phone_enc + name + name_enc + pii_key_version).
     // BR-RBAC-002: workspace_id no WHERE.
     // A janela é avaliada em PG: (NOW() AT TIME ZONE c.send_window_tz)::time
     //   BETWEEN c.send_window_start AND c.send_window_end.
@@ -231,19 +287,22 @@ export async function sendPendingRecoveryJobs(
         rt.unnichat_template_id,
         rt.body_params,
         rt.url_button_params,
-        e.payload->'customer'->>'cell' AS phone_raw,
-        e.payload->'customer'->>'name' AS customer_name,
-        e.payload->>'offer_hash' AS offer_hash,
-        e.launch_id
+        e.launch_id,
+        l.phone_enc,
+        l.name AS name_plain,
+        l.name_enc,
+        l.pii_key_version
       FROM recovery_jobs rj
       JOIN recovery_templates rt ON rt.id = rj.template_id
-      JOIN recovery_campaigns c ON c.id = rj.campaign_id
-      JOIN events e ON e.id = rj.trigger_event_id
+      JOIN recovery_campaigns c  ON c.id = rj.campaign_id
+      JOIN events e              ON e.id = rj.trigger_event_id
+      JOIN leads l               ON l.id = rj.lead_id
       WHERE rj.workspace_id = ${workspaceId}::uuid
         AND rj.status = 'queued'
         AND rj.scheduled_for <= NOW()
         AND (NOW() AT TIME ZONE c.send_window_tz)::time
             BETWEEN c.send_window_start AND c.send_window_end
+        AND l.phone_enc IS NOT NULL
       ORDER BY rj.scheduled_for ASC
       LIMIT ${MAX_JOBS_PER_TICK}
     `);
@@ -276,9 +335,46 @@ export async function sendPendingRecoveryJobs(
     }
 
     // ---------------------------------------------------------------
-    // 2. Sanitiza phone (E.164 sem '+'). Vazio → failed (sem retry).
+    // 2. Decrypt phone. BR-PRIVACY-003/004: AES-GCM workspace-scoped.
+    //    decryptPii() retorna Result<string, PiiError>.
     // ---------------------------------------------------------------
-    const phoneDigits = (row.phone_raw ?? '').replace(/\D+/g, '');
+    if (!row.phone_enc) {
+      // Defesa em profundidade — a SELECT já filtra IS NOT NULL.
+      await markJobFailed(db, workspaceId, row.job_id, {
+        error: 'missing_phone_enc',
+        responseBody: null,
+        attempts: row.attempts + 1,
+      });
+      failed++;
+      continue;
+    }
+
+    const phoneResult = await decryptPii(
+      row.phone_enc,
+      workspaceId,
+      masterKeyRegistry,
+      row.pii_key_version,
+    );
+    if (!phoneResult.ok) {
+      // BR-PRIVACY-001: não logar phone_enc nem error.message detalhada
+      // (decryption_failed já é genérico). Só code + IDs internos.
+      safeLog('warn', {
+        event: 'recovery_sender_phone_decrypt_failed',
+        workspace_id: workspaceId,
+        job_id: row.job_id,
+        lead_id: row.lead_id,
+        code: phoneResult.error.code,
+      });
+      await markJobFailed(db, workspaceId, row.job_id, {
+        error: `decrypt_failed:${phoneResult.error.code}`,
+        responseBody: null,
+        attempts: row.attempts + 1,
+      });
+      failed++;
+      continue;
+    }
+
+    const phoneDigits = phoneResult.value.replace(/\D+/g, '');
     if (phoneDigits.length === 0) {
       await markJobFailed(db, workspaceId, row.job_id, {
         error: 'invalid_phone',
@@ -290,12 +386,45 @@ export async function sendPendingRecoveryJobs(
     }
 
     // ---------------------------------------------------------------
-    // 3. Resolve placeholders.
+    // 3. Decrypt nome (ADR-034: prefer plaintext leads.name).
+    //    Falha de decrypt do nome NÃO bloqueia o envio — o slot
+    //    'contactName' usa fallback 'amigo(a)'.
+    // ---------------------------------------------------------------
+    let customerName: string | null = row.name_plain;
+    if (!customerName && row.name_enc) {
+      const nameResult = await decryptPii(
+        row.name_enc,
+        workspaceId,
+        masterKeyRegistry,
+        row.pii_key_version,
+      );
+      if (nameResult.ok) {
+        customerName = nameResult.value;
+      } else {
+        // Não bloqueia: o resolveSlot vai cair no fallback.
+        safeLog('warn', {
+          event: 'recovery_sender_name_decrypt_failed',
+          workspace_id: workspaceId,
+          job_id: row.job_id,
+          lead_id: row.lead_id,
+          code: nameResult.error.code,
+        });
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // 4. Resolve placeholders.
+    //    `offer_hash` ficou como token livre no template seed:
+    //    `?off=Fn4XA0` é o fallback hardcoded em
+    //    `url_button_params[0].fallback`. Em waves futuras podemos
+    //    derivar de custom_data, mas hoje o fallback cobre 100% das
+    //    rows e o creator não materializa offer_hash. Mantemos
+    //    offerHash='' (resolveSlot vai usar slot.fallback).
     // ---------------------------------------------------------------
     const bodySlots = coerceSlotArray(row.body_params);
     const urlSlots = coerceSlotArray(row.url_button_params);
-    const firstName = extractFirstName(row.customer_name);
-    const offerHash = row.offer_hash ?? '';
+    const firstName = extractFirstName(customerName);
+    const offerHash = '';
 
     const bodyParameters: UnnichatTemplateParam[] = bodySlots.map((slot) =>
       resolveSlot(slot, { firstName, offerHash }),
@@ -305,7 +434,7 @@ export async function sendPendingRecoveryJobs(
     );
 
     // ---------------------------------------------------------------
-    // 4. POST Unnichat.
+    // 5. POST Unnichat.
     // ---------------------------------------------------------------
     const result = await dispatchToUnnichat(
       {
@@ -319,7 +448,7 @@ export async function sendPendingRecoveryJobs(
     );
 
     // ---------------------------------------------------------------
-    // 5. Atualiza job conforme política de retry.
+    // 6. Atualiza job conforme política de retry.
     // ---------------------------------------------------------------
     const nextAttempts = row.attempts + 1;
     const safeResponse = clampResponseForPersist(result.body);
@@ -383,6 +512,10 @@ export async function sendPendingRecoveryJobs(
  * agendamento contam (compras anteriores já teriam impedido o creator de
  * inserir o job, então o filtro também é defensivo contra race entre
  * creator e sender).
+ *
+ * Funnel role: mesma derivação do creator — COALESCE(custom_data, JOIN
+ * via products + launch_products). Cobre Guru (direct) e OnProfit (via
+ * product_id).
  */
 async function isLeadSuppressed(
   db: Db,
@@ -399,11 +532,25 @@ async function isLeadSuppressed(
       SELECT 1
       FROM events e2
       WHERE e2.workspace_id = ${args.workspaceId}::uuid
-        AND e2.lead_id = ${args.leadId}::uuid
-        AND e2.launch_id = ${args.launchId}::uuid
-        AND e2.event_name = 'Purchase'
-        AND e2.payload->>'funnel_role' LIKE 'bait_%'
-        AND e2.received_at > ${args.jobCreatedAt}::timestamptz
+        AND e2.lead_id      = ${args.leadId}::uuid
+        AND e2.launch_id    = ${args.launchId}::uuid
+        AND e2.event_name   = 'Purchase'
+        AND e2.received_at  > ${args.jobCreatedAt}::timestamptz
+        AND COALESCE(
+          e2.custom_data->>'funnel_role',
+          (
+            SELECT lp2.launch_role
+            FROM products p2
+            JOIN launch_products lp2
+              ON lp2.workspace_id = p2.workspace_id
+             AND lp2.launch_id    = e2.launch_id
+             AND lp2.product_id   = p2.id
+            WHERE p2.workspace_id        = e2.workspace_id
+              AND p2.external_provider   = split_part(e2.event_source, ':', 2)
+              AND p2.external_product_id = (e2.custom_data->>'product_id')
+            LIMIT 1
+          )
+        ) LIKE 'bait_%'
       LIMIT 1
     `);
     return (res as unknown as unknown[]).length > 0;

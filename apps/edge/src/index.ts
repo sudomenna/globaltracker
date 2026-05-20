@@ -2522,10 +2522,16 @@ async function scheduledHandler(
     }
 
     const created = await createPendingRecoveryJobs(db, workspaceId);
+    // T-RECOVERY-002b: sender precisa do PII_MASTER_KEY_V1 para decifrar
+    // leads.phone_enc (HKDF workspace-scoped). Sem chave o helper aborta
+    // cedo com safeLog (não bubblea exception para o cron tick).
     const sent = await sendPendingRecoveryJobs(
       db,
       workspaceId,
-      { UNNICHAT_API_KEY: env.UNNICHAT_API_KEY },
+      {
+        UNNICHAT_API_KEY: env.UNNICHAT_API_KEY,
+        PII_MASTER_KEY_V1: env.PII_MASTER_KEY_V1,
+      },
     );
 
     safeLog('info', {
