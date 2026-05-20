@@ -10,12 +10,46 @@
 
 ## §1 Estado atual
 
-- **[2026-05-19]** Sistema completo de tags entregue (Waves 1-4): catálogo `workspace_tags` + CRUD manual + bulk + filtro combinatório (E/OU possui/não-possui). Endpoints `/v1/workspace-tags*` + `/v1/leads-tags*` + extensão de `GET /v1/leads` com `tag_filter` (base64url JSON). Docs em [`BR-TAGS.md`](docs/50-business-rules/BR-TAGS.md), [`14-screen-tags-catalog.md`](docs/70-ux/14-screen-tags-catalog.md), MOD-IDENTITY § 3/10/12 atualizados. Migration `0053_workspace_tags.sql`.
-- **Sprint ativo**: manutenção. Última sessão 2026-05-15/16 fechou recovery SendFlow + ROAS Meta vs ROAS Geral no dashboard.
-- **Branch**: `main`. Sincronizado com `origin/main` — todos os commits da sessão pushed (HEAD `3fef6b5`).
-- **Branch cockpit**: `traffic-cockpit/sprint-tc-1-foundation` — TC-1 + TC-2 implementados. Não tocado nesta sessão.
-- **Edge prod**: deploy atual **`6b12d3a7`** (2026-05-14). **PENDENTE deploy** dos 2 commits novos no main (`b1165cd` spend coverage badge + `3fef6b5` ROAS Meta) — rodar `pnpm deploy:edge` para o backend novo refletir em prod. CP é Vercel (auto-deploy via PR/push).
-- **Hyperdrive prod**: ativo desde 2026-05-13 — binding `34681cabdb954437ba6db304a235da87`, aponta para Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode), user `postgres.kaxcmhfaqrxwnpftkslj`. Worker prefere Hyperdrive sobre `DATABASE_URL` secret (ADR-046 — **HYPERDRIVE first, DATABASE_URL fallback**, nunca inverter). Smoke test pós-mudança: `bash scripts/maintenance/webhook-smoke-test.sh`.
+- **[2026-05-19/20]** Sistema completo de tags entregue + 2 fix commits: catálogo `workspace_tags` + CRUD manual + bulk + filtro combinatório + RBAC. Endpoints `/v1/workspace-tags*` + `/v1/leads-tags*` + extensão de `GET /v1/leads` e bulk handlers com `tag_filter`. Migration `0053_workspace_tags.sql` aplicada em prod via psql local. Docs sincronizados.
+- **[2026-05-20]** Plano **Recovery via Unnichat (A+B+C)** aprovado conceitualmente — schema (3 tabelas), trigger cron 7min, sender com janela 07:15-22:30 BRT, supressão Cliente vs Lead. **AINDA NÃO IMPLEMENTADO** — plano detalhado salvo em [`~/.claude/projects/-Users-tiagomenna-Projetos-GlobalTracker/memory/project_recovery_plan.md`](~/.claude/projects/-Users-tiagomenna-Projetos-GlobalTracker/memory/project_recovery_plan.md). Chave Unnichat validada. Template 1h ID `2186334448831228` aprovado pela Meta; template 24h ainda não criado.
+- **Sprint ativo**: tags em prod; recovery pendente de implementação. Sessão encerrada para zerar contexto.
+- **Branch**: `main`. Pushed até `ca12b1e`. Untracked locais (CSVs, PNGs de teste, COMMERCE_PLAN, tmp/) **não** pertencem à PR de tags.
+- **Edge prod**: último deploy `d242f0d6` cobriu `153ee81` + `aff9399`; **commits posteriores `48d6075` (CORS) e `ca12b1e` (casing) precisam de novo `pnpm deploy:edge`**.
+- **Hyperdrive prod**: ativo desde 2026-05-13 — binding `34681cabdb954437ba6db304a235da87`, Supavisor pooler `aws-1-sa-east-1.pooler.supabase.com:5432` (session mode). Worker prefere Hyperdrive sobre `DATABASE_URL` (ADR-046).
+
+### Entregas 2026-05-19/20 (sessão atual)
+
+#### Bloco 1 — Sistema de tags completo (commits `153ee81` + `aff9399` + `48d6075` + `ca12b1e`)
+
+- **Schema** (migration 0053): `workspace_tags` com RLS dual-mode + UNIQUE `(workspace_id, name)` + soft-delete. Relação **soft** com `lead_tags.tag_name` (sem FK rígida — ADR-047). Backfill executado: 3 tags pré-existentes do blueprint (`joined_group`/276, `purchased_order_bump`/97, `bait_purchased`/47) inseridas no catálogo via `INSERT … SELECT DISTINCT … ON CONFLICT DO NOTHING`.
+- **Domain helpers** (`apps/edge/src/lib/`): `workspace-tags.ts` novo (createTag/updateTag rename atômico/archiveTag cascade/listTags); `lead-tags.ts` estendido (unsetLeadTag, bulkApplyLeadTagsByIds, bulkUnsetLeadTagsByIds, hook autoRegisterTag em applyTagRules); `leads-filter.ts` novo (`buildTagFilterWhere` — sempre EXISTS, nunca JOIN).
+- **Edge routes**: `workspace-tags.ts` (CRUD catálogo), `leads-tags.ts` (singular + bulk apply/remove por IDs OU por filter — XOR via z.union), `leads-timeline.ts` estendido (GET /, POST /export, /bulk-{delete,archive,unarchive} aceitam `tag_filter` base64url).
+- **RBAC** (T-TAGS-011): catálogo write `owner|admin`; tag em lead `owner|admin|marketer`; bulk `owner|admin`; GETs abertos. Resposta 403 `{code:'forbidden', request_id}`. **Taxonomia canônica do projeto é `owner|admin|marketer|privacy|operator|viewer` (não `editor`).**
+- **Frontend CP**: `components/tags/` (TagChip, TagPicker combobox com a11y, TagFilterBuilder, hook useWorkspaceTags); `/settings/tags` (catálogo com Sheet); `/contatos/page.tsx` (filtro combinatório collapsible + bulk apply/remove); `/contatos/[id]/lead-summary-header.tsx` (CRUD inline com optimistic update); sidebar entrada "Tags".
+- **Docs**: BR-TAGS (10 BRs), screen `14-screen-tags-catalog`, API doc, module interfaces, MOD-IDENTITY § 3/10/12, ADR-047.
+- **Testes**: 62 unit verde (lead-tags, lead-tags-bulk, workspace-tags, leads-filter). Fix de mock pré-existente em `lead-tags.test.ts` ajustado (autoRegisterTag agora dobra calls em applyTagRules).
+
+#### Bloco 2 — Bugs encontrados durante teste e resolvidos
+
+- **CORS** (commit `48d6075`): `/v1/workspace-tags/*` e `/v1/leads-tags/*` não estavam sob `cpCors` em `apps/edge/src/index.ts`. Preflight bloqueava header `Authorization` → "Failed to fetch" no front. **Padrão: toda rota nova consumida pelo CP precisa estar no bloco `app.use('/v1/<path>/*', cpCors)`.**
+- **Casing camelCase vs snake_case** (commit `ca12b1e`): Drizzle `.$inferSelect` devolve camelCase (`createdBy`, `archivedAt`, `leadCount`); UI espera snake_case. Fix no hook `useWorkspaceTags` normaliza shape na entrada. **Padrão futuro: features novas que reusam shape Drizzle direto no frontend devem normalizar no hook.**
+
+#### Bloco 3 — Recovery de vendas via Unnichat (plano aprovado, não implementado)
+
+- **Diagnóstico**: `InitiateCheckout` (388/7d) **já dispara Meta CAPI** (275 succeeded/7d) — direção D ("remarketing pago") já existe. Gap real é A (outreach WhatsApp) + B (painel de ação) + C (métricas).
+- **Provedor**: Unnichat (`https://unnichat.com.br/api`). Auth `Authorization: <key>` (com OU sem prefix Bearer). Schema OpenAPI em `swagger-ui-init.js`.
+- **Caminho**: API direta `POST /api/meta/templates` (não webhook URL `/w/<token>`).
+- **Schema decidido**: tabela nova `recovery_jobs` + `recovery_campaigns` + `recovery_templates` (não reusar `dispatch_jobs` — campanha multi-step ≠ entrega one-shot).
+- **Trigger**: cron `*/1 * * * *` detecta IC `received_at BETWEEN NOW()-60min AND NOW()-6min`, filtros por funnel_role + lifecycle + status do payload, idempotência por `(campaign_id, lead_id, step_index, trigger_event_id)`.
+- **Sender**: cron `*/1 * * * *` pega `queued` com `scheduled_for <= NOW()` + janela 07:15-22:30 BRT + supressão final se lead comprou depois do agendamento.
+- **Campanha 1ª** (`wkshop-cs-jun26`): `funnel_role=bait_offer`, passo 0 = 7 min (template 1h ID `2186334448831228`), passo 1 (24h) preparado mas sem template. Body param {{1}} = first_name; URL botão final `https://pay.onprofit.com.br/fvOsQjDO?off=Fn4XA0`.
+- **Filtros**: Lead = todos com phone do launch; Cliente = só se status ∈ {CART_ABANDONED, WAITING, CANCELED, REJECTED, REFUSED} E sem Purchase de bait do mesmo launch.
+- **Próximo passo ao retomar**: ler `project_recovery_plan.md` (cross-session) → Wave 1 = migration 0054. Salvar `UNNICHAT_API_KEY` como Wrangler secret antes da Wave 3.
+
+#### Stack notes da sessão
+
+- **Unnichat API**: endpoints úteis `POST /api/meta/templates` (envio), `GET /api/meta/messages/{id}` (status), `POST /api/contact`, `POST /api/broadcasts`, `/tags`, `/customFields`. **Sem webhook outbound nativo para delivered/read** confirmado no painel. Workaround possível: automação visual com passo "Requisição HTTP".
+- **Migration via psql local**: `/opt/homebrew/opt/libpq/bin/psql "$DATABASE_URL" -f packages/db/migrations/0053_*.sql`. `pnpm db:migrate` continua quebrado (drizzle-kit ESM). Workflow conhecido desde Sprint 0.
 
 ### Entregas 2026-05-15/16 (sessão atual)
 
