@@ -96,11 +96,16 @@ export async function dispatchToUnnichat(
   input: UnnichatDispatchInput,
   fetchFn: typeof fetch = fetch,
 ): Promise<UnnichatDispatchResult> {
+  // OQ resolvida em W3 (T-RECOVERY-003): payload Unnichat é camelCase.
+  // Fonte: bundle do app https://unnichat.com.br/assets/index-4e91ad0e.js
+  //   — 57 ocorrências de `templateId`, 41 de `bodyParameters`, 29 de
+  //   `urlButtonParameters`, 0 ocorrências das variantes snake_case.
+  // W2 inferiu snake_case por engano; corrigido aqui antes do go-live.
   const payload = {
     phone: input.phone,
-    template_id: input.unnichatTemplateId,
-    body_parameters: input.bodyParameters,
-    url_button_parameters: input.urlButtonParameters,
+    templateId: input.unnichatTemplateId,
+    bodyParameters: input.bodyParameters,
+    urlButtonParameters: input.urlButtonParameters,
   };
 
   let response: Response;

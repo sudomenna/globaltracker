@@ -45,6 +45,9 @@ import { and, desc, eq, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { runAudienceSync } from './crons/audience-sync.js';
 import { ingestDailySpend } from './crons/cost-ingestor.js';
+// T-RECOVERY-003 (W3): cron-tick helpers — pure domain functions, DI db+env.
+import { createPendingRecoveryJobs } from './lib/recovery-job-creator.js';
+import { sendPendingRecoveryJobs } from './lib/recovery-sender.js';
 import {
   checkEligibility as checkGa4Eligibility,
   mapEventToGa4Payload,
@@ -170,6 +173,11 @@ type Bindings = {
   DATABASE_URL?: string;
   // Supabase project URL — used by JWKS verification in auth middleware (ADR-034)
   SUPABASE_URL?: string;
+  // T-RECOVERY-003 (W3): Unnichat BSP WhatsApp API key. Stored via
+  // `wrangler secret put UNNICHAT_API_KEY`. The value MUST already include
+  // the `Bearer ` prefix — recovery-sender.ts uses it verbatim in the
+  // Authorization header (BR-PRIVACY-001: never logged).
+  UNNICHAT_API_KEY?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -2472,6 +2480,63 @@ async function scheduledHandler(
       });
     }
 
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // */2 * * * * — recovery cron (T-RECOVERY-003, W3)
+  //
+  // Two-phase tick por workspace ativo:
+  //   1. createPendingRecoveryJobs — materializa recovery_jobs queued a partir
+  //      de eventos InitiateCheckout dentro da janela [-60min, -6min]
+  //      (idempotente via INV-RECOVERY-JOB-001).
+  //   2. sendPendingRecoveryJobs — drena até 50 jobs prontos do tick, com
+  //      supressão final + dispatch HTTP para Unnichat + transição de estado.
+  //
+  // BR-RBAC-002: ambos os helpers recebem workspace_id e filtram todas as
+  //   queries por ele.
+  // BR-PRIVACY-001: api key vem de env (Wrangler secret) e nunca é logada;
+  //   helpers usam safeLog internamente.
+  // ---------------------------------------------------------------------------
+  if (cron === '*/2 * * * *') {
+    // TODO(multi-tenant): substituir por SELECT id FROM workspaces WHERE active=true
+    //   quando a coluna existir / quando a feature for habilitada para >1 tenant.
+    //   Hoje o recovery roda só no workspace dev fixo (Outsiders Digital), igual
+    //   ao restante do edge fora dos crons de cost/audience.
+    const workspaceId = env.DEV_WORKSPACE_ID;
+    if (!workspaceId) {
+      safeLog('warn', {
+        event: 'recovery_cron_skipped_no_workspace',
+        cron,
+      });
+      return;
+    }
+
+    if (!env.UNNICHAT_API_KEY) {
+      // BR-PRIVACY-001: não logar valor; só presença.
+      safeLog('warn', {
+        event: 'recovery_cron_skipped_no_api_key',
+        workspace_id: workspaceId,
+      });
+      return;
+    }
+
+    const created = await createPendingRecoveryJobs(db, workspaceId);
+    const sent = await sendPendingRecoveryJobs(
+      db,
+      workspaceId,
+      { UNNICHAT_API_KEY: env.UNNICHAT_API_KEY },
+    );
+
+    safeLog('info', {
+      event: 'recovery_cron_tick_done',
+      workspace_id: workspaceId,
+      jobs_scanned: created.scanned,
+      jobs_created: created.created,
+      jobs_sent: sent.sent,
+      jobs_failed: sent.failed,
+      jobs_suppressed: sent.suppressed,
+    });
     return;
   }
 
