@@ -97,6 +97,14 @@ export const recoveryCampaigns = pgTable(
     // agendados continuam no fluxo (decisão operacional, validar via UI).
     active: boolean('active').notNull().default(true),
 
+    // ID da tag Unnichat aplicada ao contato via POST /api/contact/{id}/tags
+    // APÓS um envio com status='sent'. É por-campanha/por-launch (cada
+    // lançamento tem sua tag de "abordado no recovery").
+    // Nullable: campanha sem tag configurada não tagueia o contato — o
+    // sender simplesmente pula o POST. Identificador opaco da Unnichat,
+    // sem PII (BR-PRIVACY-001).
+    unnichatSentTagId: text('unnichat_sent_tag_id'),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),

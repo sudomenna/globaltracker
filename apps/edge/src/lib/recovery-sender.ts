@@ -11,12 +11,18 @@
  *      end]. SQL já filtra a janela em PG. Cap de 50 jobs por tick.
  *   2. Para cada job: aplica supressão final (cliente comprou outro
  *      `bait_*` após o job ser agendado) → marca `suppressed` sem enviar.
- *   3. DECRYPT phone (leads.phone_enc) e nome (leads.name plaintext OU
- *      leads.name_enc) usando masterKeyRegistry (HKDF workspace-scoped).
- *   4. Resolve placeholders do template a partir do nome decifrado.
- *   5. POST `https://unnichat.com.br/api/meta/templates` com Authorization
+ *   3. DECRYPT phone (leads.phone_enc), nome (leads.name plaintext OU
+ *      leads.name_enc) e email (leads.email_enc, opcional) usando
+ *      masterKeyRegistry (HKDF workspace-scoped).
+ *   4. ENSURE contact (search → create) na Unnichat ANTES de enviar. A API
+ *      `/api/meta/templates` exige que o `phone` já seja um contato — sem
+ *      isso responde 4xx "Contact not found!". Ver ensureUnnichatContact.
+ *   5. Resolve placeholders do template a partir do nome decifrado.
+ *   6. POST `https://unnichat.com.br/api/meta/templates` com Authorization
  *      header do env (que JÁ traz "Bearer " no valor — não concatenar).
- *   6. Atualiza o job: `sent` / `failed` / re-`queued` (retry transitório
+ *   7. Após envio OK: SE a campanha define `unnichat_sent_tag_id`, taggea o
+ *      contato (POST /api/contact/{id}/tags). Falha de tag NÃO derruba o job.
+ *   8. Atualiza o job: `sent` / `failed` / re-`queued` (retry transitório
  *      até attempts >= 5).
  *
  * --- Schema correto de `events` (notas da reescrita 002b) -------------
@@ -67,6 +73,8 @@ import { type MasterKeyRegistry, decryptPii } from './pii.js';
 import type {
   RecoveryTemplateSlot,
   SendResult,
+  UnnichatContactInput,
+  UnnichatContactResolveResult,
   UnnichatDispatchInput,
   UnnichatDispatchResult,
   UnnichatTemplateParam,
@@ -77,6 +85,11 @@ import type {
 // ---------------------------------------------------------------------------
 
 const UNNICHAT_TEMPLATES_URL = 'https://unnichat.com.br/api/meta/templates';
+const UNNICHAT_CONTACT_SEARCH_URL =
+  'https://unnichat.com.br/api/contact/search';
+const UNNICHAT_CONTACT_CREATE_URL = 'https://unnichat.com.br/api/contact';
+/** Tags endpoint é por-contato: `.../api/contact/{id}/tags`. */
+const UNNICHAT_CONTACT_TAGS_URL_BASE = 'https://unnichat.com.br/api/contact';
 const MAX_JOBS_PER_TICK = 50;
 const MAX_ATTEMPTS_BEFORE_FAIL = 5;
 /** Tamanho máximo de body em string mantido em log/response_payload. */
@@ -97,10 +110,17 @@ interface PendingJobRow {
   phone_enc: string | null;
   name_plain: string | null;
   name_enc: string | null;
+  email_enc: string | null;
   pii_key_version: number;
   launch_id: string | null;
   trigger_event_id: string;
   job_created_at: string; // ISO timestamp; usado na checagem de supressão
+  /**
+   * Tag aplicada ao contato Unnichat APÓS envio bem-sucedido. Coluna `text`
+   * nullable em `recovery_campaigns` (migration 0056, em paralelo). Quando
+   * nulo, o sender não taggea.
+   */
+  unnichat_sent_tag_id: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +235,141 @@ export async function dispatchToUnnichat(
 }
 
 // ---------------------------------------------------------------------------
+// ensureUnnichatContact — função pura (sem DB)
+// ---------------------------------------------------------------------------
+
+/**
+ * Garante que o telefone seja um CONTATO na Unnichat antes do envio.
+ *
+ * Root cause do bug "Contact not found!" (69/81 jobs 4xx): a API
+ * `/api/meta/templates` exige que o `phone` já exista como contato. Este
+ * helper faz o flow correto:
+ *   1. SEARCH  POST /api/contact/search { phone } → pega data[0]. Se
+ *      data[0]?.id truthy, o contato já existe (retorna esse id).
+ *      NÃO-ENCONTRADO (validado empiricamente) responde 200 com
+ *      `{ success: true, data: [{}] }` — array com objeto vazio.
+ *   2. CREATE  POST /api/contact { name, phone, email } quando não existe.
+ *      email é OPCIONAL (omitido quando ausente). Extrai o id de forma
+ *      DEFENSIVA (data.id | data[0].id | id).
+ *
+ * NÃO joga em erro — devolve `UnnichatContactResolveResult` para o caller
+ * decidir a transição do job (4xx→failed, 5xx/rede→transitório).
+ *
+ * BR-PRIVACY-001: nenhum valor de phone/name/email é logado; apenas codes,
+ *   status e o shape (chaves) da resposta quando o id não é encontrado.
+ *
+ * @param apiKey  header Authorization completo (já com "Bearer ").
+ * @param input   phone (dígitos) + name/email opcionais (PII só em memória).
+ * @param fetchFn injectable fetch (default global) — facilita testes.
+ */
+export async function ensureUnnichatContact(
+  apiKey: string,
+  input: UnnichatContactInput,
+  fetchFn: typeof fetch = fetch,
+): Promise<UnnichatContactResolveResult> {
+  // -----------------------------------------------------------------------
+  // 1. SEARCH
+  // -----------------------------------------------------------------------
+  let searchResp: Response;
+  try {
+    searchResp = await fetchFn(UNNICHAT_CONTACT_SEARCH_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // `apiKey` já contém "Bearer " — não concatenar.
+        Authorization: apiKey,
+      },
+      body: JSON.stringify({ phone: input.phone }),
+    });
+  } catch (networkError) {
+    return {
+      ok: false,
+      status: 0,
+      error:
+        networkError instanceof Error
+          ? `search_network:${networkError.message.slice(0, 120)}`
+          : 'search_network_error',
+    };
+  }
+
+  if (!searchResp.ok) {
+    const status = searchResp.status;
+    return {
+      ok: false,
+      status,
+      error: `search_status_${status}`,
+    };
+  }
+
+  const searchParsed = await safeParseJson(searchResp);
+  const existingId = extractContactIdFromSearch(searchParsed);
+  if (existingId) {
+    return { ok: true, contactId: existingId };
+  }
+
+  // -----------------------------------------------------------------------
+  // 2. CREATE — contato não existe (data[0] vazio ou sem id).
+  //    name OU phone obrigatório; sempre temos phone. email opcional.
+  // -----------------------------------------------------------------------
+  const createBody: Record<string, string> = { phone: input.phone };
+  if (input.name && input.name.trim().length > 0) {
+    createBody.name = input.name.trim();
+  }
+  if (input.email && input.email.trim().length > 0) {
+    createBody.email = input.email.trim();
+  }
+
+  let createResp: Response;
+  try {
+    createResp = await fetchFn(UNNICHAT_CONTACT_CREATE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: apiKey,
+      },
+      body: JSON.stringify(createBody),
+    });
+  } catch (networkError) {
+    return {
+      ok: false,
+      status: 0,
+      error:
+        networkError instanceof Error
+          ? `create_network:${networkError.message.slice(0, 120)}`
+          : 'create_network_error',
+    };
+  }
+
+  if (!createResp.ok) {
+    const status = createResp.status;
+    return {
+      ok: false,
+      status,
+      error: `create_status_${status}`,
+    };
+  }
+
+  const createParsed = await safeParseJson(createResp);
+  const newId = extractContactIdFromCreate(createParsed);
+  if (newId) {
+    return { ok: true, contactId: newId };
+  }
+
+  // 200 sem id reconhecível: trata como falha transitória (status>=500
+  // semantics) e loga o SHAPE da resposta (só chaves, sem PII) para debug.
+  // BR-PRIVACY-001: jamais loga values — só sanitize(shape).
+  safeLog('warn', {
+    event: 'recovery_unnichat_create_no_id',
+    create_response_shape: sanitize(createParsed),
+  });
+  return {
+    ok: false,
+    status: 502,
+    error: 'create_no_contact_id',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // sendPendingRecoveryJobs — orquestra a passada do cron
 // ---------------------------------------------------------------------------
 
@@ -287,10 +442,12 @@ export async function sendPendingRecoveryJobs(
         rt.unnichat_template_id,
         rt.body_params,
         rt.url_button_params,
+        c.unnichat_sent_tag_id,
         e.launch_id,
         l.phone_enc,
         l.name AS name_plain,
         l.name_enc,
+        l.email_enc,
         l.pii_key_version
       FROM recovery_jobs rj
       JOIN recovery_templates rt ON rt.id = rj.template_id
@@ -413,7 +570,78 @@ export async function sendPendingRecoveryJobs(
     }
 
     // ---------------------------------------------------------------
-    // 4. Resolve placeholders.
+    // 4. Decrypt email (OPCIONAL). Usado só pra enriquecer o CREATE do
+    //    contato Unnichat. BR-PRIVACY-003/004: AES-GCM workspace-scoped,
+    //    mesmo padrão de phone/nome. Falha de decrypt ou ausência NÃO
+    //    bloqueia o envio — segue sem email.
+    // ---------------------------------------------------------------
+    let customerEmail: string | null = null;
+    if (row.email_enc) {
+      const emailResult = await decryptPii(
+        row.email_enc,
+        workspaceId,
+        masterKeyRegistry,
+        row.pii_key_version,
+      );
+      if (emailResult.ok) {
+        customerEmail = emailResult.value;
+      } else {
+        // BR-PRIVACY-001: só code + IDs internos, nunca o ciphertext.
+        safeLog('warn', {
+          event: 'recovery_sender_email_decrypt_failed',
+          workspace_id: workspaceId,
+          job_id: row.job_id,
+          lead_id: row.lead_id,
+          code: emailResult.error.code,
+        });
+      }
+    }
+
+    const firstName = extractFirstName(customerName);
+
+    // ---------------------------------------------------------------
+    // 5. Garante o CONTATO na Unnichat (search → create) ANTES de enviar.
+    //    A API /api/meta/templates exige que o phone já seja um contato
+    //    (root cause do "Contact not found!"). Falha aqui:
+    //      - 4xx          → markJobFailed (permanente).
+    //      - 5xx / rede   → markJobTransient (attempts++ até MAX).
+    //    Não envia se o contato não foi garantido.
+    // ---------------------------------------------------------------
+    const contactResult = await ensureUnnichatContact(
+      env.UNNICHAT_API_KEY,
+      { phone: phoneDigits, name: firstName, email: customerEmail },
+      fetchFn,
+    );
+
+    if (!contactResult.ok) {
+      const nextAttempts = row.attempts + 1;
+      const isPermanent =
+        contactResult.status >= 400 && contactResult.status < 500;
+      const exceededAttempts = nextAttempts >= MAX_ATTEMPTS_BEFORE_FAIL;
+      // BR-PRIVACY-001: error já é code/status (sem PII).
+      if (isPermanent || exceededAttempts) {
+        await markJobFailed(db, workspaceId, row.job_id, {
+          error: `contact:${contactResult.error}`.slice(0, 200),
+          responseBody: null,
+          attempts: nextAttempts,
+        });
+        failed++;
+      } else {
+        // status>=500 ou status 0 (rede) → transitório.
+        await markJobTransient(db, workspaceId, row.job_id, {
+          error: `contact:${contactResult.error}`.slice(0, 200),
+          responseBody: null,
+          attempts: nextAttempts,
+        });
+        // Não conta em sent/failed/suppressed — cron tentará de novo.
+      }
+      continue;
+    }
+
+    const contactId = contactResult.contactId;
+
+    // ---------------------------------------------------------------
+    // 6. Resolve placeholders.
     //    `offer_hash` ficou como token livre no template seed:
     //    `?off=Fn4XA0` é o fallback hardcoded em
     //    `url_button_params[0].fallback`. Em waves futuras podemos
@@ -423,7 +651,6 @@ export async function sendPendingRecoveryJobs(
     // ---------------------------------------------------------------
     const bodySlots = coerceSlotArray(row.body_params);
     const urlSlots = coerceSlotArray(row.url_button_params);
-    const firstName = extractFirstName(customerName);
     const offerHash = '';
 
     const bodyParameters: UnnichatTemplateParam[] = bodySlots.map((slot) =>
@@ -434,7 +661,7 @@ export async function sendPendingRecoveryJobs(
     );
 
     // ---------------------------------------------------------------
-    // 5. POST Unnichat.
+    // 7. POST Unnichat (contato já garantido no passo 5).
     // ---------------------------------------------------------------
     const result = await dispatchToUnnichat(
       {
@@ -448,7 +675,7 @@ export async function sendPendingRecoveryJobs(
     );
 
     // ---------------------------------------------------------------
-    // 6. Atualiza job conforme política de retry.
+    // 8. Atualiza job conforme política de retry.
     // ---------------------------------------------------------------
     const nextAttempts = row.attempts + 1;
     const safeResponse = clampResponseForPersist(result.body);
@@ -462,6 +689,29 @@ export async function sendPendingRecoveryJobs(
         attempts: nextAttempts,
       });
       if (ok) sent++;
+
+      // -------------------------------------------------------------
+      // 9. Tag pós-envio (best-effort). Já enviamos: falha de tag
+      //    NUNCA derruba o job nem altera o contador `sent`. Só taggea
+      //    quando a campanha define unnichat_sent_tag_id.
+      //    BR-PRIVACY-001: tagId + contactId são IDs internos (sem PII).
+      // -------------------------------------------------------------
+      if (row.unnichat_sent_tag_id) {
+        const tagged = await tagUnnichatContact(
+          env.UNNICHAT_API_KEY,
+          contactId,
+          row.unnichat_sent_tag_id,
+          fetchFn,
+        );
+        if (!tagged.ok) {
+          safeLog('warn', {
+            event: 'recovery_unnichat_tag_failed',
+            workspace_id: workspaceId,
+            job_id: row.job_id,
+            status_code: tagged.status,
+          });
+        }
+      }
       continue;
     }
 
@@ -751,6 +1001,99 @@ function resolveSlot(
 // ---------------------------------------------------------------------------
 // Helpers internos — resposta HTTP
 // ---------------------------------------------------------------------------
+
+/**
+ * Aplica uma tag a um contato Unnichat: POST /api/contact/{id}/tags
+ * { tag_id }. Best-effort — chamado APÓS o envio bem-sucedido. NÃO joga;
+ * devolve `{ ok, status }` para o caller logar (sem derrubar o job).
+ *
+ * BR-PRIVACY-001: nada de PII; contactId/tagId são IDs internos.
+ */
+async function tagUnnichatContact(
+  apiKey: string,
+  contactId: string,
+  tagId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ ok: boolean; status: number }> {
+  const url = `${UNNICHAT_CONTACT_TAGS_URL_BASE}/${encodeURIComponent(
+    contactId,
+  )}/tags`;
+  try {
+    const resp = await fetchFn(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // `apiKey` já contém "Bearer " — não concatenar.
+        Authorization: apiKey,
+      },
+      body: JSON.stringify({ tag_id: tagId }),
+    });
+    return { ok: resp.ok, status: resp.status };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
+/** Parse defensivo de JSON da resposta — nunca joga; retorna null em erro. */
+async function safeParseJson(resp: Response): Promise<unknown> {
+  try {
+    const text = await resp.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { _raw: text.slice(0, MAX_BODY_PERSIST_BYTES) };
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extrai o id do contato a partir da resposta do SEARCH.
+ * ENCONTRADO: { success, data: [{ id, ... }] } → data[0].id.
+ * NÃO-ENCONTRADO (validado): { success, data: [{}] } → data[0].id ausente.
+ * Retorna o id (string não-vazia) ou null.
+ */
+function extractContactIdFromSearch(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const data = (parsed as Record<string, unknown>).data;
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const first = data[0];
+  return readId(first);
+}
+
+/**
+ * Extrai o id do contato recém-criado. Shape provável `data.id` ou
+ * `data[0].id`; DEFENSIVO — tenta também `id` no topo. Null se nada bater.
+ */
+function extractContactIdFromCreate(parsed: unknown): string | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const obj = parsed as Record<string, unknown>;
+
+  // data.id
+  const data = obj.data;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const fromData = readId(data);
+    if (fromData) return fromData;
+  }
+  // data[0].id
+  if (Array.isArray(data) && data.length > 0) {
+    const fromArr = readId(data[0]);
+    if (fromArr) return fromArr;
+  }
+  // id (topo)
+  return readId(obj);
+}
+
+/** Lê `id` de um objeto, aceitando string ou number; '' / 0 → null. */
+function readId(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const id = (value as Record<string, unknown>).id;
+  if (typeof id === 'string' && id.length > 0) return id;
+  if (typeof id === 'number' && Number.isFinite(id)) return String(id);
+  return null;
+}
 
 function extractMessageId(parsed: unknown): string | undefined {
   if (!parsed || typeof parsed !== 'object') return undefined;

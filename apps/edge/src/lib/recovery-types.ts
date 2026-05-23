@@ -129,3 +129,33 @@ export interface UnnichatDispatchResult {
   /** Mensagem de erro humana (network / non-2xx / parse). */
   error?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Unnichat contact resolution (search → create)
+// ---------------------------------------------------------------------------
+
+/**
+ * Input do `ensureUnnichatContact`. PII (phone/name/email) fica apenas em
+ * memória durante o dispatch — BR-PRIVACY-001 garante que nada disso é logado.
+ */
+export interface UnnichatContactInput {
+  /** Phone E.164 sem '+', apenas dígitos (ex: "5511999999999"). */
+  phone: string;
+  /** Primeiro nome (ou nome completo) do lead. Opcional. */
+  name?: string | null;
+  /** Email do lead. OPCIONAL — lead pode não ter; nunca bloqueia o create. */
+  email?: string | null;
+}
+
+/**
+ * Resultado de `ensureUnnichatContact`. Alimenta a política de retry do sender:
+ *   - ok=true               → segue para o envio com `contactId`.
+ *   - ok=false, status 4xx  → falha permanente (markJobFailed).
+ *   - ok=false, status>=500 → transitório (markJobTransient).
+ *   - ok=false, status 0    → rede (transitório).
+ *
+ * BR-PRIVACY-001: `error` é sempre um code curto / status, NUNCA PII.
+ */
+export type UnnichatContactResolveResult =
+  | { ok: true; contactId: string }
+  | { ok: false; status: number; error: string };
