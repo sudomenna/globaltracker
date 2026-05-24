@@ -80,5 +80,10 @@ scripts/maintenance/*.mjs
 # Screenshots de debug do CP (contêm PII em claro)
 cp-*.png
 
+# Exports de leads + dumps de recovery/webhook (PII em claro — manter local, NUNCA commitar)
+leads_*.csv
+*.ndjson
+tmp/
+
 # OS
 Thumbs.db

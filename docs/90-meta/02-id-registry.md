@@ -176,6 +176,8 @@ Em `90-meta/04-decision-log.md` (este arquivo + decision log são complementares
 | ADR-037 | `launch_products` (relação tipada) substitui `workspaces.config.integrations.guru.product_launch_map`; `guru-launch-resolver` Strategy 0 + Strategy 1 fallback durante migração — Sprint 16 | aceito |
 | ADR-038 | Helper `jsonb()` obrigatório em writes via Hyperdrive (workaround driver `pg-cloudflare-workers`) — Sprint 17 hardening (2026-05-09) | aceito |
 | ADR-039 | `lookupHistoricalBrowserSignals` sem filtro temporal — eleva EMQ Meta CAPI sem decay em replays — Sprint 17 hardening (2026-05-09) | aceito |
+| ADR-040..047 | Ver `90-meta/04-decision-log.md` (KV best-effort, dispatch payload audit, outbox poller/DLQ, `event.eventId`, `_enc` mirror, OnProfit `event_id`, Hyperdrive-first conn, catálogo de tags sem FK) | aceito |
+| ADR-048 | Recovery via Unnichat: ensure-contact-before-send + tag pós-envio best-effort + URL param estático no template (2026-05-23) | aceito |
 
 ## OQ-*
 
@@ -222,6 +224,8 @@ Definidas nos arquivos de sprint em `80-roadmap/` (Fase 7 da geração de docs).
 | T-LEADS-VIEW-001 | Sprint 16 | migration `0044_lead_tags_and_blueprint_extension.sql`, `20-domain/04-mod-identity.md` (entidade LeadTag) |
 | T-LEADS-VIEW-002 | Sprint 16 | `30-contracts/05-api-server-actions.md` (GET /v1/launches/:id/leads), `30-contracts/07-module-interfaces.md` (setLeadTag/applyTagRules) |
 | T-RECOVERY-001 | Sprint 14 | `40-integrations/13-digitalmanager-guru-webhook.md` (abandoned → InitiateCheckout) |
+| T-RECOVERY-002 / 002b | 2026-05-20/23 | `lib/recovery-job-creator.ts` + `lib/recovery-sender.ts` (cadência WhatsApp via Unnichat); migrations `0054`–`0057`; `40-integrations/15-unnichat-whatsapp.md` (novo arquivo); `ADR-048` |
+| T-RECOVERY-003 | 2026-05-23 | wiring cron `*/2 * * * *` em `apps/edge/src/index.ts`; ensure-contact-before-send + URL param estático (`ADR-048`); `40-integrations/15-unnichat-whatsapp.md` |
 | T-RECOVERY-004 | Sprint 14 | `30-contracts/05-api-server-actions.md` (GET /v1/launches/:id/recovery) |
 | T-CONTACTS-LASTSEEN-002 | Sprint 16 | `BR-IDENTITY-008`, `INV-IDENTITY-LASTSEEN-MONOTONIC`, `30-contracts/07-module-interfaces.md` (resolveLeadByAliases options.eventTime) |
 | T-13-013-FOLLOWUP | Sprint 17 hardening (2026-05-09) | `30-contracts/02-db-schema-conventions.md` (jsonb writes via helper), `BR-EVENT-005` (storage type), `ADR-038` |

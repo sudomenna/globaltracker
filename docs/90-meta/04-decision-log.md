@@ -1683,6 +1683,53 @@ Próximas waves: implementar `autoRegisterTag` em [`apps/edge/src/lib/lead-tags.
 
 ---
 
+## ADR-048 — Recovery via Unnichat: ensure-contact-before-send + tag pós-envio + URL param estático (2026-05-23)
+
+### Status
+Aceito.
+
+### Contexto
+
+A cadência de recuperação de carrinho abandonado (`T-RECOVERY-002`/`002b`/`003`) dispara templates WhatsApp aprovados pela Meta através do BSP **Unnichat** (`https://unnichat.com.br/api`). Não há doc pública estável da API — apenas o Swagger em `https://unnichat.com.br/api/api-docs`. Três decisões precisaram ser tomadas com base em inspeção empírica + validação em prod no go-live de 2026-05-23:
+
+1. **"Contact not found!" (69/81 jobs 4xx).** O endpoint de envio `POST /api/meta/templates` exige que o `phone` já seja um **contato pré-existente** na Unnichat. Enviar para um telefone que nunca foi contato responde 4xx `Contact not found!`. Não há flag de "criar se não existir" no endpoint de envio.
+
+2. **Shape do payload.** Inicialmente (W2) inferiu-se snake_case (`template_id`, `body_parameters`). Inspeção do bundle do app Unnichat (`https://unnichat.com.br/assets/index-4e91ad0e.js`) revelou camelCase: `templateId` (57×), `bodyParameters` (41×), `urlButtonParameters` (29×), zero ocorrências snake_case.
+
+3. **URL button param quebrado.** O parâmetro dinâmico `{{1}}` de um URL button percent-encoda caracteres reservados (`?`, `=`). Com `?off=Fn4XA0` como valor de `{{1}}`, a Meta produzia `fvOsQjDO%3Foff%3DFn4XA0` (link quebrado).
+
+### Decisão
+
+1. **Ensure-contact-before-send.** Antes de cada envio, `ensureUnnichatContact` faz `POST /api/contact/search { phone }` (não-encontrado responde `{ success:true, data:[{}] }` — array com objeto vazio); se não existe, `POST /api/contact { name?, phone, email? }`. Só então `dispatchToUnnichat` chama `POST /api/meta/templates`. O envio é endereçado por `phone`, não por `contactId`.
+
+2. **Payload camelCase.** `dispatchToUnnichat` envia `{ phone, templateId, bodyParameters, urlButtonParameters }`. Auth via header `Authorization` com o secret `UNNICHAT_API_KEY` **verbatim** — o valor já carrega o prefixo `"Bearer "`, não concatenar.
+
+3. **Tag pós-envio best-effort.** Após `status='sent'`, se a campanha define `recovery_campaigns.unnichat_sent_tag_id` (migration `0056`), aplica `POST /api/contact/{id}/tags { tag_id }`. Falha de tag NUNCA derruba o job nem altera o contador `sent` (só log `recovery_unnichat_tag_failed`). `tag_id` obtido via `GET /api/tags`.
+
+4. **URL param estático.** A parte `?off=` fica na **parte estática do template** (`.../fvOsQjDO?off={{1}}`) e o `{{1}}` carrega só o valor alfanumérico (`Fn4XA0`), que não tem reservados para encodar. Não há fix só de código — exige editar o template no painel + **re-aprovação Meta**. Migration `0057` ajustou o seed de `url_button_params` para `Fn4XA0`.
+
+### Alternativas consideradas
+
+- **Criar contato inline no endpoint de envio**: a API não expõe esse modo; `Contact not found!` é fatal. Rejeitada (não existe).
+- **Enviar por `contactId` em vez de `phone`**: o `/api/meta/templates` endereça por `phone`; `contactId` serve só para `/tags`. Mantido `phone` no envio.
+- **Manter `?off=` no `{{1}}` e des-encodar no destino**: o destino é uma LP externa — não controlamos o parser dela, e a Meta encoda no momento do render. Inviável.
+- **Falhar o job se a tag não aplicar**: a mensagem já foi enviada — reverter status seria mentira. Tag é metadado de segmentação, não parte do contrato de entrega. Best-effort é correto.
+
+### Consequências
+
+- (+) Recovery passou de 12/81 para envio confiável após ensure-contact (eliminou os 4xx `Contact not found!`).
+- (+) Contatos materializados na Unnichat permitem segmentação/tag downstream no painel do operador.
+- (+) Idempotência preservada: `ensureUnnichatContact` faz search antes de create (não duplica contato).
+- (–) Cada envio agora faz 1–2 chamadas extras à Unnichat (search [+ create]) antes do template — latência maior por job (cap de 50 jobs/tick absorve).
+- (–) O fix do URL param depende de **re-aprovação Meta** do template — mudança de template não é deploy de código; tem lead time de aprovação.
+- (–) Integração depende de Swagger + inspeção de bundle (sem doc pública estável). Mudança unilateral da Unnichat no shape camelCase ou na semântica de `data:[{}]` quebra silenciosamente. Mitigação: parsing defensivo (`extractContactIdFromSearch`/`Create` toleram `data.id | data[0].id | id`).
+
+### Impacta
+
+[`apps/edge/src/lib/recovery-sender.ts`](../../apps/edge/src/lib/recovery-sender.ts), [`apps/edge/src/lib/recovery-job-creator.ts`](../../apps/edge/src/lib/recovery-job-creator.ts), [`apps/edge/src/index.ts`](../../apps/edge/src/index.ts) (cron `*/2 * * * *`), migrations `0054`–`0057`, [`docs/40-integrations/15-unnichat-whatsapp.md`](../40-integrations/15-unnichat-whatsapp.md) (novo arquivo). Honra BR-PRIVACY-001/003/004 (PII decifrada só em memória, AES-GCM workspace-scoped) e INV-RECOVERY-JOB-001/002/003.
+
+---
+
 ## Política de promoção de OQ → ADR
 
 OQ vira ADR somente se:
