@@ -11,6 +11,7 @@ import {
   Home,
   Package,
   Plug,
+  RotateCcw,
   Settings,
   Shield,
   Tag,
@@ -68,6 +69,11 @@ const navItems: NavItemDef[] = [
     href: '/orchestrator',
     label: 'Workflows',
     icon: GitBranch,
+  },
+  {
+    href: '/workflows/recovery',
+    label: 'Recovery',
+    icon: RotateCcw,
   },
   {
     href: '/integrations',
