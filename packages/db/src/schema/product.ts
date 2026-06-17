@@ -56,7 +56,7 @@ export const products = pgTable(
       sql`${t.category} IS NULL OR ${t.category} IN (
         'ebook', 'workshop_online', 'webinar',
         'curso_online', 'curso_presencial', 'pos_graduacao', 'treinamento_online', 'evento_fisico',
-        'mentoria_individual', 'mentoria_grupo', 'acompanhamento_individual'
+        'mentoria_individual', 'mentoria_grupo', 'acompanhamento_individual', 'extensao'
       )`,
     ),
     statusCheck: check(

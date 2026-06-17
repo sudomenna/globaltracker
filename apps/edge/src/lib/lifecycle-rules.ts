@@ -42,7 +42,8 @@ export type ProductCategory =
   | 'evento_fisico'
   | 'mentoria_individual'
   | 'mentoria_grupo'
-  | 'acompanhamento_individual';
+  | 'acompanhamento_individual'
+  | 'extensao';
 
 /**
  * All valid LifecycleStatus values, in canonical rank order (low → high).
@@ -72,6 +73,7 @@ export const PRODUCT_CATEGORIES: readonly ProductCategory[] = [
   'mentoria_individual',
   'mentoria_grupo',
   'acompanhamento_individual',
+  'extensao',
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -111,6 +113,8 @@ const CATEGORY_TO_LIFECYCLE: Record<ProductCategory, LifecycleStatus> = {
   mentoria_individual: 'mentorado',
   mentoria_grupo: 'mentorado',
   acompanhamento_individual: 'mentorado',
+  // Extensão: curso de extensão / acesso estendido (ex.: Acesso Vitalício) → aluno.
+  extensao: 'aluno',
 };
 
 // ---------------------------------------------------------------------------

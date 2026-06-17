@@ -95,6 +95,7 @@ const ExternalProviderEnum = z.enum([
   'hotmart',
   'kiwify',
   'stripe',
+  'onprofit',
   'manual',
 ]);
 

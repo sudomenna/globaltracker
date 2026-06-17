@@ -19,7 +19,8 @@ type ProductCategory =
   | 'evento_fisico'
   | 'mentoria_individual'
   | 'mentoria_grupo'
-  | 'acompanhamento_individual';
+  | 'acompanhamento_individual'
+  | 'extensao';
 
 interface Product {
   id: string;
@@ -57,6 +58,7 @@ const CATEGORY_LABEL: Record<ProductCategory, string> = {
   mentoria_individual: 'Mentoria individual',
   mentoria_grupo: 'Mentoria em grupo',
   acompanhamento_individual: 'Acompanhamento individual',
+  extensao: 'Extensão',
 };
 
 const CATEGORY_OPTIONS: ProductCategory[] = [
@@ -71,6 +73,7 @@ const CATEGORY_OPTIONS: ProductCategory[] = [
   'mentoria_individual',
   'mentoria_grupo',
   'acompanhamento_individual',
+  'extensao',
 ];
 
 const STATUS_LABEL: Record<Product['status'], string> = {
@@ -675,6 +678,7 @@ export function ProductsListClient({ canEdit }: ProductsListClientProps) {
                       <option value="hotmart">Hotmart</option>
                       <option value="kiwify">Kiwify</option>
                       <option value="stripe">Stripe</option>
+                      <option value="onprofit">OnProfit</option>
                       <option value="manual">Manual</option>
                     </select>
                   </div>
