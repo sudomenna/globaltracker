@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   jsonb,
   pgTable,
   text,
@@ -9,6 +11,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { launches } from './launch.js';
+import { products } from './product.js';
 import { workspaces } from './workspace.js';
 
 // T-RECOVERY-001: recovery_campaigns — cadência de recuperação por launch.
@@ -68,7 +71,17 @@ export const recoveryCampaigns = pgTable(
     // Funnel role gatilho — match com funnel_template.pages[].role.
     // Ex: 'bait_offer', 'main_checkout', 'order_bump'.
     // Sem FK rígida — role é texto livre dentro do blueprint do launch.
-    triggerFunnelRole: text('trigger_funnel_role').notNull(),
+    // Nullable desde 0059: campanha pode mirar um PRODUTO específico
+    // (triggerProductId) em vez de um role. CHECK garante ≥1 dos dois.
+    triggerFunnelRole: text('trigger_funnel_role'),
+
+    // Gatilho por PRODUTO específico (híbrido, 0059). Quando setado, a campanha
+    // recupera abandonos daquele produto (custom_data.product_db_id) — tem
+    // PRECEDÊNCIA sobre campanhas por role no mesmo launch (evita disparo duplo).
+    // NULL = campanha opera por triggerFunnelRole (comportamento legado).
+    triggerProductId: uuid('trigger_product_id').references(() => products.id, {
+      onDelete: 'cascade',
+    }),
 
     // INV-RECOVERY-CAMPAIGN-002: array de steps da cadência.
     // Schema: [{ delay_min: number, template_id: uuid }, ...]
@@ -114,6 +127,12 @@ export const recoveryCampaigns = pgTable(
     uqRecoveryCampaignsName: uniqueIndex('uq_recovery_campaigns_workspace_name').on(
       table.workspaceId,
       table.name,
+    ),
+    // INV-RECOVERY-CAMPAIGN-004 (0059): gatilho híbrido — pelo menos um de
+    // (trigger_funnel_role, trigger_product_id) deve estar setado.
+    triggerCheck: check(
+      'chk_recovery_campaigns_trigger',
+      sql`${table.triggerFunnelRole} IS NOT NULL OR ${table.triggerProductId} IS NOT NULL`,
     ),
   }),
 );
