@@ -67,11 +67,34 @@
  *   Se um dia o ingestor Guru passar a gravar status, basta trocar a
  *   constante por `custom_data->>'guru_status'` na CASE.
  *
+ * --- Gatilho híbrido (0059): produto-específico vs role ---------------
+ *
+ * Desde a migration 0059 uma campanha pode mirar:
+ *   - um PRODUTO específico, via `trigger_product_id` (resolve o produto do
+ *     abandono pelo par (provider, external_product_id)→products.id — pois
+ *     InitiateCheckout NÃO grava product_db_id — e compara com
+ *     trigger_product_id, independente do funnel_role); OU
+ *   - um funnel_role, via `trigger_funnel_role` (comportamento LEGADO:
+ *     casa por `resolved_funnel_role = trigger_funnel_role`).
+ *
+ * O CHECK do schema garante que pelo menos um dos dois está setado. A
+ * coluna `match_kind` ('product' | 'role') anota como cada linha casou.
+ *
+ * PRECEDÊNCIA (evita disparo duplo / 2 mensagens pro mesmo lead):
+ *   Por (lead_id, trigger_event_id), se existir match product-specific
+ *   ELEGÍVEL, ele VENCE — as linhas match_kind='role' do MESMO
+ *   trigger_event_id são descartadas. Isso impede que um abandono
+ *   coberto por uma campanha de produto também gere job pela campanha de
+ *   role no mesmo launch.
+ *
  * Semântica:
  *   - SELECT eventos `InitiateCheckout` na janela [-60min, -6min]
- *   - funnel_role resolvido == campaign.trigger_funnel_role
+ *   - match product (trigger_product_id = produto resolvido via
+ *     provider+external_product_id) OU match role (resolved_funnel_role =
+ *     trigger_funnel_role)
  *   - lifecycle 'lead' OU ('cliente' AND status ∈ recoverable_statuses
  *       AND NÃO existe Purchase de OUTRO bait_* no mesmo launch)
+ *   - precedência: product VENCE role por (lead_id, trigger_event_id)
  *   - INSERT ON CONFLICT DO NOTHING (INV-RECOVERY-JOB-001)
  *
  * BRs / INVs honrados:
@@ -160,6 +183,15 @@ export async function createPendingRecoveryJobs(
           0 AS step_index,
           ((c.steps -> 0) ->> 'template_id')::uuid AS template_id,
           (e.received_at + (((c.steps -> 0) ->> 'delay_min')::int * INTERVAL '1 minute')) AS scheduled_for,
+          -- Gatilho híbrido (0059): anota como a campanha casou com o evento.
+          --   'product' = campanha tem trigger_product_id e ele bate com o
+          --               produto do abandono (resolvido por provider+ext_id).
+          --   'role'    = campanha legada (trigger_product_id NULL), casa por
+          --               resolved_funnel_role = trigger_funnel_role.
+          CASE
+            WHEN c.trigger_product_id IS NOT NULL THEN 'product'
+            ELSE 'role'
+          END AS match_kind,
           -- Resolve funnel_role: Guru grava direto em custom_data;
           -- OnProfit exige JOIN products → launch_products via product_id.
           COALESCE(
@@ -193,6 +225,48 @@ export async function createPendingRecoveryJobs(
           ON c.workspace_id = e.workspace_id
          AND c.launch_id    = e.launch_id
          AND c.active       = true
+         -- Gatilho híbrido: casa por PRODUTO (trigger_product_id) OU por
+         -- ROLE (trigger_funnel_role legado). Os dois ramos são mutuamente
+         -- exclusivos por linha de campanha (trigger_product_id ou é NULL ou
+         -- não é), então não há dupla-contagem da MESMA campanha aqui.
+         AND (
+              -- Match product-specific: campanha mira produto. Eventos
+              -- InitiateCheckout NÃO gravam product_db_id (só Purchase grava),
+              -- mas SEMPRE têm o id externo em custom_data->>'product_id'.
+              -- Resolvemos o produto pelo par (provider, external_product_id) →
+              -- products.id e comparamos com trigger_product_id (mesma resolução
+              -- do COALESCE de role abaixo).
+              (
+                c.trigger_product_id IS NOT NULL
+                AND c.trigger_product_id = (
+                  SELECT p.id
+                  FROM products p
+                  WHERE p.workspace_id        = e.workspace_id
+                    AND p.external_provider   = split_part(e.event_source, ':', 2)
+                    AND p.external_product_id = (e.custom_data->>'product_id')
+                  LIMIT 1
+                )
+              )
+              -- Match role (legado): campanha sem produto, casa por funnel_role.
+              OR (
+                c.trigger_product_id IS NULL
+                AND c.trigger_funnel_role = COALESCE(
+                  e.custom_data->>'funnel_role',
+                  (
+                    SELECT lp.launch_role
+                    FROM products p
+                    JOIN launch_products lp
+                      ON lp.workspace_id = p.workspace_id
+                     AND lp.launch_id    = e.launch_id
+                     AND lp.product_id   = p.id
+                    WHERE p.workspace_id        = e.workspace_id
+                      AND p.external_provider   = split_part(e.event_source, ':', 2)
+                      AND p.external_product_id = (e.custom_data->>'product_id')
+                    LIMIT 1
+                  )
+                )
+              )
+         )
         WHERE c.workspace_id = ${workspaceId}::uuid
           AND e.workspace_id = ${workspaceId}::uuid
           AND e.event_name   = 'InitiateCheckout'
@@ -201,11 +275,11 @@ export async function createPendingRecoveryJobs(
           -- BR-IDENTITY: precisa de phone criptografado para o sender decifrar.
           AND l.phone_enc    IS NOT NULL
       ),
-      filtered AS (
+      -- Elegibilidade de lifecycle aplicada a AMBOS os modos (product/role).
+      qualified AS (
         SELECT *
         FROM eligible
-        WHERE resolved_funnel_role = trigger_funnel_role
-          AND (
+        WHERE (
             lifecycle_status = 'lead'
             OR (
               lifecycle_status = 'cliente'
@@ -244,6 +318,23 @@ export async function createPendingRecoveryJobs(
               )
             )
           )
+      ),
+      -- PRECEDÊNCIA product > role (evita disparo duplo): por
+      -- (lead_id, trigger_event_id), se houver match product-specific
+      -- ELEGÍVEL, descarta as linhas role do MESMO trigger_event_id.
+      -- (Match product de uma campanha não suprime match product de outra
+      -- campanha — só o role é que perde para o product.)
+      filtered AS (
+        SELECT *
+        FROM qualified q
+        WHERE q.match_kind = 'product'
+           OR NOT EXISTS (
+             SELECT 1
+             FROM qualified qp
+             WHERE qp.match_kind        = 'product'
+               AND qp.lead_id           = q.lead_id
+               AND qp.trigger_event_id  = q.trigger_event_id
+           )
       ),
       inserted AS (
         INSERT INTO recovery_jobs (

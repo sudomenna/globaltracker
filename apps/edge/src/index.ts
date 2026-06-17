@@ -124,6 +124,7 @@ import { createLaunchLeadsRoute } from './routes/launches-leads.js';
 import { createMetaAudiencesRoute } from './routes/meta-audiences.js';
 import { createDashboardStatsRoute } from './routes/dashboard-stats.js';
 import { createRecoveryRoute } from './routes/recovery.js';
+import { createRecoveryAdminRoute } from './routes/recovery-admin.js';
 import { redirectRoute } from './routes/redirect.js';
 import { workspaceConfigRoute } from './routes/workspace-config.js';
 import { createWorkspaceTagsRoute } from './routes/workspace-tags.js';
@@ -424,6 +425,7 @@ app.use('/v1/funnel-templates/*', cpCors);
 app.use('/v1/pages/*', cpCors);
 app.use('/v1/leads/*', cpCors);
 app.use('/v1/products/*', cpCors);
+app.use('/v1/recovery/*', cpCors);
 app.use('/v1/integrations/*', cpCors);
 app.use('/v1/dispatch-jobs/*', cpCors);
 app.use('/v1/help/*', cpCors);
@@ -775,6 +777,16 @@ app.route(
 app.route(
   '/v1/products',
   createProductsRoute({
+    getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
+  }),
+);
+
+// Recovery admin CRUD (T-RECOVERY-HYBRID-edge): /v1/recovery/campaigns + /templates.
+// GET ≥ viewer, mutations ≥ admin/owner. BR-RBAC-001/002.
+// NOTE: distinct from createRecoveryRoute (legacy GET under /v1/launches/:public_id/recovery).
+app.route(
+  '/v1/recovery',
+  createRecoveryAdminRoute({
     getConnStr: (env) => env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL ?? '',
   }),
 );
