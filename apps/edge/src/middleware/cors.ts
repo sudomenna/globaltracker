@@ -11,7 +11,7 @@
  *
  * Contract (05-api-server-actions.md §CORS):
  *   Access-Control-Allow-Origin: echoes Origin if allowed, omitted otherwise.
- *   Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS
+ *   Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
  *   Access-Control-Allow-Headers: Content-Type, X-Funil-Site, X-Request-Id
  *   Access-Control-Max-Age: 86400
  *
@@ -25,7 +25,7 @@ import { createMiddleware } from 'hono/factory';
 // Constants
 // ---------------------------------------------------------------------------
 
-const ALLOWED_METHODS = 'GET, POST, PATCH, DELETE, OPTIONS';
+const ALLOWED_METHODS = 'GET, POST, PUT, PATCH, DELETE, OPTIONS';
 const ALLOWED_HEADERS = 'Content-Type, X-Funil-Site, X-Request-Id';
 const ALLOWED_HEADERS_ADMIN = 'Content-Type, Authorization, X-Request-Id';
 const MAX_AGE = '86400';
