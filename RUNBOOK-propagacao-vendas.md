@@ -73,6 +73,19 @@ na prática, **conferir e persistir só o que falta** (idempotente). Persistir �
 > merge/alias). A diferença é só o evento e a promoção de lifecycle. Eventos não-PAID **não** vão
 > pros sistemas externos (§2).
 
+**Mesmo lead em vários status (ex.: abandonou → pix `WAITING` → comprou `PAID`):**
+- É **UM lead só** — os 3 status anexam ao mesmo `lead_id` (dedup por email→telefone). Os eventos
+  **acumulam** no timeline (IC abandono + IC waiting + Purchase); idempotente por `event_id` (linha + status).
+- **Lifecycle é monotônico** (`promote()` só sobe): fica `cliente` no PAID e **não regride** — independe
+  da ordem das linhas no CSV. O lead vira **cliente**, NÃO fica "lead" e "cliente" ao mesmo tempo —
+  o estado de lead/abandono vira **histórico** (preservado como eventos: dá pra segmentar "cliente que
+  abandonou carrinho antes de comprar").
+- **Recovery de carrinho é suprimida** se o lead já comprou (`recovery-sender` marca `suppressed`) —
+  o evento de abandono permanece, só não dispara mensagem.
+- **O que eu confiro manualmente:** se a linha do abandono/waiting tem **email diferente** da linha do
+  PAID, o merge só ocorre se baterem por **telefone** — checar e, se preciso, garantir o alias/merge
+  pra não ficar com lead duplicado (um "abandonado" órfão + um "cliente").
+
 **Catálogo de produtos no GT (workspace `outsiders`)** — par `(provider, external_id)` é a chave canônica:
 
 | Produto | OnProfit (`provider=onprofit`) | Guru (`provider=guru`) |
